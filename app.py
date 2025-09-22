@@ -125,41 +125,81 @@ class RhymeRarityApp:
         
         print(f"✅ Demo database created with {len(sample_data)} sample patterns")
     
-    def search_rhymes(self, source_word: str, limit: int = 20, min_confidence: float = 0.7) -> List[Dict]:
+    def search_rhymes(
+        self,
+        source_word: str,
+        limit: int = 20,
+        min_confidence: float = 0.7,
+        cultural_significance: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        result_sources: Optional[List[str]] = None,
+        max_line_distance: Optional[int] = None,
+    ) -> List[Dict]:
         """Search for rhymes in the patterns.db database"""
         if not source_word or not source_word.strip():
             return []
 
         source_word = source_word.lower().strip()
 
+        def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return [str(v) for v in value if v is not None and str(v).strip()]
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            return [str(value)]
+
+        def _normalize_source_name(name: str) -> str:
+            return name.strip().lower().replace("_", "-")
+
+        cultural_filters = {_normalize_source_name(sig) for sig in _normalize_to_list(cultural_significance)}
+        genre_filters = {_normalize_source_name(genre) for genre in _normalize_to_list(genres)}
+
+        selected_sources = {
+            _normalize_source_name(source) for source in _normalize_to_list(result_sources)
+        }
+        if not selected_sources:
+            selected_sources = {"phonetic", "cultural", "anti-llm"}
+
+        include_phonetic = "phonetic" in selected_sources
+        include_cultural = "cultural" in selected_sources
+        include_anti_llm = "anti-llm" in selected_sources
+
+        filters_active = bool(
+            cultural_filters or genre_filters or (max_line_distance is not None)
+        )
+
         if limit <= 0:
             return []
 
         try:
-            phonetic_matches = get_cmu_rhymes(
-                source_word,
-                limit=limit,
-                analyzer=getattr(self, "phonetic_analyzer", None),
-            )
-
             phonetic_entries: List[Dict] = []
-            for target, score in phonetic_matches:
-                phonetic_entries.append({
-                    'source_word': source_word,
-                    'target_word': target,
-                    'artist': 'CMU Pronouncing Dictionary',
-                    'song': 'Phonetic Match',
-                    'pattern': f"{source_word} / {target}",
-                    'distance': None,
-                    'confidence': score,
-                    'phonetic_sim': score,
-                    'cultural_sig': 'phonetic',
-                    'source_context': 'Phonetic match suggested by the CMU Pronouncing Dictionary.',
-                    'target_context': '',
-                    'result_source': 'phonetic',
-                })
+            if include_phonetic and not filters_active:
+                phonetic_matches = get_cmu_rhymes(
+                    source_word,
+                    limit=limit,
+                    analyzer=getattr(self, "phonetic_analyzer", None),
+                )
 
-            phonetic_entries.sort(key=lambda entry: entry['phonetic_sim'], reverse=True)
+                for target, score in phonetic_matches:
+                    phonetic_entries.append({
+                        'source_word': source_word,
+                        'target_word': target,
+                        'artist': 'CMU Pronouncing Dictionary',
+                        'song': 'Phonetic Match',
+                        'pattern': f"{source_word} / {target}",
+                        'distance': None,
+                        'confidence': score,
+                        'phonetic_sim': score,
+                        'cultural_sig': 'phonetic',
+                        'genre': None,
+                        'source_context': 'Phonetic match suggested by the CMU Pronouncing Dictionary.',
+                        'target_context': '',
+                        'result_source': 'phonetic',
+                    })
+
+                phonetic_entries.sort(key=lambda entry: entry['phonetic_sim'], reverse=True)
 
             fetch_limit = max(limit * 2, limit, 1)
 
@@ -170,6 +210,7 @@ class RhymeRarityApp:
                 artist,
                 song_title,
                 pattern,
+                genre,
                 line_distance,
                 confidence_score,
                 phonetic_similarity,
@@ -177,29 +218,48 @@ class RhymeRarityApp:
                 source_context,
                 target_context
             FROM song_rhyme_patterns
-            WHERE {word_column} = ?
-              AND confidence_score >= ?
-              AND source_word != target_word
-            ORDER BY confidence_score DESC, phonetic_similarity DESC
-            LIMIT ?
             """
 
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                cursor.execute(
-                    base_query.format(word_column="source_word"),
-                    (source_word, min_confidence, fetch_limit),
-                )
-                source_results = cursor.fetchall()
-
-                cursor.execute(
-                    base_query.format(word_column="target_word"),
-                    (source_word, min_confidence, fetch_limit),
-                )
-                target_results = cursor.fetchall()
-
             cultural_entries: List[Dict] = []
+
+            def build_query(word_column: str) -> Tuple[str, List]:
+                conditions = [f"{word_column} = ?", "confidence_score >= ?", "source_word != target_word"]
+                params: List = [source_word, min_confidence]
+
+                if cultural_filters:
+                    placeholders = ",".join(["?"] * len(cultural_filters))
+                    conditions.append(f"LOWER(cultural_significance) IN ({placeholders})")
+                    params.extend(sorted(cultural_filters))
+
+                if genre_filters:
+                    placeholders = ",".join(["?"] * len(genre_filters))
+                    conditions.append(f"LOWER(genre) IN ({placeholders})")
+                    params.extend(sorted(genre_filters))
+
+                if max_line_distance is not None:
+                    conditions.append("line_distance <= ?")
+                    params.append(max_line_distance)
+
+                query = base_query
+                query += " WHERE " + " AND ".join(conditions)
+                query += " ORDER BY confidence_score DESC, phonetic_similarity DESC LIMIT ?"
+                params.append(fetch_limit)
+                return query, params
+
+            source_results: List[Tuple] = []
+            target_results: List[Tuple] = []
+
+            if include_cultural:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+
+                    query, params = build_query("source_word")
+                    cursor.execute(query, params)
+                    source_results = cursor.fetchall()
+
+                    query, params = build_query("target_word")
+                    cursor.execute(query, params)
+                    target_results = cursor.fetchall()
 
             def build_entry(row: Tuple, swap: bool = False) -> Dict:
                 entry = {
@@ -208,12 +268,13 @@ class RhymeRarityApp:
                     'artist': row[2],
                     'song': row[3],
                     'pattern': row[4],
-                    'distance': row[5],
-                    'confidence': row[6],
-                    'phonetic_sim': row[7],
-                    'cultural_sig': row[8],
-                    'source_context': row[9],
-                    'target_context': row[10],
+                    'genre': row[5],
+                    'distance': row[6],
+                    'confidence': row[7],
+                    'phonetic_sim': row[8],
+                    'cultural_sig': row[9],
+                    'source_context': row[10],
+                    'target_context': row[11],
                     'result_source': 'cultural',
                 }
 
@@ -222,8 +283,8 @@ class RhymeRarityApp:
                         **entry,
                         'source_word': row[1],
                         'target_word': row[0],
-                        'source_context': row[10],
-                        'target_context': row[9],
+                        'source_context': row[11],
+                        'target_context': row[10],
                     }
 
                 return entry
@@ -236,7 +297,30 @@ class RhymeRarityApp:
 
             cultural_entries.sort(key=lambda r: (-r['confidence'], -r['phonetic_sim']))
 
-            combined_results = phonetic_entries + cultural_entries
+            anti_llm_entries: List[Dict] = []
+            if include_anti_llm and not filters_active:
+                anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
+                    source_word,
+                    limit=limit,
+                )
+                for pattern in anti_patterns:
+                    anti_llm_entries.append({
+                        'source_word': source_word,
+                        'target_word': pattern.target_word,
+                        'artist': 'Anti-LLM Engine',
+                        'song': pattern.cultural_depth,
+                        'pattern': f"{source_word} / {pattern.target_word}",
+                        'genre': None,
+                        'distance': None,
+                        'confidence': pattern.confidence,
+                        'phonetic_sim': pattern.rarity_score,
+                        'cultural_sig': 'anti-llm',
+                        'source_context': f"Focus: {pattern.llm_weakness_type.replace('_', ' ')}.",
+                        'target_context': pattern.cultural_depth,
+                        'result_source': 'anti-llm',
+                    })
+
+            combined_results = phonetic_entries + cultural_entries + anti_llm_entries
 
             deduped: List[Dict] = []
             seen_pairs = set()
@@ -250,10 +334,29 @@ class RhymeRarityApp:
                 seen_pairs.add(pair)
                 deduped.append(entry)
 
-            for entry in deduped:
+            filtered_entries: List[Dict] = []
+            if filters_active:
+                for entry in deduped:
+                    if cultural_filters:
+                        sig = entry.get('cultural_sig')
+                        if sig is None or _normalize_source_name(str(sig)) not in cultural_filters:
+                            continue
+                    if genre_filters:
+                        genre_value = entry.get('genre')
+                        if genre_value is None or _normalize_source_name(str(genre_value)) not in genre_filters:
+                            continue
+                    if max_line_distance is not None:
+                        distance_value = entry.get('distance')
+                        if distance_value is None or distance_value > max_line_distance:
+                            continue
+                    filtered_entries.append(entry)
+            else:
+                filtered_entries = deduped
+
+            for entry in filtered_entries:
                 entry.pop('source_word', None)
 
-            return deduped[:limit]
+            return filtered_entries[:limit]
 
         except sqlite3.Error as e:
             print(f"Database error: {e}")
@@ -269,13 +372,31 @@ class RhymeRarityApp:
 
         for i, rhyme in enumerate(rhymes[:15], 1):
             result += f"**{i:2d}. {rhyme['target_word'].upper()}**\n"
-            if rhyme.get('result_source') == 'phonetic':
+            source_type = rhyme.get('result_source')
+            if source_type == 'phonetic':
                 origin = rhyme.get('artist', 'CMU Pronouncing Dictionary')
                 result += f"   🏷️ Origin: 📚 {origin}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
                 result += f"   📊 Phonetic Score: {rhyme['phonetic_sim']:.2f}\n"
                 note = rhyme.get('source_context') or 'Pronunciation-based suggestion.'
                 result += f"   🗒️ Note: {note}\n\n"
+            elif source_type == 'anti-llm':
+                result += "   🤖 Source: Anti-LLM Engine\n"
+                result += f"   📝 Pattern: {rhyme['pattern']}\n"
+                metrics = []
+                confidence = rhyme.get('confidence')
+                rarity = rhyme.get('phonetic_sim')
+                if confidence is not None:
+                    metrics.append(f"Confidence {confidence:.2f}")
+                if rarity is not None:
+                    metrics.append(f"Rarity {rarity:.2f}")
+                if metrics:
+                    result += f"   ⚔️ Anti-LLM Metrics: {' | '.join(metrics)}\n"
+                context = rhyme.get('source_context') or 'Designed to exploit LLM weaknesses.'
+                target_context = rhyme.get('target_context')
+                if target_context:
+                    context += f" Related: {target_context}"
+                result += f"   🧠 Insight: {context}\n\n"
             else:
                 result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
@@ -286,26 +407,76 @@ class RhymeRarityApp:
     
     def create_gradio_interface(self):
         """Create the Gradio interface for Hugging Face Spaces"""
-        
-        def search_interface(word, max_results, min_conf):
+
+        def search_interface(
+            word,
+            max_results,
+            min_conf,
+            cultural_filter,
+            genre_filter,
+            source_filter,
+            max_line_distance_choice,
+        ):
             """Interface function for Gradio"""
             if not word:
                 return "Please enter a word to find rhymes for."
-            
-            rhymes = self.search_rhymes(word, limit=max_results, min_confidence=min_conf)
+
+            def ensure_list(value):
+                if value is None:
+                    return []
+                if isinstance(value, (list, tuple, set)):
+                    return [v for v in value if v not in (None, "", [])]
+                if isinstance(value, str):
+                    return [value] if value else []
+                return [value]
+
+            max_distance: Optional[int]
+            if max_line_distance_choice in (None, "", "Any"):
+                max_distance = None
+            else:
+                try:
+                    max_distance = int(max_line_distance_choice)
+                except (TypeError, ValueError):
+                    max_distance = None
+
+            rhymes = self.search_rhymes(
+                word,
+                limit=max_results,
+                min_confidence=min_conf,
+                cultural_significance=ensure_list(cultural_filter),
+                genres=ensure_list(genre_filter),
+                result_sources=ensure_list(source_filter),
+                max_line_distance=max_distance,
+            )
             return self.format_rhyme_results(word, rhymes)
-        
+
+        cultural_options = sorted(
+            getattr(getattr(self, "cultural_engine", None), "cultural_categories", {}).keys()
+        )
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT DISTINCT genre FROM song_rhyme_patterns WHERE genre IS NOT NULL ORDER BY genre"
+                )
+                genre_options = [row[0] for row in cursor.fetchall() if row[0]]
+        except sqlite3.Error:
+            genre_options = []
+
+        default_sources = ["phonetic", "cultural"]
+
         # Create Gradio interface
         with gr.Blocks(title="RhymeRarity - Advanced Rhyme Generator", theme=gr.themes.Soft()) as interface:
             gr.Markdown("""
             # 🎵 RhymeRarity - Advanced Rhyme Generator
-            
+
             **Find perfect rhymes from authentic hip-hop lyrics and cultural patterns**
-            
-            This system uses real rap lyrics from 200+ artists to find rhymes that LLMs can't generate, 
+
+            This system uses real rap lyrics from 200+ artists to find rhymes that LLMs can't generate,
             with full cultural attribution and context.
             """)
-            
+
             with gr.Row():
                 with gr.Column(scale=2):
                     word_input = gr.Textbox(
@@ -313,8 +484,7 @@ class RhymeRarityApp:
                         placeholder="Enter a word (e.g., love, mind, flow, money)",
                         lines=1
                     )
-                    
-                with gr.Column(scale=1):
+
                     max_results = gr.Slider(
                         minimum=5,
                         maximum=50,
@@ -322,7 +492,7 @@ class RhymeRarityApp:
                         step=1,
                         label="Max Results"
                     )
-                    
+
                     min_confidence = gr.Slider(
                         minimum=0.5,
                         maximum=1.0,
@@ -330,46 +500,91 @@ class RhymeRarityApp:
                         step=0.05,
                         label="Min Confidence"
                     )
-            
+
+                with gr.Column(scale=1):
+                    cultural_dropdown = gr.Dropdown(
+                        choices=cultural_options,
+                        multiselect=True,
+                        label="Cultural Significance",
+                        info="Filter by cultural importance",
+                        value=[],
+                    )
+
+                    genre_dropdown = gr.Dropdown(
+                        choices=genre_options,
+                        multiselect=True,
+                        label="Genre",
+                        info="Limit to specific genres",
+                        value=[],
+                    )
+
+                    result_source_group = gr.CheckboxGroup(
+                        choices=["phonetic", "cultural", "anti-llm"],
+                        value=default_sources,
+                        label="Result Sources",
+                    )
+
+                    max_line_distance_dropdown = gr.Dropdown(
+                        choices=["Any", "1", "2", "3", "4", "5"],
+                        value="Any",
+                        label="Max Line Distance",
+                    )
+
             search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
-            
+
             output = gr.Textbox(
                 label="Rhyme Results",
                 lines=20,
                 max_lines=30,
                 show_copy_button=True
             )
-            
+
             # Example inputs
             gr.Examples(
                 examples=[
-                    ["love", 15, 0.8],
-                    ["mind", 15, 0.8], 
-                    ["flow", 15, 0.8],
-                    ["money", 15, 0.8],
-                    ["time", 15, 0.8]
+                    ["love", 15, 0.8, [], [], default_sources, "Any"],
+                    ["mind", 15, 0.8, [], [], default_sources, "Any"],
+                    ["flow", 15, 0.8, [], [], default_sources, "Any"],
+                    ["money", 15, 0.8, [], [], default_sources, "Any"],
+                    ["time", 15, 0.8, [], [], default_sources, "Any"]
                 ],
-                inputs=[word_input, max_results, min_confidence],
+                inputs=[
+                    word_input,
+                    max_results,
+                    min_confidence,
+                    cultural_dropdown,
+                    genre_dropdown,
+                    result_source_group,
+                    max_line_distance_dropdown,
+                ],
                 label="Try these examples"
             )
-            
+
             search_btn.click(
                 fn=search_interface,
-                inputs=[word_input, max_results, min_confidence],
+                inputs=[
+                    word_input,
+                    max_results,
+                    min_confidence,
+                    cultural_dropdown,
+                    genre_dropdown,
+                    result_source_group,
+                    max_line_distance_dropdown,
+                ],
                 outputs=output
             )
-            
+
             gr.Markdown("""
             ---
             ### About RhymeRarity
-            
+
             - **1.2M+ authentic rhyme patterns** from real hip-hop lyrics
             - **200+ artists** including Eminem, Kendrick Lamar, Jay-Z, Nas, and more
             - **Cultural intelligence** with full song and artist attribution
             - **Anti-LLM algorithms** that find rhymes large language models miss
             - **Research-backed** phonetic analysis for superior rhyme detection
             """)
-        
+
         return interface
 
 # Initialize the app
