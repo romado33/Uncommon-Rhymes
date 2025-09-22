@@ -17,6 +17,7 @@ import random
 # Import our custom modules
 try:
     from module1_enhanced_core_phonetic import (
+        CMUDictLoader,
         EnhancedPhoneticAnalyzer,
         get_cmu_rhymes,
     )
@@ -26,11 +27,20 @@ try:
 except ImportError as e:
     print(f"⚠️ Module import warning: {e}")
     # Create fallback classes for demo
+    class CMUDictLoader:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_rhyming_words(self, *_args, **_kwargs):
+            return []
+
     class EnhancedPhoneticAnalyzer:
-        def __init__(self): pass
+        def __init__(self, *_, **__):
+            self.cmu_loader = CMUDictLoader()
+
         def get_phonetic_similarity(self, word1, word2): return 0.85
 
-    def get_cmu_rhymes(word, limit=20, analyzer=None):
+    def get_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return []
     
     class AntiLLMRhymeEngine:
@@ -52,7 +62,8 @@ class RhymeRarityApp:
     
     def __init__(self, db_path: str = "patterns.db"):
         self.db_path = db_path
-        self.phonetic_analyzer = EnhancedPhoneticAnalyzer()
+        self.cmu_loader = CMUDictLoader()
+        self.phonetic_analyzer = EnhancedPhoneticAnalyzer(cmu_loader=self.cmu_loader)
         self.anti_llm_engine = AntiLLMRhymeEngine(db_path=self.db_path)
         self.cultural_engine = CulturalIntelligenceEngine(db_path=self.db_path)
         
@@ -186,6 +197,7 @@ class RhymeRarityApp:
                     source_word,
                     limit=limit,
                     analyzer=getattr(self, "phonetic_analyzer", None),
+                    cmu_loader=getattr(self, "cmu_loader", None),
                 )
 
                 for target, score in phonetic_matches:
