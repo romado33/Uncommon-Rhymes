@@ -184,3 +184,52 @@ def test_search_rhymes_filters_by_cultural_significance(tmp_path):
     assert all(result["cultural_sig"] == "legendary" for result in results)
     assert all(result["target_word"] == "glove" for result in results)
 
+
+def test_cultural_context_enrichment_in_formatting(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    class MockCulturalEngine:
+        def __init__(self):
+            self.calls = []
+            self.rarity_calls = []
+
+        def get_cultural_context(self, pattern_data):
+            self.calls.append(pattern_data)
+            return types.SimpleNamespace(
+                artist=pattern_data.get("artist", ""),
+                song=pattern_data.get("song", ""),
+                genre="hip-hop",
+                era="golden_age",
+                cultural_significance="legendary",
+                regional_origin="queens",
+                style_characteristics=["multi_syllable", "storytelling"],
+            )
+
+        def get_cultural_rarity_score(self, context):
+            self.rarity_calls.append(context)
+            return 3.5
+
+    app.cultural_engine = MockCulturalEngine()
+
+    results = app.search_rhymes(
+        "love",
+        limit=5,
+        min_confidence=0.0,
+        result_sources=["cultural"],
+    )
+
+    assert results, "Expected results enriched with cultural context"
+    enriched_entry = results[0]
+    assert "cultural_context" in enriched_entry
+    assert enriched_entry["cultural_rarity"] == 3.5
+
+    formatted = app.format_rhyme_results("love", results)
+
+    assert "Era: Golden Age" in formatted
+    assert "Region: Queens" in formatted
+    assert "Rarity Score: 3.50" in formatted
+    assert "Styles: Multi Syllable, Storytelling" in formatted
+
