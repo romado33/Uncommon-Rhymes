@@ -38,8 +38,14 @@ except ImportError as e:
         def generate_anti_llm_patterns(self, word): return []
     
     class CulturalIntelligenceEngine:
-        def __init__(self): pass
-        def get_cultural_context(self, pattern): return {"significance": "mainstream"}
+        def __init__(self):
+            pass
+
+        def get_cultural_context(self, pattern):
+            return {"significance": "mainstream"}
+
+        def get_cultural_rarity_score(self, context):
+            return 1.0
 
 class RhymeRarityApp:
     """Production Hugging Face app for RhymeRarity rhyme search"""
@@ -222,6 +228,64 @@ class RhymeRarityApp:
 
             cultural_entries: List[Dict] = []
 
+            def _context_to_dict(context_obj):
+                if context_obj is None:
+                    return None
+                if isinstance(context_obj, dict):
+                    return dict(context_obj)
+                if hasattr(context_obj, "__dict__"):
+                    return dict(vars(context_obj))
+                return {"value": context_obj}
+
+            def _enrich_with_cultural_context(entry: Dict) -> Dict:
+                engine = getattr(self, "cultural_engine", None)
+                if not engine:
+                    return entry
+
+                context_data = None
+                rarity_value = None
+
+                try:
+                    get_context = getattr(engine, "get_cultural_context", None)
+                    if callable(get_context):
+                        pattern_payload = {
+                            'artist': entry.get('artist'),
+                            'song': entry.get('song'),
+                            'source_word': entry.get('source_word', source_word),
+                            'target_word': entry.get('target_word'),
+                            'pattern': entry.get('pattern'),
+                            'cultural_significance': entry.get('cultural_sig'),
+                        }
+                        context_data = get_context(pattern_payload)
+                    elif hasattr(engine, "find_cultural_patterns"):
+                        finder = getattr(engine, "find_cultural_patterns")
+                        if callable(finder):
+                            patterns = finder(entry.get('source_word', source_word), limit=1)
+                            if patterns:
+                                pattern_info = patterns[0]
+                                context_data = pattern_info.get('cultural_context')
+                                rarity_value = pattern_info.get('cultural_rarity')
+
+                    context_dict = _context_to_dict(context_data)
+                    if context_dict:
+                        entry['cultural_context'] = context_dict
+
+                        rarity_fn = getattr(engine, "get_cultural_rarity_score", None)
+                        if callable(rarity_fn):
+                            try:
+                                rarity_value = rarity_fn(context_data)
+                            except (TypeError, AttributeError):
+                                rarity_value = rarity_fn(context_dict)
+
+                    if rarity_value is not None:
+                        entry['cultural_rarity'] = rarity_value
+
+                except Exception:
+                    # Cultural enrichment is optional; ignore errors to avoid breaking search
+                    pass
+
+                return entry
+
             def build_query(word_column: str) -> Tuple[str, List]:
                 conditions = [f"{word_column} = ?", "confidence_score >= ?", "source_word != target_word"]
                 params: List = [source_word, min_confidence]
@@ -287,7 +351,7 @@ class RhymeRarityApp:
                         'target_context': row[10],
                     }
 
-                return entry
+                return _enrich_with_cultural_context(entry)
 
             for row in source_results:
                 cultural_entries.append(build_entry(row))
@@ -401,6 +465,46 @@ class RhymeRarityApp:
                 result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
                 result += f"   📊 Confidence: {rhyme['confidence']:.2f} | Phonetic: {rhyme['phonetic_sim']:.2f}\n"
+
+                context_info = rhyme.get('cultural_context')
+                if context_info and hasattr(context_info, "__dict__"):
+                    context_info = dict(vars(context_info))
+
+                def _humanize(value: Optional[str]) -> str:
+                    if value is None:
+                        return ""
+                    if isinstance(value, str):
+                        return value.replace('_', ' ').title()
+                    return str(value)
+
+                cultural_highlights: List[str] = []
+                if isinstance(context_info, dict):
+                    era_value = context_info.get('era')
+                    if era_value:
+                        cultural_highlights.append(f"Era: {_humanize(era_value)}")
+
+                    region_value = context_info.get('regional_origin')
+                    if region_value:
+                        cultural_highlights.append(f"Region: {_humanize(region_value)}")
+
+                    significance_value = context_info.get('cultural_significance') or rhyme.get('cultural_sig')
+                    if significance_value:
+                        cultural_highlights.append(f"Significance: {_humanize(significance_value)}")
+
+                rarity_score = rhyme.get('cultural_rarity')
+                if rarity_score is not None:
+                    cultural_highlights.append(f"Rarity Score: {rarity_score:.2f}")
+
+                if cultural_highlights:
+                    result += f"   🌍 Cultural Context: {' | '.join(cultural_highlights)}\n"
+
+                if isinstance(context_info, dict):
+                    styles = context_info.get('style_characteristics')
+                    if styles:
+                        formatted_styles = ", ".join(_humanize(style) for style in styles if style)
+                        if formatted_styles:
+                            result += f"   🎨 Styles: {formatted_styles}\n"
+
                 result += f"   🎵 Context: \"{rhyme['source_context']}\" → \"{rhyme['target_context']}\"\n\n"
 
         return result
