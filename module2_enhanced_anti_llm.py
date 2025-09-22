@@ -104,35 +104,41 @@ class AntiLLMRhymeEngine:
         """
         if not source_word or not source_word.strip():
             return []
-        
+
+        if limit <= 0:
+            return []
+
         source_word = source_word.lower().strip()
         patterns = []
-        
+        per_strategy = max(1, limit // 4)
+        strategy_functions = [
+            self._find_rare_combinations,
+            self._find_phonological_challenges,
+            self._find_cultural_depth_patterns,
+            self._find_complex_syllable_patterns,
+        ]
+
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Strategy 1: Target rare word combinations
-            rare_patterns = self._find_rare_combinations(cursor, source_word, limit // 4)
-            patterns.extend(rare_patterns)
-            
-            # Strategy 2: Exploit phonological weaknesses
-            phonological_patterns = self._find_phonological_challenges(cursor, source_word, limit // 4)
-            patterns.extend(phonological_patterns)
-            
-            # Strategy 3: Cultural depth exploitation
-            cultural_patterns = self._find_cultural_depth_patterns(cursor, source_word, limit // 4)
-            patterns.extend(cultural_patterns)
-            
-            # Strategy 4: Multi-syllable complexity
-            complex_patterns = self._find_complex_syllable_patterns(cursor, source_word, limit // 4)
-            patterns.extend(complex_patterns)
-            
-            conn.close()
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                for finder in strategy_functions:
+                    if len(patterns) >= limit:
+                        break
+
+                    remaining = limit - len(patterns)
+                    strategy_limit = min(per_strategy, remaining)
+
+                    if strategy_limit <= 0:
+                        break
+
+                    new_patterns = finder(cursor, source_word, strategy_limit)
+                    if new_patterns:
+                        patterns.extend(new_patterns[:strategy_limit])
+
             # Sort by anti-LLM effectiveness
             patterns.sort(key=lambda x: x.rarity_score * x.confidence, reverse=True)
-            
+
             return patterns[:limit]
             
         except sqlite3.Error as e:
@@ -378,16 +384,25 @@ if __name__ == "__main__":
     
     print("🎯 Testing Anti-LLM Rhyme Engine:")
     print("=" * 50)
-    
-    for word in test_words:
-        patterns = engine.generate_anti_llm_patterns(word, limit=5)
-        
-        print(f"\nAnti-LLM patterns for '{word}':")
-        for pattern in patterns:
-            effectiveness = engine.get_anti_llm_effectiveness_score(pattern)
-            print(f"  • '{pattern.target_word}' - {pattern.cultural_depth}")
-            print(f"    Weakness: {pattern.llm_weakness_type} | Score: {effectiveness:.2f}")
-    
+
+    for limit in range(1, 5):
+        print(f"\n🔢 Evaluating engine output with limit={limit}")
+
+        for word in test_words:
+            patterns = engine.generate_anti_llm_patterns(word, limit=limit)
+            print(f"\nAnti-LLM patterns for '{word}' (requested {limit}, received {len(patterns)}):")
+
+            if not patterns:
+                print("  ⚠️ No patterns found; ensure the database contains entries for this source word.")
+                continue
+
+            for pattern in patterns:
+                effectiveness = engine.get_anti_llm_effectiveness_score(pattern)
+                print(f"  • '{pattern.target_word}' - {pattern.cultural_depth}")
+                print(f"    Weakness: {pattern.llm_weakness_type} | Score: {effectiveness:.2f}")
+
+            print(f"  ✅ Retrieved {len(patterns)} pattern(s) within the requested limit.")
+
     print(f"\n📊 Performance Stats:")
     stats = engine.get_performance_stats()
     for key, value in stats.items():
