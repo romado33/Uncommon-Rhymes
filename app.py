@@ -16,7 +16,10 @@ import random
 
 # Import our custom modules
 try:
-    from module1_enhanced_core_phonetic import EnhancedPhoneticAnalyzer
+    from module1_enhanced_core_phonetic import (
+        EnhancedPhoneticAnalyzer,
+        get_cmu_rhymes,
+    )
     from module2_enhanced_anti_llm import AntiLLMRhymeEngine
     from module3_enhanced_cultural_database import CulturalIntelligenceEngine
     print("✅ All RhymeRarity modules loaded successfully")
@@ -26,6 +29,9 @@ except ImportError as e:
     class EnhancedPhoneticAnalyzer:
         def __init__(self): pass
         def get_phonetic_similarity(self, word1, word2): return 0.85
+
+    def get_cmu_rhymes(word, limit=20, analyzer=None):
+        return []
     
     class AntiLLMRhymeEngine:
         def __init__(self): pass
@@ -130,6 +136,31 @@ class RhymeRarityApp:
             return []
 
         try:
+            phonetic_matches = get_cmu_rhymes(
+                source_word,
+                limit=limit,
+                analyzer=getattr(self, "phonetic_analyzer", None),
+            )
+
+            phonetic_entries: List[Dict] = []
+            for target, score in phonetic_matches:
+                phonetic_entries.append({
+                    'source_word': source_word,
+                    'target_word': target,
+                    'artist': 'CMU Pronouncing Dictionary',
+                    'song': 'Phonetic Match',
+                    'pattern': f"{source_word} / {target}",
+                    'distance': None,
+                    'confidence': score,
+                    'phonetic_sim': score,
+                    'cultural_sig': 'phonetic',
+                    'source_context': 'Phonetic match suggested by the CMU Pronouncing Dictionary.',
+                    'target_context': '',
+                    'result_source': 'phonetic',
+                })
+
+            phonetic_entries.sort(key=lambda entry: entry['phonetic_sim'], reverse=True)
+
             fetch_limit = max(limit * 2, limit, 1)
 
             base_query = """
@@ -168,7 +199,7 @@ class RhymeRarityApp:
                 )
                 target_results = cursor.fetchall()
 
-            rhymes: List[Dict] = []
+            cultural_entries: List[Dict] = []
 
             def build_entry(row: Tuple, swap: bool = False) -> Dict:
                 entry = {
@@ -183,6 +214,7 @@ class RhymeRarityApp:
                     'cultural_sig': row[8],
                     'source_context': row[9],
                     'target_context': row[10],
+                    'result_source': 'cultural',
                 }
 
                 if swap:
@@ -197,17 +229,22 @@ class RhymeRarityApp:
                 return entry
 
             for row in source_results:
-                rhymes.append(build_entry(row))
+                cultural_entries.append(build_entry(row))
 
             for row in target_results:
-                rhymes.append(build_entry(row, swap=True))
+                cultural_entries.append(build_entry(row, swap=True))
 
-            rhymes.sort(key=lambda r: (-r['confidence'], -r['phonetic_sim']))
+            cultural_entries.sort(key=lambda r: (-r['confidence'], -r['phonetic_sim']))
+
+            combined_results = phonetic_entries + cultural_entries
 
             deduped: List[Dict] = []
             seen_pairs = set()
-            for entry in rhymes:
-                pair = (entry['source_word'], entry['target_word'])
+            for entry in combined_results:
+                pair = (
+                    entry.get('source_word', source_word).lower(),
+                    entry['target_word'].lower(),
+                )
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
@@ -229,14 +266,22 @@ class RhymeRarityApp:
         
         result = f"🎯 **TARGET RHYMES for '{source_word.upper()}':**\n"
         result += "=" * 50 + "\n\n"
-        
+
         for i, rhyme in enumerate(rhymes[:15], 1):
             result += f"**{i:2d}. {rhyme['target_word'].upper()}**\n"
-            result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
-            result += f"   📝 Pattern: {rhyme['pattern']}\n"
-            result += f"   📊 Confidence: {rhyme['confidence']:.2f} | Phonetic: {rhyme['phonetic_sim']:.2f}\n"
-            result += f"   🎵 Context: \"{rhyme['source_context']}\" → \"{rhyme['target_context']}\"\n\n"
-        
+            if rhyme.get('result_source') == 'phonetic':
+                origin = rhyme.get('artist', 'CMU Pronouncing Dictionary')
+                result += f"   🏷️ Origin: 📚 {origin}\n"
+                result += f"   📝 Pattern: {rhyme['pattern']}\n"
+                result += f"   📊 Phonetic Score: {rhyme['phonetic_sim']:.2f}\n"
+                note = rhyme.get('source_context') or 'Pronunciation-based suggestion.'
+                result += f"   🗒️ Note: {note}\n\n"
+            else:
+                result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
+                result += f"   📝 Pattern: {rhyme['pattern']}\n"
+                result += f"   📊 Confidence: {rhyme['confidence']:.2f} | Phonetic: {rhyme['phonetic_sim']:.2f}\n"
+                result += f"   🎵 Context: \"{rhyme['source_context']}\" → \"{rhyme['target_context']}\"\n\n"
+
         return result
     
     def create_gradio_interface(self):
