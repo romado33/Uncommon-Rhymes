@@ -8,7 +8,18 @@ from pathlib import Path
 
 gradio_stub = types.ModuleType("gradio")
 gradio_stub.themes = types.SimpleNamespace(Soft=lambda *_, **__: None)
-for attr in ("Blocks", "Markdown", "Row", "Column", "Textbox", "Slider", "Button", "Examples"):
+for attr in (
+    "Blocks",
+    "Markdown",
+    "Row",
+    "Column",
+    "Textbox",
+    "Slider",
+    "Button",
+    "Examples",
+    "Dropdown",
+    "CheckboxGroup",
+):
     setattr(gradio_stub, attr, lambda *_, **__: None)
 sys.modules.setdefault("gradio", gradio_stub)
 
@@ -83,6 +94,36 @@ def create_test_database(db_path):
             "Above in the verse",
             "Love in the hook",
         ),
+        (
+            3,
+            "love / glove",
+            "love",
+            "glove",
+            "Artist C",
+            "Song C",
+            "soul",
+            1,
+            0.88,
+            0.91,
+            "legendary",
+            "Love in the bridge",
+            "Glove in the chorus",
+        ),
+        (
+            4,
+            "love / shove",
+            "love",
+            "shove",
+            "Artist D",
+            "Song D",
+            "hip-hop",
+            3,
+            0.70,
+            0.80,
+            "underground",
+            "Love in the intro",
+            "Shove in the outro",
+        ),
     ]
 
     cursor.executemany(
@@ -123,4 +164,23 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
     assert results[0]["source_context"] == "Above in the hook"
     assert results[0]["target_context"] == "Love in the verse"
     assert all(result["target_word"] == "love" for result in results)
+
+
+def test_search_rhymes_filters_by_cultural_significance(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    results = app.search_rhymes(
+        "love",
+        limit=10,
+        min_confidence=0.0,
+        cultural_significance=["legendary"],
+        result_sources=["cultural"],
+    )
+
+    assert results, "Expected filtered results for cultural significance"
+    assert all(result["cultural_sig"] == "legendary" for result in results)
+    assert all(result["target_word"] == "glove" for result in results)
 
