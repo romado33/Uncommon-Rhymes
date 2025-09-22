@@ -13,6 +13,7 @@ import sys
 from typing import List, Dict, Tuple, Optional
 import json
 import random
+import types
 
 # Import our custom modules
 try:
@@ -37,8 +38,16 @@ except ImportError as e:
     class EnhancedPhoneticAnalyzer:
         def __init__(self, *_, **__):
             self.cmu_loader = CMUDictLoader()
+            self.rarity_map = types.SimpleNamespace(get_rarity=lambda *_: 0.5)
 
-        def get_phonetic_similarity(self, word1, word2): return 0.85
+        def get_phonetic_similarity(self, *_args, **_kwargs):
+            return 0.85
+
+        def combine_similarity_and_rarity(self, similarity, rarity):
+            return 0.5 * similarity + 0.5 * rarity
+
+        def update_rarity_from_database(self, *_args, **_kwargs):
+            return False
 
     def get_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return []
@@ -66,12 +75,24 @@ class RhymeRarityApp:
         self.phonetic_analyzer = EnhancedPhoneticAnalyzer(cmu_loader=self.cmu_loader)
         self.anti_llm_engine = AntiLLMRhymeEngine(db_path=self.db_path)
         self.cultural_engine = CulturalIntelligenceEngine(db_path=self.db_path)
-        
+
         # Initialize database
         self.check_database()
-        
+        self._refresh_rarity_map()
+
         print(f"🎵 RhymeRarity App initialized with database: {db_path}")
-        
+
+    def _refresh_rarity_map(self) -> None:
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if not analyzer:
+            return
+        updater = getattr(analyzer, "update_rarity_from_database", None)
+        if callable(updater):
+            try:
+                updater(self.db_path)
+            except Exception:
+                pass
+
     def check_database(self):
         """Check if patterns.db exists and is accessible"""
         if not os.path.exists(self.db_path):
@@ -86,6 +107,7 @@ class RhymeRarityApp:
                 count = cursor.fetchone()[0]
                 conn.close()
                 print(f"✅ Database verified: {count:,} patterns available")
+                self._refresh_rarity_map()
             except Exception as e:
                 print(f"⚠️ Database verification failed: {e}")
                 self.create_demo_database()
@@ -139,8 +161,9 @@ class RhymeRarityApp:
         
         conn.commit()
         conn.close()
-        
+
         print(f"✅ Demo database created with {len(sample_data)} sample patterns")
+        self._refresh_rarity_map()
     
     def search_rhymes(
         self,
@@ -200,7 +223,26 @@ class RhymeRarityApp:
                     cmu_loader=getattr(self, "cmu_loader", None),
                 )
 
-                for target, score in phonetic_matches:
+                for candidate in phonetic_matches:
+                    if isinstance(candidate, dict):
+                        target = candidate.get('word') or candidate.get('target')
+                        similarity = float(candidate.get('similarity', candidate.get('score', 0.0)))
+                        rarity_value = float(candidate.get('rarity', candidate.get('rarity_score', 0.0)))
+                        combined = float(candidate.get('combined', candidate.get('combined_score', similarity)))
+                    else:
+                        try:
+                            target = candidate[0]
+                            similarity = float(candidate[1]) if len(candidate) > 1 else 0.0
+                            rarity_value = float(candidate[2]) if len(candidate) > 2 else self.phonetic_analyzer.get_rarity_score(candidate[0])
+                            combined = float(candidate[3]) if len(candidate) > 3 else similarity
+                        except Exception:
+                            target = candidate if isinstance(candidate, str) else None
+                            similarity = 0.0
+                            rarity_value = 0.0
+                            combined = 0.0
+
+                    if not target:
+                        continue
                     phonetic_entries.append({
                         'source_word': source_word,
                         'target_word': target,
@@ -208,8 +250,10 @@ class RhymeRarityApp:
                         'song': 'Phonetic Match',
                         'pattern': f"{source_word} / {target}",
                         'distance': None,
-                        'confidence': score,
-                        'phonetic_sim': score,
+                        'confidence': combined,
+                        'combined_score': combined,
+                        'phonetic_sim': similarity,
+                        'rarity_score': rarity_value,
                         'cultural_sig': 'phonetic',
                         'genre': None,
                         'source_context': 'Phonetic match suggested by the CMU Pronouncing Dictionary.',
@@ -217,7 +261,13 @@ class RhymeRarityApp:
                         'result_source': 'phonetic',
                     })
 
-                phonetic_entries.sort(key=lambda entry: entry['phonetic_sim'], reverse=True)
+                phonetic_entries.sort(
+                    key=lambda entry: (
+                        entry.get('combined_score', entry.get('confidence', 0.0)),
+                        entry.get('phonetic_sim', 0.0),
+                    ),
+                    reverse=True,
+                )
 
             fetch_limit = max(limit * 2, limit, 1)
 
@@ -449,6 +499,12 @@ class RhymeRarityApp:
                 result += f"   🏷️ Origin: 📚 {origin}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
                 result += f"   📊 Phonetic Score: {rhyme['phonetic_sim']:.2f}\n"
+                rarity_value = rhyme.get('rarity_score')
+                if rarity_value is not None:
+                    result += f"   🌟 Rarity Score: {rarity_value:.2f}\n"
+                combined_value = rhyme.get('combined_score')
+                if combined_value is not None:
+                    result += f"   🎯 Combined Score: {combined_value:.2f}\n"
                 note = rhyme.get('source_context') or 'Pronunciation-based suggestion.'
                 result += f"   🗒️ Note: {note}\n\n"
             elif source_type in {"anti_llm", "anti-llm"}:

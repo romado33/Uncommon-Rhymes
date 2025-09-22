@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Tuple, Optional, Set, Iterable
 from dataclasses import dataclass
 import difflib
+import math
+import sqlite3
+from collections import Counter
 
 VOWEL_PHONEMES: Set[str] = {
     "AA",
@@ -143,28 +146,179 @@ class CMUDictLoader:
 
 DEFAULT_CMU_LOADER = CMUDictLoader()
 
+RARITY_SIMILARITY_WEIGHT: float = 0.65
+RARITY_NOVELTY_WEIGHT: float = 0.35
+
+
+def _normalize_word(value: Optional[str]) -> str:
+    return value.lower().strip() if value else ""
+
+
+class WordRarityMap:
+    """Stores approximate frequency information for rhyme candidates.
+
+    The rarity map favours words that appear less frequently in the
+    ``song_rhyme_patterns`` dataset (or any other supplied frequency list).
+    Lower observed frequency translates into a higher rarity score so that
+    downstream scoring can prioritise uncommon rhymes.
+    """
+
+    #: Fallback frequency data derived from the demo dataset embedded in
+    #: :mod:`app`. The values loosely reflect how often each target word
+    #: appears and provide sensible defaults when no database is available.
+    _DEFAULT_FREQUENCIES: Dict[str, int] = {
+        "love": 42,
+        "above": 21,
+        "mind": 18,
+        "find": 17,
+        "flow": 15,
+        "go": 14,
+        "money": 11,
+        "honey": 9,
+        "time": 10,
+        "rhyme": 8,
+        "night": 13,
+        "light": 12,
+        "pain": 7,
+        "rain": 7,
+        "real": 6,
+        "feel": 6,
+        "street": 5,
+        "beat": 5,
+        "life": 4,
+        "knife": 3,
+        "word": 4,
+        "heard": 4,
+        "game": 5,
+        "fame": 5,
+        "soul": 4,
+        "goal": 3,
+        "way": 5,
+        "day": 5,
+        "back": 6,
+        "track": 6,
+    }
+
+    def __init__(self, frequencies: Optional[Dict[str, int]] = None) -> None:
+        self._frequencies: Counter[str] = Counter()
+        self._loaded_sources: Set[Path] = set()
+        self._default_frequency: int = 1
+        if frequencies:
+            self.add_frequencies(frequencies)
+        if not self._frequencies:
+            self.add_frequencies(self._DEFAULT_FREQUENCIES)
+        self._update_frequency_stats()
+
+    def add_frequencies(self, frequencies: Dict[str, int]) -> None:
+        for word, value in frequencies.items():
+            normalized = _normalize_word(word)
+            if not normalized:
+                continue
+            try:
+                freq_value = int(value)
+            except (TypeError, ValueError):
+                continue
+            if freq_value <= 0:
+                continue
+            self._frequencies[normalized] = max(self._frequencies.get(normalized, 0), freq_value)
+        self._update_frequency_stats()
+
+    def _update_frequency_stats(self) -> None:
+        if not self._frequencies:
+            self._min_frequency = 0
+            self._max_frequency = 0
+            self._default_frequency = 1
+            return
+
+        frequencies = list(self._frequencies.values())
+        self._min_frequency = min(frequencies)
+        self._max_frequency = max(frequencies)
+        self._default_frequency = max(1, int(sum(frequencies) / max(len(frequencies), 1)))
+
+    def get_frequency(self, word: str) -> int:
+        normalized = _normalize_word(word)
+        if not normalized:
+            return self._default_frequency
+        return self._frequencies.get(normalized, self._default_frequency)
+
+    def get_rarity(self, word: str) -> float:
+        frequency = max(self.get_frequency(word), 1)
+        # Inverse log scaling keeps the range approximately within (0, 1].
+        rarity = 1.0 / (1.0 + math.log1p(frequency))
+        return float(rarity)
+
+    def update_from_database(self, db_path: Optional[Path | str]) -> bool:
+        if not db_path:
+            return False
+
+        db_file = Path(db_path)
+        if not db_file.exists():
+            return False
+
+        canonical = db_file.resolve()
+        if canonical in self._loaded_sources:
+            return True
+
+        try:
+            with sqlite3.connect(str(canonical)) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT LOWER(target_word), COUNT(*)
+                    FROM song_rhyme_patterns
+                    WHERE target_word IS NOT NULL AND TRIM(target_word) != ''
+                    GROUP BY LOWER(target_word)
+                    """
+                )
+                rows = cursor.fetchall()
+        except sqlite3.Error:
+            return False
+
+        frequency_map: Dict[str, int] = {
+            row[0]: int(row[1]) for row in rows if isinstance(row, Iterable) and row and row[0]
+        }
+
+        if not frequency_map:
+            return False
+
+        self.add_frequencies(frequency_map)
+        self._loaded_sources.add(canonical)
+        return True
+
+
+DEFAULT_RARITY_MAP = WordRarityMap()
+
+
 @dataclass
 class PhoneticMatch:
     """Represents a phonetic match between two words"""
+
     word1: str
     word2: str
     similarity_score: float
     phonetic_features: Dict[str, float]
     rhyme_type: str  # perfect, near, slant, etc.
+    rarity_score: float = 0.0
+    combined_score: float = 0.0
 
 class EnhancedPhoneticAnalyzer:
     """
     Enhanced phonetic analysis system for superior rhyme detection
     Implements research-backed phonetic similarity algorithms
     """
-    
-    def __init__(self, cmu_loader: Optional[CMUDictLoader] = None):
+
+    def __init__(
+        self,
+        cmu_loader: Optional[CMUDictLoader] = None,
+        rarity_map: Optional[WordRarityMap] = None,
+    ):
         # Initialize phonetic analysis components
         self.cmu_loader = cmu_loader or DEFAULT_CMU_LOADER
+        self.rarity_map = rarity_map or DEFAULT_RARITY_MAP
         self.vowel_groups = self._initialize_vowel_groups()
         self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
-        
+
         print("📊 Enhanced Core Phonetic Analyzer initialized")
     
     def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
@@ -368,21 +522,50 @@ class EnhancedPhoneticAnalyzer:
             phonetic_features=features,
             rhyme_type=rhyme_type
         )
-    
-    def get_rhyme_candidates(self, target_word: str, word_list: List[str], 
+
+    def get_rhyme_candidates(self, target_word: str, word_list: List[str],
                            min_similarity: float = 0.7) -> List[PhoneticMatch]:
         """Find rhyme candidates from a word list"""
         candidates = []
-        
+
         for word in word_list:
             if word.lower() != target_word.lower():
                 match = self.analyze_rhyme_pattern(target_word, word)
                 if match.similarity_score >= min_similarity:
+                    rarity = self.get_rarity_score(word)
+                    combined = self.combine_similarity_and_rarity(match.similarity_score, rarity)
+                    match.rarity_score = rarity
+                    match.combined_score = combined
                     candidates.append(match)
-        
-        # Sort by similarity score
-        candidates.sort(key=lambda x: x.similarity_score, reverse=True)
+
+        # Sort by combined uncommon-first score, falling back to similarity
+        candidates.sort(key=lambda x: (x.combined_score, x.similarity_score), reverse=True)
         return candidates
+
+    def get_rarity_score(self, word: str) -> float:
+        rarity_map = getattr(self, "rarity_map", None) or DEFAULT_RARITY_MAP
+        try:
+            return float(rarity_map.get_rarity(word))
+        except Exception:
+            return DEFAULT_RARITY_MAP.get_rarity(word)
+
+    def combine_similarity_and_rarity(self, similarity: float, rarity: float) -> float:
+        return (
+            similarity * RARITY_SIMILARITY_WEIGHT
+            + rarity * RARITY_NOVELTY_WEIGHT
+        )
+
+    def update_rarity_from_database(self, db_path: Optional[Path | str]) -> bool:
+        rarity_map = getattr(self, "rarity_map", None)
+        if rarity_map is None:
+            return False
+        try:
+            return bool(rarity_map.update_from_database(db_path))
+        except Exception:
+            return False
+
+
+RhymeCandidate = Tuple[str, float, float, float]
 
 
 def get_cmu_rhymes(
@@ -390,7 +573,7 @@ def get_cmu_rhymes(
     limit: int = 20,
     analyzer: Optional["EnhancedPhoneticAnalyzer"] = None,
     cmu_loader: Optional[CMUDictLoader] = None,
-) -> List[Tuple[str, float]]:
+) -> List[RhymeCandidate]:
     """Retrieve rhyme candidates from the CMU pronouncing dictionary.
 
     Args:
@@ -400,9 +583,10 @@ def get_cmu_rhymes(
         cmu_loader: Optional loader providing cached CMU pronunciations.
 
     Returns:
-        A list of tuples ``(candidate_word, similarity_score)`` sorted by
-        descending similarity. Returns an empty list when no candidates are
-        found in either the local CMU cache or the pronouncing fallback.
+        A list of tuples ``(candidate_word, similarity_score, rarity_score,
+        combined_score)`` sorted by descending combined score. Returns an
+        empty list when no candidates are found in either the local CMU cache
+        or the pronouncing fallback.
     """
 
     if not word or not word.strip() or limit <= 0:
@@ -452,15 +636,29 @@ def get_cmu_rhymes(
 
     scoring_analyzer = analyzer or EnhancedPhoneticAnalyzer()
 
-    scored_candidates: List[Tuple[str, float]] = []
+    rarity_source = getattr(scoring_analyzer, "rarity_map", None) or DEFAULT_RARITY_MAP
+    combine_fn = getattr(scoring_analyzer, "combine_similarity_and_rarity", None)
+    scored_candidates: List[RhymeCandidate] = []
     for candidate in candidate_words:
         try:
             score = scoring_analyzer.get_phonetic_similarity(normalized_word, candidate)
         except Exception:
             score = 0.0
-        scored_candidates.append((candidate, score))
+        try:
+            rarity = float(rarity_source.get_rarity(candidate))
+        except Exception:
+            rarity = DEFAULT_RARITY_MAP.get_rarity(candidate)
 
-    scored_candidates.sort(key=lambda item: item[1], reverse=True)
+        if callable(combine_fn):
+            try:
+                combined = float(combine_fn(score, rarity))
+            except Exception:
+                combined = score
+        else:
+            combined = score
+        scored_candidates.append((candidate, score, rarity, combined))
+
+    scored_candidates.sort(key=lambda item: item[3], reverse=True)
     return scored_candidates[:limit]
 
 # Example usage and testing
