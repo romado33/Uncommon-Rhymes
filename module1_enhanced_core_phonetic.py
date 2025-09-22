@@ -5,15 +5,143 @@ Handles phonetic similarity calculations and rhyme detection algorithms
 Part of the RhymeRarity system deployed on Hugging Face
 """
 
+from __future__ import annotations
+
 import re
-from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 import difflib
+
+VOWEL_PHONEMES: Set[str] = {
+    "AA",
+    "AE",
+    "AH",
+    "AO",
+    "AW",
+    "AY",
+    "EH",
+    "ER",
+    "EY",
+    "IH",
+    "IY",
+    "OW",
+    "OY",
+    "UH",
+    "UW",
+}
 
 try:  # pragma: no cover - optional dependency
     import pronouncing  # type: ignore
 except ImportError:  # pragma: no cover - gracefully handle missing package
     pronouncing = None  # type: ignore
+
+
+class CMUDictLoader:
+    """Lazy loader for the CMU pronouncing dictionary.
+
+    The loader parses ``cmudict.7b`` once and caches pronunciations along with
+    their rhyme parts (defined as the final stressed vowel and trailing
+    phonemes). Subsequent lookups reuse the cached data to avoid repeatedly
+    loading the large dictionary file.
+    """
+
+    def __init__(self, dict_path: Optional[Path | str] = None) -> None:
+        base_path = Path(dict_path) if dict_path is not None else Path(__file__).resolve().with_name("cmudict.7b")
+        self.dict_path: Path = base_path
+        self._pronunciations: Dict[str, List[List[str]]] = {}
+        self._rhyme_parts: Dict[str, Set[str]] = {}
+        self._rhyme_index: Dict[str, Set[str]] = {}
+        self._loaded: bool = False
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+
+        self._loaded = True
+
+        if not self.dict_path.exists():
+            return
+
+        try:
+            with self.dict_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    entry = line.strip()
+                    if not entry or entry.startswith(";;;"):
+                        continue
+
+                    parts = entry.split()
+                    if len(parts) < 2:
+                        continue
+
+                    raw_word, *phones = parts
+                    word = re.sub(r"\(\d+\)$", "", raw_word).lower()
+                    if not word:
+                        continue
+
+                    self._pronunciations.setdefault(word, []).append(phones)
+
+                    rhyme_part = self._extract_rhyme_part(phones)
+                    if not rhyme_part:
+                        continue
+
+                    self._rhyme_parts.setdefault(word, set()).add(rhyme_part)
+                    self._rhyme_index.setdefault(rhyme_part, set()).add(word)
+        except OSError:
+            # If the dictionary cannot be read we simply operate without cache.
+            self._pronunciations.clear()
+            self._rhyme_parts.clear()
+            self._rhyme_index.clear()
+
+    def _extract_rhyme_part(self, phones: List[str]) -> Optional[str]:
+        """Return the final stressed vowel plus trailing phonemes."""
+
+        last_stress_index: Optional[int] = None
+
+        for index, phone in enumerate(phones):
+            base = re.sub(r"\d", "", phone)
+            if base not in VOWEL_PHONEMES:
+                continue
+
+            if re.search(r"[12]", phone):
+                last_stress_index = index
+
+        if last_stress_index is None:
+            for index in range(len(phones) - 1, -1, -1):
+                base = re.sub(r"\d", "", phones[index])
+                if base in VOWEL_PHONEMES:
+                    last_stress_index = index
+                    break
+
+        if last_stress_index is None:
+            return None
+
+        return " ".join(phones[last_stress_index:])
+
+    def get_pronunciations(self, word: str) -> List[List[str]]:
+        self._ensure_loaded()
+        return list(self._pronunciations.get(word.lower(), []))
+
+    def get_rhyme_parts(self, word: str) -> Set[str]:
+        self._ensure_loaded()
+        return set(self._rhyme_parts.get(word.lower(), set()))
+
+    def get_rhyming_words(self, word: str) -> List[str]:
+        self._ensure_loaded()
+        normalized = word.lower()
+        rhyme_parts = self._rhyme_parts.get(normalized)
+        if not rhyme_parts:
+            return []
+
+        candidates: Set[str] = set()
+        for part in rhyme_parts:
+            candidates.update(self._rhyme_index.get(part, set()))
+
+        candidates.discard(normalized)
+        return sorted(candidates)
+
+
+DEFAULT_CMU_LOADER = CMUDictLoader()
 
 @dataclass
 class PhoneticMatch:
@@ -30,8 +158,9 @@ class EnhancedPhoneticAnalyzer:
     Implements research-backed phonetic similarity algorithms
     """
     
-    def __init__(self):
+    def __init__(self, cmu_loader: Optional[CMUDictLoader] = None):
         # Initialize phonetic analysis components
+        self.cmu_loader = cmu_loader or DEFAULT_CMU_LOADER
         self.vowel_groups = self._initialize_vowel_groups()
         self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
@@ -260,6 +389,7 @@ def get_cmu_rhymes(
     word: str,
     limit: int = 20,
     analyzer: Optional["EnhancedPhoneticAnalyzer"] = None,
+    cmu_loader: Optional[CMUDictLoader] = None,
 ) -> List[Tuple[str, float]]:
     """Retrieve rhyme candidates from the CMU pronouncing dictionary.
 
@@ -267,62 +397,71 @@ def get_cmu_rhymes(
         word: The input word to find rhymes for.
         limit: Maximum number of candidates to return.
         analyzer: Optional phonetic analyzer used to score similarity.
+        cmu_loader: Optional loader providing cached CMU pronunciations.
 
     Returns:
         A list of tuples ``(candidate_word, similarity_score)`` sorted by
-        descending similarity. Returns an empty list when the pronouncing
-        package is unavailable or the word is not present in the CMU data.
+        descending similarity. Returns an empty list when no candidates are
+        found in either the local CMU cache or the pronouncing fallback.
     """
 
     if not word or not word.strip() or limit <= 0:
         return []
 
-    if pronouncing is None:  # Optional dependency missing
-        return []
-
     normalized_word = word.strip().lower()
 
-    try:
-        candidates = pronouncing.rhymes(normalized_word)
+    loader = cmu_loader
+    if loader is None and analyzer is not None:
+        loader = getattr(analyzer, "cmu_loader", None)
+    if loader is None:
+        loader = DEFAULT_CMU_LOADER
 
-        # Fall back to rhyme part search if direct rhymes were not found
-        if not candidates:
-            phones = pronouncing.phones_for_word(normalized_word)
-            for phone in phones:
-                rhyme_part = pronouncing.rhyming_part(phone)
-                if rhyme_part:
-                    pattern = f".*{rhyme_part}"
-                    candidates.extend(pronouncing.search(pattern))
+    local_candidates: List[str] = []
+    if loader is not None:
+        try:
+            local_candidates = loader.get_rhyming_words(normalized_word)
+        except Exception:
+            local_candidates = []
 
-        # Deduplicate while preserving order and avoid returning the source word
-        seen = set()
-        unique_candidates: List[str] = []
-        for candidate in candidates:
-            cleaned = candidate.strip().lower()
-            if not cleaned or cleaned == normalized_word or cleaned in seen:
-                continue
-            seen.add(cleaned)
-            unique_candidates.append(cleaned)
+    candidate_words: List[str] = list(local_candidates)
 
-        if not unique_candidates:
-            return []
+    if not candidate_words and pronouncing is not None:
+        try:
+            candidates = pronouncing.rhymes(normalized_word)
 
-        scoring_analyzer = analyzer or EnhancedPhoneticAnalyzer()
+            if not candidates:
+                phones = pronouncing.phones_for_word(normalized_word)
+                for phone in phones:
+                    rhyme_part = pronouncing.rhyming_part(phone)
+                    if rhyme_part:
+                        pattern = f".*{rhyme_part}"
+                        candidates.extend(pronouncing.search(pattern))
 
-        scored_candidates: List[Tuple[str, float]] = []
-        for candidate in unique_candidates:
-            try:
-                score = scoring_analyzer.get_phonetic_similarity(normalized_word, candidate)
-            except Exception:
-                score = 0.0
-            scored_candidates.append((candidate, score))
+            seen = set()
+            for candidate in candidates:
+                cleaned = candidate.strip().lower()
+                if not cleaned or cleaned == normalized_word or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                candidate_words.append(cleaned)
+        except Exception:
+            candidate_words = []
 
-        scored_candidates.sort(key=lambda item: item[1], reverse=True)
-        return scored_candidates[:limit]
-
-    except Exception:
-        # Any issues with the pronouncing package should not break rhyme search
+    if not candidate_words:
         return []
+
+    scoring_analyzer = analyzer or EnhancedPhoneticAnalyzer()
+
+    scored_candidates: List[Tuple[str, float]] = []
+    for candidate in candidate_words:
+        try:
+            score = scoring_analyzer.get_phonetic_similarity(normalized_word, candidate)
+        except Exception:
+            score = 0.0
+        scored_candidates.append((candidate, score))
+
+    scored_candidates.sort(key=lambda item: item[1], reverse=True)
+    return scored_candidates[:limit]
 
 # Example usage and testing
 if __name__ == "__main__":
