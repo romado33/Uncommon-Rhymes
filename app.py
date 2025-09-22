@@ -41,8 +41,8 @@ class RhymeRarityApp:
     def __init__(self, db_path: str = "patterns.db"):
         self.db_path = db_path
         self.phonetic_analyzer = EnhancedPhoneticAnalyzer()
-        self.anti_llm_engine = AntiLLMRhymeEngine()
-        self.cultural_engine = CulturalIntelligenceEngine()
+        self.anti_llm_engine = AntiLLMRhymeEngine(db_path=self.db_path)
+        self.cultural_engine = CulturalIntelligenceEngine(db_path=self.db_path)
         
         # Initialize database
         self.check_database()
