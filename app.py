@@ -123,16 +123,18 @@ class RhymeRarityApp:
         """Search for rhymes in the patterns.db database"""
         if not source_word or not source_word.strip():
             return []
-        
+
         source_word = source_word.lower().strip()
-        
+
+        if limit <= 0:
+            return []
+
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Query for target rhymes from patterns.db
-            query = """
-            SELECT DISTINCT 
+            fetch_limit = max(limit * 2, limit, 1)
+
+            base_query = """
+            SELECT DISTINCT
+                source_word,
                 target_word,
                 artist,
                 song_title,
@@ -143,37 +145,79 @@ class RhymeRarityApp:
                 cultural_significance,
                 source_context,
                 target_context
-            FROM song_rhyme_patterns 
-            WHERE source_word = ? 
-               AND confidence_score >= ?
-               AND source_word != target_word
+            FROM song_rhyme_patterns
+            WHERE {word_column} = ?
+              AND confidence_score >= ?
+              AND source_word != target_word
             ORDER BY confidence_score DESC, phonetic_similarity DESC
             LIMIT ?
             """
-            
-            cursor.execute(query, (source_word, min_confidence, limit))
-            results = cursor.fetchall()
-            conn.close()
-            
-            # Format results
-            rhymes = []
-            for row in results:
-                rhyme_data = {
-                    'target_word': row[0],
-                    'artist': row[1], 
-                    'song': row[2],
-                    'pattern': row[3],
-                    'distance': row[4],
-                    'confidence': row[5],
-                    'phonetic_sim': row[6],
-                    'cultural_sig': row[7],
-                    'source_context': row[8],
-                    'target_context': row[9]
+
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    base_query.format(word_column="source_word"),
+                    (source_word, min_confidence, fetch_limit),
+                )
+                source_results = cursor.fetchall()
+
+                cursor.execute(
+                    base_query.format(word_column="target_word"),
+                    (source_word, min_confidence, fetch_limit),
+                )
+                target_results = cursor.fetchall()
+
+            rhymes: List[Dict] = []
+
+            def build_entry(row: Tuple, swap: bool = False) -> Dict:
+                entry = {
+                    'source_word': row[0],
+                    'target_word': row[1],
+                    'artist': row[2],
+                    'song': row[3],
+                    'pattern': row[4],
+                    'distance': row[5],
+                    'confidence': row[6],
+                    'phonetic_sim': row[7],
+                    'cultural_sig': row[8],
+                    'source_context': row[9],
+                    'target_context': row[10],
                 }
-                rhymes.append(rhyme_data)
-            
-            return rhymes
-            
+
+                if swap:
+                    entry = {
+                        **entry,
+                        'source_word': row[1],
+                        'target_word': row[0],
+                        'source_context': row[10],
+                        'target_context': row[9],
+                    }
+
+                return entry
+
+            for row in source_results:
+                rhymes.append(build_entry(row))
+
+            for row in target_results:
+                rhymes.append(build_entry(row, swap=True))
+
+            rhymes.sort(key=lambda r: (-r['confidence'], -r['phonetic_sim']))
+
+            deduped: List[Dict] = []
+            seen_pairs = set()
+            for entry in rhymes:
+                pair = (entry['source_word'], entry['target_word'])
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                deduped.append(entry)
+
+            for entry in deduped:
+                entry.pop('source_word', None)
+
+            return deduped[:limit]
+
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             return []
