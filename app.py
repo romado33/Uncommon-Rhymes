@@ -371,17 +371,12 @@ class RhymeRarityApp:
                     anti_llm_entries.append({
                         'source_word': source_word,
                         'target_word': pattern.target_word,
-                        'artist': 'Anti-LLM Engine',
-                        'song': pattern.cultural_depth,
                         'pattern': f"{source_word} / {pattern.target_word}",
-                        'genre': None,
-                        'distance': None,
                         'confidence': pattern.confidence,
-                        'phonetic_sim': pattern.rarity_score,
-                        'cultural_sig': 'anti-llm',
-                        'source_context': f"Focus: {pattern.llm_weakness_type.replace('_', ' ')}.",
-                        'target_context': pattern.cultural_depth,
-                        'result_source': 'anti-llm',
+                        'rarity_score': pattern.rarity_score,
+                        'llm_weakness_type': pattern.llm_weakness_type,
+                        'cultural_depth': pattern.cultural_depth,
+                        'result_source': 'anti_llm',
                     })
 
             combined_results = phonetic_entries + cultural_entries + anti_llm_entries
@@ -444,23 +439,33 @@ class RhymeRarityApp:
                 result += f"   📊 Phonetic Score: {rhyme['phonetic_sim']:.2f}\n"
                 note = rhyme.get('source_context') or 'Pronunciation-based suggestion.'
                 result += f"   🗒️ Note: {note}\n\n"
-            elif source_type == 'anti-llm':
+            elif source_type in {"anti_llm", "anti-llm"}:
+                pattern_text = rhyme.get('pattern') or f"{source_word} / {rhyme['target_word']}"
                 result += "   🤖 Source: Anti-LLM Engine\n"
-                result += f"   📝 Pattern: {rhyme['pattern']}\n"
-                metrics = []
+                result += f"   📝 Pattern: {pattern_text}\n"
+
                 confidence = rhyme.get('confidence')
-                rarity = rhyme.get('phonetic_sim')
                 if confidence is not None:
-                    metrics.append(f"Confidence {confidence:.2f}")
+                    result += f"   📈 Confidence: {confidence:.2f}\n"
+
+                rarity = rhyme.get('rarity_score')
                 if rarity is not None:
-                    metrics.append(f"Rarity {rarity:.2f}")
-                if metrics:
-                    result += f"   ⚔️ Anti-LLM Metrics: {' | '.join(metrics)}\n"
-                context = rhyme.get('source_context') or 'Designed to exploit LLM weaknesses.'
-                target_context = rhyme.get('target_context')
-                if target_context:
-                    context += f" Related: {target_context}"
-                result += f"   🧠 Insight: {context}\n\n"
+                    result += f"   🌟 Rarity Score: {rarity:.2f}\n"
+
+                weakness = rhyme.get('llm_weakness_type')
+                if weakness:
+                    weakness_label = str(weakness).replace('_', ' ').title()
+                    result += f"   🧩 LLM Weakness: {weakness_label}\n"
+
+                cultural_depth = rhyme.get('cultural_depth')
+                if cultural_depth:
+                    result += f"   🌌 Cultural Depth: {cultural_depth}\n"
+
+                context_note = rhyme.get('source_context') or 'Designed to exploit LLM weaknesses.'
+                if context_note:
+                    result += f"   🧠 Insight: {context_note}\n"
+
+                result += "\n"
             else:
                 result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"

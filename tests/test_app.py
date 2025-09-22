@@ -5,6 +5,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 gradio_stub = types.ModuleType("gradio")
 gradio_stub.themes = types.SimpleNamespace(Soft=lambda *_, **__: None)
@@ -31,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app import RhymeRarityApp
+from module2_enhanced_anti_llm import AntiLLMPattern
 
 
 if os.path.exists("patterns.db"):
@@ -232,4 +235,45 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
     assert "Region: Queens" in formatted
     assert "Rarity Score: 3.50" in formatted
     assert "Styles: Multi Syllable, Storytelling" in formatted
+
+
+def test_anti_llm_patterns_in_formatting(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    sentinel_pattern = AntiLLMPattern(
+        source_word="love",
+        target_word="shove",
+        rarity_score=4.2,
+        cultural_depth="Sentinel Depth",
+        llm_weakness_type="rare_word_combinations",
+        confidence=0.73,
+    )
+
+    class StubAntiLLMEngine:
+        def generate_anti_llm_patterns(self, word, limit=20):
+            return [sentinel_pattern]
+
+    app.anti_llm_engine = StubAntiLLMEngine()
+
+    results = app.search_rhymes(
+        "love",
+        limit=5,
+        min_confidence=0.0,
+        result_sources=["anti-llm"],
+    )
+
+    assert results, "Expected anti-LLM results when engine is patched"
+    anti_entry = results[0]
+    assert anti_entry["result_source"] in {"anti_llm", "anti-llm"}
+    assert anti_entry["rarity_score"] == pytest.approx(4.2)
+
+    formatted = app.format_rhyme_results("love", results)
+
+    assert "SHOVE" in formatted
+    assert "Rarity Score: 4.20" in formatted
+    assert "LLM Weakness: Rare Word Combinations" in formatted
+    assert "Cultural Depth: Sentinel Depth" in formatted
 
