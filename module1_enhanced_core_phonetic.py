@@ -214,15 +214,19 @@ class EnhancedPhoneticAnalyzer:
         """Comprehensive analysis of rhyme pattern between two words"""
         similarity = self.get_phonetic_similarity(word1, word2)
         rhyme_type = self.classify_rhyme_type(word1, word2, similarity)
-        
+
+        # Normalize words once for feature calculations to ensure consistent scoring
+        clean_word1 = self._clean_word(word1)
+        clean_word2 = self._clean_word(word2)
+
         # Calculate detailed phonetic features
         features = {
-            'ending_similarity': self._calculate_ending_similarity(word1, word2),
-            'vowel_similarity': self._calculate_vowel_similarity(word1, word2),
-            'consonant_similarity': self._calculate_consonant_similarity(word1, word2),
-            'syllable_similarity': self._calculate_syllable_similarity(word1, word2)
+            'ending_similarity': self._calculate_ending_similarity(clean_word1, clean_word2),
+            'vowel_similarity': self._calculate_vowel_similarity(clean_word1, clean_word2),
+            'consonant_similarity': self._calculate_consonant_similarity(clean_word1, clean_word2),
+            'syllable_similarity': self._calculate_syllable_similarity(clean_word1, clean_word2)
         }
-        
+
         return PhoneticMatch(
             word1=word1,
             word2=word2,
