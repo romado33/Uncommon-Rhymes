@@ -14,20 +14,34 @@ jobs:
 
       - name: Clone Hugging Face Space
         run: |
-          git clone https://huggingface.co/spaces/romado33/RhymeRater/ hf-space
+          set -x
+          echo "📥 Cloning Hugging Face Space..."
+          git clone https://huggingface.co/spaces/romado33/RhymeRater hf-space
           cd hf-space
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+          echo "✅ HF Space cloned, contents:"
+          ls -R .
 
       - name: Copy project files but exclude patterns.db
         run: |
+          set -x
+          echo "📤 Copying project files into hf-space (excluding .git and patterns.db)..."
           rsync -av --exclude='.git' --exclude='patterns.db' ./ hf-space/
+          echo "✅ Copy complete, hf-space now contains:"
+          ls -R hf-space
 
       - name: Commit and push changes
         run: |
+          set -x
           cd hf-space
+          echo "📋 Git status before add:"
+          git status
           git add .
-          git commit -m "Sync from GitHub" || echo "No changes"
-          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/RhymeRater/ main
+          echo "📋 Git status after add:"
+          git status
+          git commit -m "Sync from GitHub" || echo "⚠️ No changes to commit"
+          echo "🚀 Pushing changes to Hugging Face..."
+          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/RhymeRater main
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
