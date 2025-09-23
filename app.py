@@ -1071,10 +1071,110 @@ class RhymeRarityApp:
                 score = _prepare_confidence_defaults(entry)
                 return score >= min_confidence
 
+            def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
+                """Return a mutable feature profile dictionary for ``entry``."""
+
+                profile_obj = entry.get("feature_profile")
+                if isinstance(profile_obj, dict):
+                    return profile_obj
+                if profile_obj is None:
+                    profile_dict: Dict[str, Any] = {}
+                elif hasattr(profile_obj, "__dict__"):
+                    try:
+                        profile_dict = dict(vars(profile_obj))
+                    except Exception:
+                        profile_dict = {}
+                else:
+                    try:
+                        profile_dict = dict(profile_obj)
+                    except Exception:
+                        profile_dict = {}
+                entry["feature_profile"] = profile_dict
+                return profile_dict
+
+            def _extract_rhyme_category(entry: Dict) -> Optional[str]:
+                """Pull a rhyme category label from an entry and normalise storage."""
+
+                rhyme_value = entry.get("rhyme_type")
+                if not rhyme_value:
+                    features_obj = entry.get("phonetic_features")
+                    if features_obj is not None:
+                        if isinstance(features_obj, dict):
+                            rhyme_value = features_obj.get("rhyme_type")
+                        elif hasattr(features_obj, "__dict__"):
+                            rhyme_value = vars(features_obj).get("rhyme_type")
+                        else:
+                            try:
+                                rhyme_value = dict(features_obj).get("rhyme_type")
+                            except Exception:
+                                rhyme_value = None
+                if not rhyme_value:
+                    profile_obj = entry.get("feature_profile")
+                    if profile_obj is not None:
+                        if isinstance(profile_obj, dict):
+                            rhyme_value = profile_obj.get("rhyme_type")
+                        elif hasattr(profile_obj, "__dict__"):
+                            rhyme_value = vars(profile_obj).get("rhyme_type")
+                        else:
+                            try:
+                                rhyme_value = dict(profile_obj).get("rhyme_type")
+                            except Exception:
+                                rhyme_value = None
+                if rhyme_value:
+                    entry["rhyme_type"] = rhyme_value
+                    profile_dict = _ensure_feature_profile(entry)
+                    profile_dict.setdefault("rhyme_type", rhyme_value)
+                return rhyme_value
+
+            def _extract_rhythm_score(entry: Dict) -> Optional[float]:
+                """Return a numeric rhythm/stress alignment score for an entry."""
+
+                raw_value = entry.get("rhythm_score")
+                if raw_value is None:
+                    raw_value = entry.get("stress_alignment")
+                if raw_value is None:
+                    profile_obj = entry.get("feature_profile")
+                    if profile_obj is not None:
+                        if isinstance(profile_obj, dict):
+                            raw_value = profile_obj.get("stress_alignment")
+                        elif hasattr(profile_obj, "__dict__"):
+                            raw_value = vars(profile_obj).get("stress_alignment")
+                        else:
+                            try:
+                                raw_value = dict(profile_obj).get("stress_alignment")
+                            except Exception:
+                                raw_value = None
+                if raw_value is None:
+                    phonetic_features = entry.get("phonetic_features")
+                    if phonetic_features is not None:
+                        if isinstance(phonetic_features, dict):
+                            raw_value = phonetic_features.get("stress_alignment")
+                        elif hasattr(phonetic_features, "__dict__"):
+                            raw_value = vars(phonetic_features).get("stress_alignment")
+                        else:
+                            try:
+                                raw_value = dict(phonetic_features).get("stress_alignment")
+                            except Exception:
+                                raw_value = None
+                try:
+                    rhythm_float = float(raw_value)
+                except (TypeError, ValueError):
+                    return None
+
+                entry["rhythm_score"] = rhythm_float
+                entry["stress_alignment"] = rhythm_float
+                profile_dict = _ensure_feature_profile(entry)
+                profile_dict.setdefault("stress_alignment", rhythm_float)
+                return rhythm_float
+
             filtered_entries: List[Dict] = []
             for entry in deduped:
                 if not _passes_min_confidence(entry):
                     continue
+
+                entry_rhyme = _extract_rhyme_category(entry)
+                rhythm_score = _extract_rhythm_score(entry)
+
                 if filters_active:
                     if cultural_filters:
                         sig = entry.get("cultural_sig")
@@ -1085,13 +1185,6 @@ class RhymeRarityApp:
                         if genre_value is None or normalize_name(str(genre_value)) not in genre_filters:
                             continue
                     if rhyme_type_filters:
-                        entry_rhyme = entry.get("rhyme_type")
-                        if not entry_rhyme and entry.get("phonetic_features"):
-                            entry_rhyme = entry["phonetic_features"].get("rhyme_type")
-                        if not entry_rhyme:
-                            entry_rhyme = (
-                                (entry.get("feature_profile") or {}).get("rhyme_type")
-                            )
                         if not entry_rhyme or normalize_name(str(entry_rhyme)) not in rhyme_type_filters:
                             continue
                     if bradley_filters:
@@ -1111,14 +1204,7 @@ class RhymeRarityApp:
                         if rarity_value < min_rarity_threshold:
                             continue
                     if min_stress_threshold is not None:
-                        stress_value = entry.get("stress_alignment")
-                        if stress_value is None and entry.get("feature_profile"):
-                            stress_value = entry["feature_profile"].get("stress_alignment")
-                        try:
-                            stress_float = float(stress_value) if stress_value is not None else 0.0
-                        except (TypeError, ValueError):
-                            stress_float = 0.0
-                        if stress_float < min_stress_threshold:
+                        if rhythm_score is None or rhythm_score < min_stress_threshold:
                             continue
                     if cadence_focus_normalized:
                         prosody = entry.get("prosody_profile") or {}
@@ -1189,6 +1275,34 @@ class RhymeRarityApp:
             label = str(type_value).replace("_", " ").title()
             return f"   🎼 Rhyme Type: {label}\n"
 
+        def _format_rhythm_line(rhyme_entry: Dict) -> str:
+            rhythm_value = (
+                rhyme_entry.get("rhythm_score")
+                if rhyme_entry.get("rhythm_score") is not None
+                else rhyme_entry.get("stress_alignment")
+            )
+            if rhythm_value is None:
+                profile = rhyme_entry.get("feature_profile") or {}
+                if not isinstance(profile, dict):
+                    try:
+                        profile = dict(profile)
+                    except Exception:
+                        profile = {}
+                rhythm_value = profile.get("stress_alignment")
+            if rhythm_value is None:
+                phonetic_features = rhyme_entry.get("phonetic_features") or {}
+                if not isinstance(phonetic_features, dict):
+                    try:
+                        phonetic_features = dict(phonetic_features)
+                    except Exception:
+                        phonetic_features = {}
+                rhythm_value = phonetic_features.get("stress_alignment")
+            try:
+                rhythm_float = float(rhythm_value)
+            except (TypeError, ValueError):
+                return ""
+            return f"   ♟️ Rhythm Match: {rhythm_float:.2f}\n"
+
         for i, rhyme in enumerate(rhymes[:15], 1):
             result += f"**{i:2d}. {rhyme['target_word'].upper()}**\n"
             source_type = rhyme.get('result_source')
@@ -1212,13 +1326,13 @@ class RhymeRarityApp:
                     syllable_span = feature_profile.get('syllable_span') or rhyme.get('syllable_span')
                     if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
                         result += f"   🔢 Syllable Span: {syllable_span[0]} → {syllable_span[1]}\n"
-                    stress = feature_profile.get('stress_alignment') or rhyme.get('stress_alignment')
-                    if stress is not None:
-                        result += f"   ♟️ Stress Alignment: {float(stress):.2f}\n"
                     assonance = feature_profile.get('assonance_score')
                     consonance = feature_profile.get('consonance_score')
                     if assonance is not None or consonance is not None:
                         result += f"   🔊 Sonic Blend – Assonance: {assonance or 0:.2f} | Consonance: {consonance or 0:.2f}\n"
+                rhythm_line = _format_rhythm_line(rhyme)
+                if rhythm_line:
+                    result += rhythm_line
                 prosody = rhyme.get('prosody_profile') or {}
                 if isinstance(prosody, dict) and prosody:
                     cadence = prosody.get('complexity_tag')
@@ -1258,15 +1372,15 @@ class RhymeRarityApp:
                     device = feature_profile.get('bradley_device') or rhyme.get('bradley_device')
                     if device:
                         result += f"   🎙️ Bradley Device: {str(device).title()}\n"
-                    stress = feature_profile.get('stress_alignment') or rhyme.get('stress_alignment')
-                    if stress is not None:
-                        result += f"   ♟️ Stress Alignment: {float(stress):.2f}\n"
                     internal_score = feature_profile.get('internal_rhyme_score') or rhyme.get('internal_rhyme_score')
                     if internal_score is not None:
                         result += f"   🌀 Internal Rhyme Potential: {float(internal_score):.2f}\n"
                     syllable_span = feature_profile.get('syllable_span') or rhyme.get('syllable_span')
                     if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
                         result += f"   🔢 Syllable Span: {syllable_span[0]} → {syllable_span[1]}\n"
+                rhythm_line = _format_rhythm_line(rhyme)
+                if rhythm_line:
+                    result += rhythm_line
                 prosody = rhyme.get('prosody_profile') or {}
                 if isinstance(prosody, dict) and prosody.get('complexity_tag'):
                     result += f"   🥁 Cadence: {prosody['complexity_tag'].replace('_', ' ').title()}\n"
@@ -1330,9 +1444,6 @@ class RhymeRarityApp:
                     syllable_span = feature_profile.get('syllable_span') or rhyme.get('syllable_span')
                     if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
                         result += f"   🔢 Syllable Span: {syllable_span[0]} → {syllable_span[1]}\n"
-                    stress = feature_profile.get('stress_alignment') or rhyme.get('stress_alignment')
-                    if stress is not None:
-                        result += f"   ♟️ Stress Alignment: {float(stress):.2f}\n"
                     assonance = feature_profile.get('assonance_score')
                     consonance = feature_profile.get('consonance_score')
                     if assonance is not None or consonance is not None:
@@ -1341,6 +1452,9 @@ class RhymeRarityApp:
                 if isinstance(prosody, dict) and prosody.get('complexity_tag'):
                     cadence = prosody['complexity_tag']
                     result += f"   🥁 Cadence: {str(cadence).replace('_', ' ').title()}\n"
+                rhythm_line = _format_rhythm_line(rhyme)
+                if rhythm_line:
+                    result += rhythm_line
                 result += f"   🎵 Context: \"{rhyme['source_context']}\" → \"{rhyme['target_context']}\"\n\n"
 
         return result
@@ -1357,6 +1471,7 @@ class RhymeRarityApp:
             source_filter,
             max_line_distance_choice,
             rhyme_type_filter,
+            rhythm_threshold,
             cadence_focus_choice,
         ):
             """Interface function for Gradio"""
@@ -1387,6 +1502,20 @@ class RhymeRarityApp:
             else:
                 cadence_filter = str(cadence_focus_choice)
 
+            rhythm_threshold_value: Optional[float]
+            if rhythm_threshold in (None, ""):
+                rhythm_threshold_value = None
+            else:
+                try:
+                    rhythm_threshold_value = float(rhythm_threshold)
+                except (TypeError, ValueError):
+                    rhythm_threshold_value = None
+            if rhythm_threshold_value is not None:
+                if rhythm_threshold_value < 0.0:
+                    rhythm_threshold_value = 0.0
+                elif rhythm_threshold_value > 1.0:
+                    rhythm_threshold_value = 1.0
+
             rhymes = self.search_rhymes(
                 word,
                 limit=max_results,
@@ -1396,6 +1525,7 @@ class RhymeRarityApp:
                 result_sources=ensure_list(source_filter),
                 max_line_distance=max_distance,
                 allowed_rhyme_types=ensure_list(rhyme_type_filter),
+                min_stress_alignment=rhythm_threshold_value,
                 cadence_focus=cadence_filter,
             )
             return self.format_rhyme_results(word, rhymes)
@@ -1498,6 +1628,15 @@ class RhymeRarityApp:
                         value=[],
                     )
 
+                    rhythm_threshold_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.0,
+                        step=0.05,
+                        label="Minimum Rhythm Match",
+                        info="Set a minimum stress-alignment score for suggested rhymes",
+                    )
+
                     cadence_dropdown = gr.Dropdown(
                         choices=["Any", "steady", "polysyllabic", "dense"],
                         value="Any",
@@ -1537,6 +1676,7 @@ class RhymeRarityApp:
                     result_source_group,
                     max_line_distance_dropdown,
                     rhyme_type_dropdown,
+                    rhythm_threshold_slider,
                     cadence_dropdown,
                 ],
                 outputs=output
