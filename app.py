@@ -1809,12 +1809,6 @@ class RhymeRarityApp:
                 rarity_formatted = _format_float(rarity_value)
                 if rarity_formatted:
                     score_parts.append(f"Rarity: {rarity_formatted}")
-                stress_alignment = _format_float(entry.get("stress_alignment"))
-                if stress_alignment:
-                    score_parts.append(f"Stress align: {stress_alignment}")
-                internal_score = _format_float(entry.get("internal_rhyme_score"))
-                if internal_score:
-                    score_parts.append(f"Internal rhyme: {internal_score}")
                 if score_parts:
                     lines.append(f"   • Scores: {' | '.join(score_parts)}")
 
@@ -1903,11 +1897,7 @@ class RhymeRarityApp:
             min_conf,
             cultural_filter,
             genre_filter,
-            source_filter,
-            max_line_distance_choice,
             rhyme_type_filter,
-            rhythm_threshold,
-            cadence_focus_choice,
         ):
             """Interface function for Gradio"""
             if not word:
@@ -1922,46 +1912,13 @@ class RhymeRarityApp:
                     return [value] if value else []
                 return [value]
 
-            max_distance: Optional[int]
-            if max_line_distance_choice in (None, "", "Any"):
-                max_distance = None
-            else:
-                try:
-                    max_distance = int(max_line_distance_choice)
-                except (TypeError, ValueError):
-                    max_distance = None
-
-            cadence_filter: Optional[str]
-            if cadence_focus_choice in (None, "", "Any"):
-                cadence_filter = None
-            else:
-                cadence_filter = str(cadence_focus_choice)
-
-            rhythm_threshold_value: Optional[float]
-            if rhythm_threshold in (None, ""):
-                rhythm_threshold_value = None
-            else:
-                try:
-                    rhythm_threshold_value = float(rhythm_threshold)
-                except (TypeError, ValueError):
-                    rhythm_threshold_value = None
-            if rhythm_threshold_value is not None:
-                if rhythm_threshold_value < 0.0:
-                    rhythm_threshold_value = 0.0
-                elif rhythm_threshold_value > 1.0:
-                    rhythm_threshold_value = 1.0
-
             rhymes = self.search_rhymes(
                 word,
                 limit=max_results,
                 min_confidence=min_conf,
                 cultural_significance=ensure_list(cultural_filter),
                 genres=ensure_list(genre_filter),
-                result_sources=ensure_list(source_filter),
-                max_line_distance=max_distance,
                 allowed_rhyme_types=ensure_list(rhyme_type_filter),
-                min_stress_alignment=rhythm_threshold_value,
-                cadence_focus=cadence_filter,
             )
             return self.format_rhyme_results(word, rhymes)
 
@@ -1995,8 +1952,6 @@ class RhymeRarityApp:
 
         cultural_options = sorted(normalized_cultural_labels)
 
-        default_sources = ["phonetic", "cultural"]
-
         # Create Gradio interface
         with gr.Blocks(title="RhymeRarity - Advanced Rhyme Generator", theme=gr.themes.Soft()) as interface:
             gr.Markdown(
@@ -2012,29 +1967,24 @@ class RhymeRarityApp:
                         lines=1,
                     )
 
-                    with gr.Row():
-                        max_results = gr.Slider(
-                            minimum=5,
-                            maximum=50,
-                            value=15,
-                            step=1,
-                            label="Max Results",
-                        )
-
-                        min_confidence = gr.Slider(
-                            minimum=0.5,
-                            maximum=1.0,
-                            value=0.7,
-                            step=0.05,
-                            label="Min Confidence",
-                        )
-
-                    search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
-                    gr.Markdown(
-                        "💡 Enter a word and adjust the filters, then press **Find Rhymes** to discover new lyric pairings."
-                    )
-
                     with gr.Accordion("Advanced filters", open=False):
+                        with gr.Row():
+                            max_results = gr.Slider(
+                                minimum=5,
+                                maximum=50,
+                                value=15,
+                                step=1,
+                                label="Max Results",
+                            )
+
+                            min_confidence = gr.Slider(
+                                minimum=0.5,
+                                maximum=1.0,
+                                value=0.7,
+                                step=0.05,
+                                label="Min Confidence",
+                            )
+
                         with gr.Row():
                             with gr.Column(scale=1, min_width=160):
                                 cultural_dropdown = gr.Dropdown(
@@ -2053,19 +2003,7 @@ class RhymeRarityApp:
                                     value=[],
                                 )
 
-                                max_line_distance_dropdown = gr.Dropdown(
-                                    choices=["Any", "1", "2", "3", "4", "5"],
-                                    value="Any",
-                                    label="Max Line Distance",
-                                )
-
                             with gr.Column(scale=1, min_width=160):
-                                result_source_group = gr.CheckboxGroup(
-                                    choices=["phonetic", "cultural", "anti-llm"],
-                                    value=default_sources,
-                                    label="Result Sources",
-                                )
-
                                 rhyme_type_dropdown = gr.Dropdown(
                                     choices=["perfect", "near", "slant", "eye", "weak"],
                                     multiselect=True,
@@ -2074,30 +2012,10 @@ class RhymeRarityApp:
                                     value=[],
                                 )
 
-                                rhythm_threshold_slider = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.0,
-                                    step=0.05,
-                                    label="Minimum Rhythm Match",
-                                    info="Set a minimum stress-alignment score for suggested rhymes",
-                                )
-
-                                cadence_dropdown = gr.Dropdown(
-                                    choices=["Any", "steady", "polysyllabic", "dense"],
-                                    value="Any",
-                                    label="Rhythm Focus",
-                                    info="Prioritise matches with a particular cadence profile",
-                                )
-
-                    with gr.Accordion("About RhymeRarity", open=False):
-                        gr.Markdown(
-                            "- **1.2M+ authentic rhyme patterns** from real hip-hop lyrics\n"
-                            "- **200+ artists** including Eminem, Kendrick Lamar, Jay-Z, Nas, and more\n"
-                            "- **Cultural intelligence** with full song and artist attribution\n"
-                            "- **Anti-LLM algorithms** that find rhymes large language models miss\n"
-                            "- **Research-backed** phonetic analysis for superior rhyme detection"
-                        )
+                    search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
+                    gr.Markdown(
+                        "💡 Enter a word and adjust the filters, then press **Find Rhymes** to discover new lyric pairings."
+                    )
 
                 with gr.Column(scale=5, min_width=360):
                     gr.Markdown("### Rhyme Results")
@@ -2113,11 +2031,7 @@ class RhymeRarityApp:
                     min_confidence,
                     cultural_dropdown,
                     genre_dropdown,
-                    result_source_group,
-                    max_line_distance_dropdown,
                     rhyme_type_dropdown,
-                    rhythm_threshold_slider,
-                    cadence_dropdown,
                 ],
                 outputs=output,
             )
