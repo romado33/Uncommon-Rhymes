@@ -1,3 +1,13 @@
+---
+title: "RhymeRarity"
+emoji: "🎤"
+colorFrom: "purple"
+colorTo: "indigo"
+sdk: "gradio"
+sdk_version: "3.44.0"
+app_file: "app.py"
+---
+
 # RhymeRarity
 
 RhymeRarity is an experimental research project that explores uncommon rhyme patterns drawn from authentic hip-hop lyrics. The application bundles three cooperating engines that surface culturally grounded rhymes which are difficult for large language models to produce on demand:
