@@ -58,7 +58,14 @@ except ImportError as e:
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def generate_anti_llm_patterns(self, word):
+        def generate_anti_llm_patterns(
+            self,
+            word,
+            limit=20,
+            module1_seeds=None,
+            seed_signatures=None,
+            delivered_words=None,
+        ):
             return []
 
     class CulturalIntelligenceEngine:
@@ -380,6 +387,9 @@ class RhymeRarityApp:
             }
 
             phonetic_entries: List[Dict] = []
+            module1_seed_payload: List[Dict] = []
+            aggregated_seed_signatures: Set[str] = set(source_signature_set)
+            delivered_words_set: Set[str] = set()
             if include_phonetic and not filters_active:
                 phonetic_matches = cmu_candidates[: max(limit, 1)]
                 rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
@@ -482,6 +492,60 @@ class RhymeRarityApp:
                     ),
                     reverse=True,
                 )
+
+                delivered_words_set = {
+                    str(item.get("target_word", "")).strip().lower()
+                    for item in phonetic_entries
+                    if item.get("target_word")
+                }
+
+                rare_seed_candidates: List[Dict] = []
+                for entry in phonetic_entries:
+                    target_value = entry.get("target_word")
+                    if not target_value:
+                        continue
+
+                    rarity_value = entry.get("rarity_score")
+                    try:
+                        rarity_float = float(rarity_value) if rarity_value is not None else 0.0
+                    except (TypeError, ValueError):
+                        rarity_float = 0.0
+
+                    combined_value = entry.get("combined_score", entry.get("confidence", 0.0))
+                    try:
+                        combined_float = float(combined_value) if combined_value is not None else 0.0
+                    except (TypeError, ValueError):
+                        combined_float = 0.0
+
+                    signature_values = entry.get("target_rhyme_signatures") or entry.get("matched_signatures")
+                    if signature_values:
+                        signature_set = {str(sig) for sig in signature_values if sig}
+                    else:
+                        signature_set = _fallback_signature(str(target_value))
+
+                    aggregated_seed_signatures.update(signature_set)
+
+                    rare_seed_candidates.append(
+                        {
+                            "word": target_value,
+                            "rarity": rarity_float,
+                            "combined": combined_float,
+                            "signatures": list(signature_set),
+                        }
+                    )
+
+                rare_seed_candidates.sort(
+                    key=lambda payload: (payload.get("rarity", 0.0), payload.get("combined", 0.0)),
+                    reverse=True,
+                )
+
+                max_seed_count = max(3, min(6, limit))
+                for candidate in rare_seed_candidates:
+                    if len(module1_seed_payload) >= max_seed_count:
+                        break
+                    if candidate.get("rarity", 0.0) <= 0 and module1_seed_payload:
+                        continue
+                    module1_seed_payload.append(candidate)
 
             fetch_limit = max(limit * 2, limit, 1)
 
@@ -706,6 +770,9 @@ class RhymeRarityApp:
                 anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
                     source_word,
                     limit=limit,
+                    module1_seeds=module1_seed_payload,
+                    seed_signatures=aggregated_seed_signatures,
+                    delivered_words=delivered_words_set,
                 )
                 for pattern in anti_patterns:
                     anti_llm_entries.append({
