@@ -1081,6 +1081,17 @@ class RhymeRarityApp:
         result = f"🎯 **TARGET RHYMES for '{source_word.upper()}':**\n"
         result += "=" * 50 + "\n\n"
 
+        def _format_rhyme_type_line(rhyme_entry: Dict) -> str:
+            type_value = (
+                rhyme_entry.get("rhyme_type")
+                or (rhyme_entry.get("phonetic_features") or {}).get("rhyme_type")
+                or (rhyme_entry.get("feature_profile") or {}).get("rhyme_type")
+            )
+            if not type_value:
+                return ""
+            label = str(type_value).replace("_", " ").title()
+            return f"   🎼 Rhyme Type: {label}\n"
+
         for i, rhyme in enumerate(rhymes[:15], 1):
             result += f"**{i:2d}. {rhyme['target_word'].upper()}**\n"
             source_type = rhyme.get('result_source')
@@ -1089,6 +1100,7 @@ class RhymeRarityApp:
                 result += f"   🏷️ Origin: 📚 {origin}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
                 result += f"   📊 Phonetic Score: {rhyme['phonetic_sim']:.2f}\n"
+                result += _format_rhyme_type_line(rhyme)
                 rarity_value = rhyme.get('rarity_score')
                 if rarity_value is not None:
                     result += f"   🌟 Rarity Score: {rarity_value:.2f}\n"
@@ -1132,6 +1144,8 @@ class RhymeRarityApp:
                 rarity = rhyme.get('rarity_score')
                 if rarity is not None:
                     result += f"   🌟 Rarity Score: {rarity:.2f}\n"
+
+                result += _format_rhyme_type_line(rhyme)
 
                 weakness = rhyme.get('llm_weakness_type')
                 if weakness:
@@ -1202,6 +1216,8 @@ class RhymeRarityApp:
                 if cultural_highlights:
                     result += f"   🌍 Cultural Context: {' | '.join(cultural_highlights)}\n"
 
+                result += _format_rhyme_type_line(rhyme)
+
                 if isinstance(context_info, dict):
                     styles = context_info.get('style_characteristics')
                     if styles:
@@ -1243,6 +1259,8 @@ class RhymeRarityApp:
             genre_filter,
             source_filter,
             max_line_distance_choice,
+            rhyme_type_filter,
+            cadence_focus_choice,
         ):
             """Interface function for Gradio"""
             if not word:
@@ -1266,6 +1284,12 @@ class RhymeRarityApp:
                 except (TypeError, ValueError):
                     max_distance = None
 
+            cadence_filter: Optional[str]
+            if cadence_focus_choice in (None, "", "Any"):
+                cadence_filter = None
+            else:
+                cadence_filter = str(cadence_focus_choice)
+
             rhymes = self.search_rhymes(
                 word,
                 limit=max_results,
@@ -1274,6 +1298,8 @@ class RhymeRarityApp:
                 genres=ensure_list(genre_filter),
                 result_sources=ensure_list(source_filter),
                 max_line_distance=max_distance,
+                allowed_rhyme_types=ensure_list(rhyme_type_filter),
+                cadence_focus=cadence_filter,
             )
             return self.format_rhyme_results(word, rhymes)
 
@@ -1351,6 +1377,21 @@ class RhymeRarityApp:
                         label="Result Sources",
                     )
 
+                    rhyme_type_dropdown = gr.Dropdown(
+                        choices=["perfect", "near", "slant", "eye", "weak"],
+                        multiselect=True,
+                        label="Rhyme Type",
+                        info="Limit to specific rhyme categories",
+                        value=[],
+                    )
+
+                    cadence_dropdown = gr.Dropdown(
+                        choices=["Any", "steady", "polysyllabic", "dense"],
+                        value="Any",
+                        label="Rhythm Focus",
+                        info="Prioritise matches with a particular cadence profile",
+                    )
+
                     max_line_distance_dropdown = gr.Dropdown(
                         choices=["Any", "1", "2", "3", "4", "5"],
                         value="Any",
@@ -1369,11 +1410,11 @@ class RhymeRarityApp:
             # Example inputs
             gr.Examples(
                 examples=[
-                    ["love", 15, 0.8, [], [], default_sources, "Any"],
-                    ["mind", 15, 0.8, [], [], default_sources, "Any"],
-                    ["flow", 15, 0.8, [], [], default_sources, "Any"],
-                    ["money", 15, 0.8, [], [], default_sources, "Any"],
-                    ["time", 15, 0.8, [], [], default_sources, "Any"]
+                    ["love", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
+                    ["mind", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
+                    ["flow", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
+                    ["money", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
+                    ["time", 15, 0.8, [], [], default_sources, "Any", [], "Any"]
                 ],
                 inputs=[
                     word_input,
@@ -1383,6 +1424,8 @@ class RhymeRarityApp:
                     genre_dropdown,
                     result_source_group,
                     max_line_distance_dropdown,
+                    rhyme_type_dropdown,
+                    cadence_dropdown,
                 ],
                 label="Try these examples"
             )
@@ -1397,6 +1440,8 @@ class RhymeRarityApp:
                     genre_dropdown,
                     result_source_group,
                     max_line_distance_dropdown,
+                    rhyme_type_dropdown,
+                    cadence_dropdown,
                 ],
                 outputs=output
             )
