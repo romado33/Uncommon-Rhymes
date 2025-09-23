@@ -1,4 +1,5 @@
 from module3_enhanced_cultural_database import CulturalIntelligenceEngine
+from syllable_utils import estimate_syllable_count
 
 
 def test_get_cultural_context_handles_none_artist(tmp_path):
@@ -13,3 +14,41 @@ def test_get_cultural_context_handles_none_artist(tmp_path):
 
     assert context.artist == ""
     assert context.song == "Test Song"
+
+
+class DummyAnalyzer:
+    def __init__(self, syllable_value: int) -> None:
+        self.syllable_value = syllable_value
+
+    def estimate_syllables(self, word: str) -> int:  # pragma: no cover - simple pass-through
+        return self.syllable_value
+
+
+class ExplodingAnalyzer:
+    def estimate_syllables(self, word: str) -> int:
+        raise RuntimeError("boom")
+
+
+def test_cultural_engine_estimate_syllables_prefers_attached_analyzer(tmp_path):
+    engine = CulturalIntelligenceEngine(
+        db_path=str(tmp_path / "patterns.db"),
+        phonetic_analyzer=DummyAnalyzer(7),
+    )
+
+    assert engine._estimate_syllables("anything") == 7
+
+
+def test_cultural_engine_estimate_syllables_falls_back_to_helper(tmp_path):
+    engine = CulturalIntelligenceEngine(db_path=str(tmp_path / "patterns.db"))
+
+    assert engine._estimate_syllables("flow") == estimate_syllable_count("flow")
+    assert engine._estimate_syllables("") == 0
+
+
+def test_cultural_engine_estimate_syllables_handles_analyzer_error(tmp_path):
+    engine = CulturalIntelligenceEngine(
+        db_path=str(tmp_path / "patterns.db"),
+        phonetic_analyzer=ExplodingAnalyzer(),
+    )
+
+    assert engine._estimate_syllables("flow") == estimate_syllable_count("flow")
