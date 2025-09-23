@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Dict, List, Optional, Set
 
-from profile_utils import normalize_profile_dict
+from rhyme_rarity.utils.profile import normalize_profile_dict
 
 from .analytics import (
     aggregate_cultural_distribution,

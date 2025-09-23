@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER
 from .feature_profile import (

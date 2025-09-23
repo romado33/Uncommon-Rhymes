@@ -3,7 +3,7 @@ from rhyme_rarity.core import (
     extract_phrase_components,
     get_cmu_rhymes,
 )
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 
 def test_enhanced_phonetic_analyzer_uses_shared_syllable_helper():

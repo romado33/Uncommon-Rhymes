@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from anti_llm import AntiLLMPattern, AntiLLMRhymeEngine, SeedCandidate, safe_float
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 __all__ = [
     "AntiLLMRhymeEngine",

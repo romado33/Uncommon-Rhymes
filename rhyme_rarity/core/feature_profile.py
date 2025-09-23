@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 try:  # pragma: no cover - optional dependency
     import pronouncing  # type: ignore
