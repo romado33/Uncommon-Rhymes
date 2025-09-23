@@ -253,7 +253,14 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
     )
 
     class StubAntiLLMEngine:
-        def generate_anti_llm_patterns(self, word, limit=20):
+        def generate_anti_llm_patterns(
+            self,
+            word,
+            limit=20,
+            module1_seeds=None,
+            seed_signatures=None,
+            delivered_words=None,
+        ):
             return [sentinel_pattern]
 
     app.anti_llm_engine = StubAntiLLMEngine()
