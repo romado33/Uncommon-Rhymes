@@ -16,6 +16,8 @@ import math
 import sqlite3
 from collections import Counter
 
+from syllable_utils import estimate_syllable_count
+
 VOWEL_PHONEMES: Set[str] = {
     "AA",
     "AE",
@@ -528,15 +530,8 @@ class EnhancedPhoneticAnalyzer:
     
     def _count_syllables(self, word: str) -> int:
         """Estimate syllable count in a word"""
-        word = word.lower()
-        vowel_groups = re.findall(r'[aeiou]+', word)
-        syllable_count = len(vowel_groups)
 
-        # Adjust for silent 'e'
-        if word.endswith('e') and syllable_count > 1:
-            syllable_count -= 1
-
-        return max(1, syllable_count)  # Minimum 1 syllable
+        return estimate_syllable_count(word)
 
     # ------------------------------------------------------------------
     # Research-driven feature extraction
