@@ -1,0 +1,306 @@
+"""Shared demo dataset used by the RhymeRarity demo application.
+
+The dataset contains a small set of rhyme patterns that seed the demo
+SQLite database as well as approximate frequency information for the
+rarity map fallback. Centralising the data ensures the demo database and
+frequency defaults stay in sync.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, Iterator, Tuple
+
+DEMO_RHYME_PATTERN_COLUMNS: Tuple[str, ...] = (
+    "pattern",
+    "source_word",
+    "target_word",
+    "artist",
+    "song_title",
+    "genre",
+    "line_distance",
+    "confidence_score",
+    "phonetic_similarity",
+    "cultural_significance",
+    "source_context",
+    "target_context",
+)
+
+DEMO_RHYME_PATTERNS = [
+    {
+        "pattern": "love / above",
+        "source_word": "love",
+        "target_word": "above",
+        "artist": "Drake",
+        "song_title": "Headlines",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.95,
+        "phonetic_similarity": 0.98,
+        "cultural_significance": "mainstream",
+        "source_context": "All about that love",
+        "target_context": "Looking from above",
+        "source_frequency": 42,
+        "target_frequency": 21,
+    },
+    {
+        "pattern": "mind / find",
+        "source_word": "mind",
+        "target_word": "find",
+        "artist": "Eminem",
+        "song_title": "Lose Yourself",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.92,
+        "phonetic_similarity": 0.96,
+        "cultural_significance": "cultural_icon",
+        "source_context": "State of mind",
+        "target_context": "What you gonna find",
+        "source_frequency": 18,
+        "target_frequency": 17,
+    },
+    {
+        "pattern": "night / light",
+        "source_word": "night",
+        "target_word": "light",
+        "artist": "Kendrick Lamar",
+        "song_title": "ADHD",
+        "genre": "hip-hop",
+        "line_distance": 2,
+        "confidence_score": 0.89,
+        "phonetic_similarity": 0.94,
+        "cultural_significance": "artistic",
+        "source_context": "In the night",
+        "target_context": "See the light",
+        "source_frequency": 13,
+        "target_frequency": 12,
+    },
+    {
+        "pattern": "flow / go",
+        "source_word": "flow",
+        "target_word": "go",
+        "artist": "Jay-Z",
+        "song_title": "Izzo",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.87,
+        "phonetic_similarity": 0.92,
+        "cultural_significance": "classic",
+        "source_context": "Feel the flow",
+        "target_context": "Watch me go",
+        "source_frequency": 15,
+        "target_frequency": 14,
+    },
+    {
+        "pattern": "time / rhyme",
+        "source_word": "time",
+        "target_word": "rhyme",
+        "artist": "Nas",
+        "song_title": "NY State of Mind",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.91,
+        "phonetic_similarity": 0.95,
+        "cultural_significance": "legendary",
+        "source_context": "In due time",
+        "target_context": "Perfect rhyme",
+        "source_frequency": 10,
+        "target_frequency": 8,
+    },
+    {
+        "pattern": "money / honey",
+        "source_word": "money",
+        "target_word": "honey",
+        "artist": "Biggie",
+        "song_title": "Juicy",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.88,
+        "phonetic_similarity": 0.91,
+        "cultural_significance": "classic",
+        "source_context": "Stack that money",
+        "target_context": "Sweet like honey",
+        "source_frequency": 11,
+        "target_frequency": 9,
+    },
+    {
+        "pattern": "street / beat",
+        "source_word": "street",
+        "target_word": "beat",
+        "artist": "50 Cent",
+        "song_title": "In Da Club",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.93,
+        "phonetic_similarity": 0.97,
+        "cultural_significance": "mainstream",
+        "source_context": "From the street",
+        "target_context": "Feel the beat",
+        "source_frequency": 5,
+        "target_frequency": 5,
+    },
+    {
+        "pattern": "pain / rain",
+        "source_word": "pain",
+        "target_word": "rain",
+        "artist": "Tupac",
+        "song_title": "Dear Mama",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.90,
+        "phonetic_similarity": 0.93,
+        "cultural_significance": "emotional",
+        "source_context": "Through the pain",
+        "target_context": "Like the rain",
+        "source_frequency": 7,
+        "target_frequency": 7,
+    },
+    {
+        "pattern": "game / fame",
+        "source_word": "game",
+        "target_word": "fame",
+        "artist": "The Game",
+        "song_title": "Dreams",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.86,
+        "phonetic_similarity": 0.89,
+        "cultural_significance": "ambitious",
+        "source_context": "In this game",
+        "target_context": "Chasing fame",
+        "source_frequency": 5,
+        "target_frequency": 5,
+    },
+    {
+        "pattern": "real / feel",
+        "source_word": "real",
+        "target_word": "feel",
+        "artist": "J. Cole",
+        "song_title": "Middle Child",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.84,
+        "phonetic_similarity": 0.87,
+        "cultural_significance": "authentic",
+        "source_context": "Keep it real",
+        "target_context": "How you feel",
+        "source_frequency": 6,
+        "target_frequency": 6,
+    },
+    {
+        "pattern": "way / day",
+        "source_word": "way",
+        "target_word": "day",
+        "artist": "Kanye West",
+        "song_title": "Through The Wire",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.85,
+        "phonetic_similarity": 0.88,
+        "cultural_significance": "innovative",
+        "source_context": "Show the way",
+        "target_context": "Brand new day",
+        "source_frequency": 5,
+        "target_frequency": 5,
+    },
+    {
+        "pattern": "life / knife",
+        "source_word": "life",
+        "target_word": "knife",
+        "artist": "Eminem",
+        "song_title": "Stan",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.89,
+        "phonetic_similarity": 0.92,
+        "cultural_significance": "dark",
+        "source_context": "Take my life",
+        "target_context": "Sharp as knife",
+        "source_frequency": 4,
+        "target_frequency": 3,
+    },
+    {
+        "pattern": "back / track",
+        "source_word": "back",
+        "target_word": "track",
+        "artist": "LL Cool J",
+        "song_title": "Mama Said Knock You Out",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.91,
+        "phonetic_similarity": 0.94,
+        "cultural_significance": "classic",
+        "source_context": "Got your back",
+        "target_context": "On the right track",
+        "source_frequency": 6,
+        "target_frequency": 6,
+    },
+    {
+        "pattern": "soul / goal",
+        "source_word": "soul",
+        "target_word": "goal",
+        "artist": "Lauryn Hill",
+        "song_title": "Doo Wop",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.87,
+        "phonetic_similarity": 0.90,
+        "cultural_significance": "conscious",
+        "source_context": "Search my soul",
+        "target_context": "Reach that goal",
+        "source_frequency": 4,
+        "target_frequency": 3,
+    },
+    {
+        "pattern": "word / heard",
+        "source_word": "word",
+        "target_word": "heard",
+        "artist": "Rakim",
+        "song_title": "Paid In Full",
+        "genre": "hip-hop",
+        "line_distance": 1,
+        "confidence_score": 0.88,
+        "phonetic_similarity": 0.91,
+        "cultural_significance": "foundational",
+        "source_context": "Speak the word",
+        "target_context": "What you heard",
+        "source_frequency": 4,
+        "target_frequency": 4,
+    },
+]
+
+
+def iter_demo_rhyme_rows() -> Iterator[Tuple[object, ...]]:
+    """Yield demo rhyme rows matching :data:`DEMO_RHYME_PATTERN_COLUMNS`."""
+
+    for entry in DEMO_RHYME_PATTERNS:
+        yield tuple(entry[column] for column in DEMO_RHYME_PATTERN_COLUMNS)
+
+
+def build_demo_frequencies() -> Dict[str, int]:
+    """Return fallback frequency counts derived from the demo dataset."""
+
+    frequency_map: Dict[str, int] = {}
+    for entry in DEMO_RHYME_PATTERNS:
+        for word_key, count_key in (
+            ("source_word", "source_frequency"),
+            ("target_word", "target_frequency"),
+        ):
+            word = str(entry.get(word_key, "")).strip().lower()
+            if not word:
+                continue
+            try:
+                count = int(entry.get(count_key, 0))
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            frequency_map[word] = max(frequency_map.get(word, 0), count)
+    return frequency_map
+
+
+__all__ = [
+    "DEMO_RHYME_PATTERN_COLUMNS",
+    "DEMO_RHYME_PATTERNS",
+    "iter_demo_rhyme_rows",
+    "build_demo_frequencies",
+]

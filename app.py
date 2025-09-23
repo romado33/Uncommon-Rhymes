@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import types
 import re
 
+from demo_data import DEMO_RHYME_PATTERNS, iter_demo_rhyme_rows
+
 # Import our custom modules
 try:
     from module1_enhanced_core_phonetic import (
@@ -237,34 +239,15 @@ class RhymeRarityApp:
             )
         ''')
         
-        # Add sample rap rhyme data for demonstration
-        sample_data = [
-            ("love / above", "love", "above", "Drake", "Headlines", "hip-hop", 1, 0.95, 0.98, "mainstream", "All about that love", "Looking from above"),
-            ("mind / find", "mind", "find", "Eminem", "Lose Yourself", "hip-hop", 1, 0.92, 0.96, "cultural_icon", "State of mind", "What you gonna find"),
-            ("night / light", "night", "light", "Kendrick Lamar", "ADHD", "hip-hop", 2, 0.89, 0.94, "artistic", "In the night", "See the light"),
-            ("flow / go", "flow", "go", "Jay-Z", "Izzo", "hip-hop", 1, 0.87, 0.92, "classic", "Feel the flow", "Watch me go"),
-            ("time / rhyme", "time", "rhyme", "Nas", "NY State of Mind", "hip-hop", 1, 0.91, 0.95, "legendary", "In due time", "Perfect rhyme"),
-            ("money / honey", "money", "honey", "Biggie", "Juicy", "hip-hop", 1, 0.88, 0.91, "classic", "Stack that money", "Sweet like honey"),
-            ("street / beat", "street", "beat", "50 Cent", "In Da Club", "hip-hop", 1, 0.93, 0.97, "mainstream", "From the street", "Feel the beat"),
-            ("pain / rain", "pain", "rain", "Tupac", "Dear Mama", "hip-hop", 1, 0.90, 0.93, "emotional", "Through the pain", "Like the rain"),
-            ("game / fame", "game", "fame", "The Game", "Dreams", "hip-hop", 1, 0.86, 0.89, "ambitious", "In this game", "Chasing fame"),
-            ("real / feel", "real", "feel", "J. Cole", "Middle Child", "hip-hop", 1, 0.84, 0.87, "authentic", "Keep it real", "How you feel"),
-            ("way / day", "way", "day", "Kanye West", "Through The Wire", "hip-hop", 1, 0.85, 0.88, "innovative", "Show the way", "Brand new day"),
-            ("life / knife", "life", "knife", "Eminem", "Stan", "hip-hop", 1, 0.89, 0.92, "dark", "Take my life", "Sharp as knife"),
-            ("back / track", "back", "track", "LL Cool J", "Mama Said Knock You Out", "hip-hop", 1, 0.91, 0.94, "classic", "Got your back", "On the right track"),
-            ("soul / goal", "soul", "goal", "Lauryn Hill", "Doo Wop", "hip-hop", 1, 0.87, 0.90, "conscious", "Search my soul", "Reach that goal"),
-            ("word / heard", "word", "heard", "Rakim", "Paid In Full", "hip-hop", 1, 0.88, 0.91, "foundational", "Speak the word", "What you heard")
-        ]
-        
         cursor.executemany(
             "INSERT INTO song_rhyme_patterns (pattern, source_word, target_word, artist, song_title, genre, line_distance, confidence_score, phonetic_similarity, cultural_significance, source_context, target_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            sample_data
+            iter_demo_rhyme_rows()
         )
-        
+
         conn.commit()
         conn.close()
 
-        print(f"✅ Demo database created with {len(sample_data)} sample patterns")
+        print(f"✅ Demo database created with {len(DEMO_RHYME_PATTERNS)} sample patterns")
         self._refresh_rarity_map()
     
 
