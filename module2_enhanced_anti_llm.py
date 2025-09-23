@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 import re
 
+from module1_enhanced_core_phonetic import DEFAULT_RARITY_MAP, WordRarityMap
+
 @dataclass
 class AntiLLMPattern:
     """Represents a rhyme pattern designed to challenge LLM capabilities"""
@@ -46,9 +48,22 @@ class AntiLLMRhymeEngine:
     Exploits documented weaknesses in large language model rhyme generation
     """
     
-    def __init__(self, db_path: str = "patterns.db", phonetic_analyzer: Optional[Any] = None):
+    def __init__(
+        self,
+        db_path: str = "patterns.db",
+        phonetic_analyzer: Optional[Any] = None,
+        rarity_map: Optional[WordRarityMap] = None,
+    ):
         self.db_path = db_path
         self.phonetic_analyzer = phonetic_analyzer
+        self._rarity_map: Optional[Any] = None
+
+        if rarity_map is not None and hasattr(rarity_map, "get_rarity"):
+            self._rarity_map = rarity_map
+        else:
+            analyzer_map = getattr(self.phonetic_analyzer, "rarity_map", None)
+            if hasattr(analyzer_map, "get_rarity"):
+                self._rarity_map = analyzer_map
 
         # Initialize anti-LLM strategies
         self.llm_weaknesses = self._initialize_llm_weaknesses()
@@ -76,6 +91,9 @@ class AntiLLMRhymeEngine:
         """Attach an analyzer so that generated patterns expose feature profiles."""
 
         self.phonetic_analyzer = analyzer
+        rarity_map = getattr(analyzer, "rarity_map", None)
+        if hasattr(rarity_map, "get_rarity"):
+            self._rarity_map = rarity_map
     
     def _initialize_llm_weaknesses(self) -> Dict[str, Dict]:
         """Initialize known LLM weaknesses in rhyme generation"""
@@ -198,6 +216,33 @@ class AntiLLMRhymeEngine:
             "assonance": profile.get("assonance_score"),
             "consonance": profile.get("consonance_score"),
         }
+
+    def _get_rarity_map(self) -> Any:
+        rarity_map = getattr(self, "_rarity_map", None)
+        if hasattr(rarity_map, "get_rarity"):
+            return rarity_map
+
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        analyzer_map = getattr(analyzer, "rarity_map", None)
+        if hasattr(analyzer_map, "get_rarity"):
+            self._rarity_map = analyzer_map
+            return analyzer_map
+
+        fallback = WordRarityMap()
+        self._rarity_map = fallback
+        return fallback
+
+    def _get_word_rarity(self, word: str) -> float:
+        rarity_map = self._get_rarity_map()
+        try:
+            rarity = rarity_map.get_rarity(word)
+        except Exception:
+            rarity = DEFAULT_RARITY_MAP.get_rarity(word)
+
+        try:
+            return float(rarity)
+        except (TypeError, ValueError):
+            return float(DEFAULT_RARITY_MAP.get_rarity(word))
     
     def generate_anti_llm_patterns(
         self,
@@ -327,7 +372,7 @@ class AntiLLMRhymeEngine:
         patterns = []
         for target, artist, song, confidence, cultural_sig in results:
             # Calculate rarity score based on word frequency heuristics
-            rarity_score = self._calculate_word_rarity(target)
+            rarity_score = self._get_word_rarity(target)
             
             # Boost score if it's from underground/regional artists
             cultural_multiplier = self.cultural_depth_weights.get(cultural_sig, 1.0)
@@ -538,7 +583,7 @@ class AntiLLMRhymeEngine:
             seen.add(normalized_word)
 
             if rarity_value <= 0:
-                rarity_value = self._calculate_word_rarity(normalized_word)
+                rarity_value = self._get_word_rarity(normalized_word)
 
             normalized.append(
                 SeedCandidate(
@@ -731,7 +776,7 @@ class AntiLLMRhymeEngine:
                 ):
                     continue
 
-                base_rarity = self._calculate_word_rarity(normalized_target)
+                base_rarity = self._get_word_rarity(normalized_target)
                 base_rarity = max(
                     base_rarity,
                     self._safe_float(candidate.get("rarity"), default=0.0),
@@ -945,32 +990,6 @@ class AntiLLMRhymeEngine:
 
         return fingerprint
 
-    def _calculate_word_rarity(self, word: str) -> float:
-        """Estimate word rarity based on linguistic features"""
-        rarity_factors = 0.0
-        
-        # Length factor (longer words tend to be rarer)
-        if len(word) >= 7:
-            rarity_factors += 1.5
-        elif len(word) >= 5:
-            rarity_factors += 1.0
-        
-        # Complex consonant clusters
-        consonant_clusters = len(re.findall(r'[bcdfghjklmnpqrstvwxyz]{3,}', word))
-        rarity_factors += consonant_clusters * 0.5
-        
-        # Uncommon letter combinations
-        rare_combinations = ['xh', 'qw', 'kn', 'gn', 'wr', 'mb', 'bt']
-        for combo in rare_combinations:
-            if combo in word:
-                rarity_factors += 0.8
-        
-        # Silent letters (indicator of complexity)
-        if word.endswith('e') and len(word) > 4:
-            rarity_factors += 0.3
-        
-        return min(rarity_factors, 4.0)  # Cap at maximum rarity
-    
     def _analyze_phonological_complexity(self, word1: str, word2: str) -> float:
         """Analyze phonological complexity that challenges LLMs"""
         complexity = 0.0
