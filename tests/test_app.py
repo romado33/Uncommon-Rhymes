@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import app as app_module
 from app import RhymeRarityApp
 from module2_enhanced_anti_llm import AntiLLMPattern
 
@@ -283,6 +284,92 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
     assert "Rarity Score: 4.20" in formatted
     assert "LLM Weakness: Rare Word Combinations" in formatted
     assert "Cultural Depth: Sentinel Depth" in formatted
+
+
+def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+    app.cultural_engine = None
+
+    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
+        return [
+            {"word": "alpha", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
+            {"word": "beta", "similarity": 0.82, "combined": 0.6, "rarity": 0.4},
+        ]
+
+    monkeypatch.setattr(app_module, "get_cmu_rhymes", stub_cmu_rhymes)
+
+    results = app.search_rhymes(
+        "love",
+        limit=5,
+        min_confidence=0.9,
+        result_sources=["phonetic"],
+    )
+
+    assert results, "Expected high-confidence phonetic suggestions"
+    targets = {entry["target_word"] for entry in results}
+    assert "alpha" in targets
+    assert "beta" not in targets
+    assert all(
+        float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
+        for entry in results
+    )
+
+
+def test_min_confidence_filters_anti_llm_candidates(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+    app.cultural_engine = None
+
+    low_conf_pattern = AntiLLMPattern(
+        source_word="love",
+        target_word="gamma",
+        rarity_score=2.5,
+        cultural_depth="Low",
+        llm_weakness_type="rare_word_combinations",
+        confidence=0.5,
+    )
+    high_conf_pattern = AntiLLMPattern(
+        source_word="love",
+        target_word="delta",
+        rarity_score=3.1,
+        cultural_depth="High",
+        llm_weakness_type="rare_word_combinations",
+        confidence=0.95,
+    )
+
+    class StubAntiLLMEngine:
+        def generate_anti_llm_patterns(
+            self,
+            word,
+            limit=20,
+            module1_seeds=None,
+            seed_signatures=None,
+            delivered_words=None,
+        ):
+            return [low_conf_pattern, high_conf_pattern]
+
+    app.anti_llm_engine = StubAntiLLMEngine()
+
+    results = app.search_rhymes(
+        "love",
+        limit=5,
+        min_confidence=0.9,
+        result_sources=["anti-llm"],
+    )
+
+    assert results, "Expected at least one high-confidence anti-LLM suggestion"
+    targets = {entry["target_word"] for entry in results}
+    assert "delta" in targets
+    assert "gamma" not in targets
+    assert all(
+        float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
+        for entry in results
+    )
 
 
 def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
