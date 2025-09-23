@@ -43,6 +43,96 @@ except ImportError:  # pragma: no cover - gracefully handle missing package
     pronouncing = None  # type: ignore
 
 
+@dataclass
+class PhraseComponents:
+    """Container describing the phonetic anchor for a phrase."""
+
+    original: str
+    tokens: List[str]
+    normalized_tokens: List[str]
+    normalized_phrase: str
+    anchor: str
+    anchor_display: str
+    anchor_index: Optional[int]
+    syllable_counts: List[int]
+    total_syllables: int
+    anchor_pronunciations: List[List[str]]
+
+
+def extract_phrase_components(
+    phrase: str,
+    cmu_loader: Optional["CMUDictLoader"] = None,
+) -> PhraseComponents:
+    """Return the final stressed token and syllable summary for ``phrase``."""
+
+    original = phrase or ""
+    token_pattern = re.compile(r"[A-Za-z']+")
+    tokens = [match.group(0) for match in token_pattern.finditer(original)]
+    normalized_tokens = [token.lower() for token in tokens if token]
+    normalized_phrase = " ".join(normalized_tokens)
+
+    syllable_counts = [estimate_syllable_count(token) for token in normalized_tokens]
+    fallback_word = normalized_phrase or original.strip() or ""
+    total_syllables = sum(syllable_counts) or estimate_syllable_count(fallback_word)
+
+    anchor_index: Optional[int] = None
+    anchor_pronunciations: List[List[str]] = []
+    fallback_index: Optional[int] = len(normalized_tokens) - 1 if normalized_tokens else None
+    fallback_pronunciations: List[List[str]] = []
+
+    def _phones_with_stress(phones: Iterable[str]) -> bool:
+        return any(re.search(r"[12]", phone) for phone in phones)
+
+    for idx in range(len(normalized_tokens) - 1, -1, -1):
+        token = normalized_tokens[idx]
+        pronunciations: List[List[str]] = []
+
+        if cmu_loader is not None:
+            try:
+                pronunciations = cmu_loader.get_pronunciations(token)
+            except Exception:
+                pronunciations = []
+
+        if not pronunciations and pronouncing is not None:
+            try:
+                pronunciations = [phones.split() for phones in pronouncing.phones_for_word(token)]
+            except Exception:
+                pronunciations = []
+
+        if pronunciations and not fallback_pronunciations:
+            fallback_index = idx
+            fallback_pronunciations = pronunciations
+
+        if pronunciations and any(_phones_with_stress(phones) for phones in pronunciations):
+            anchor_index = idx
+            anchor_pronunciations = pronunciations
+            break
+
+    if anchor_index is None:
+        anchor_index = fallback_index
+        anchor_pronunciations = fallback_pronunciations
+
+    anchor = normalized_tokens[anchor_index] if anchor_index is not None else ""
+    anchor_display = (
+        tokens[anchor_index]
+        if anchor_index is not None and 0 <= anchor_index < len(tokens)
+        else ""
+    )
+
+    return PhraseComponents(
+        original=original,
+        tokens=tokens,
+        normalized_tokens=normalized_tokens,
+        normalized_phrase=normalized_phrase,
+        anchor=anchor,
+        anchor_display=anchor_display,
+        anchor_index=anchor_index,
+        syllable_counts=syllable_counts,
+        total_syllables=total_syllables,
+        anchor_pronunciations=anchor_pronunciations,
+    )
+
+
 class CMUDictLoader:
     """Lazy loader for the CMU pronouncing dictionary.
 
@@ -387,14 +477,16 @@ class EnhancedPhoneticAnalyzer:
         """
         if not word1 or not word2:
             return 0.0
-        
-        if word1.lower() == word2.lower():
-            return 1.0
-        
-        # Clean words
+
         clean1 = self._clean_word(word1)
         clean2 = self._clean_word(word2)
-        
+
+        if not clean1 or not clean2:
+            return 0.0
+
+        if clean1 == clean2:
+            return 1.0
+
         # Calculate multiple phonetic features
         ending_sim = self._calculate_ending_similarity(clean1, clean2)
         vowel_sim = self._calculate_vowel_similarity(clean1, clean2)
@@ -412,12 +504,15 @@ class EnhancedPhoneticAnalyzer:
         
         return min(total_similarity, 1.0)
     
+    def _phrase_components(self, word: str) -> PhraseComponents:
+        loader = getattr(self, "cmu_loader", None)
+        return extract_phrase_components(word or "", loader)
+
     def _clean_word(self, word: str) -> str:
-        """Clean and normalize word for phonetic analysis"""
-        cleaned = word.lower().strip()
-        # Remove non-alphabetic characters but preserve apostrophes
-        cleaned = re.sub(r"[^a-z']", '', cleaned)
-        return cleaned
+        """Clean and normalize word or phrase for phonetic analysis."""
+
+        components = self._phrase_components(word)
+        return components.normalized_phrase.strip()
     
     def _calculate_ending_similarity(self, word1: str, word2: str) -> float:
         """Calculate similarity of word endings (most important for rhymes)"""
@@ -473,8 +568,8 @@ class EnhancedPhoneticAnalyzer:
     def _calculate_consonant_similarity(self, word1: str, word2: str) -> float:
         """Calculate consonant pattern similarity"""
         # Extract consonant patterns
-        consonants1 = re.sub(r'[aeiou]', '', word1)
-        consonants2 = re.sub(r'[aeiou]', '', word2)
+        consonants1 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word1))
+        consonants2 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word2))
         
         if not consonants1 or not consonants2:
             return 0.5
@@ -501,7 +596,8 @@ class EnhancedPhoneticAnalyzer:
     def _count_syllables(self, word: str) -> int:
         """Estimate syllable count in a word"""
 
-        return estimate_syllable_count(word)
+        components = self._phrase_components(word)
+        return max(1, components.total_syllables)
 
     # ------------------------------------------------------------------
     # Research-driven feature extraction
@@ -511,10 +607,33 @@ class EnhancedPhoneticAnalyzer:
         loader = getattr(self, "cmu_loader", None)
         if loader is None:
             return []
-        try:
-            return loader.get_pronunciations(word)  # type: ignore[arg-type]
-        except Exception:
+        components = self._phrase_components(word)
+
+        if components.anchor_pronunciations:
+            return [list(phones) for phones in components.anchor_pronunciations]
+
+        lookup_word = components.anchor
+        if not lookup_word:
+            lookup_word = re.sub(r"\s+", "", components.normalized_phrase)
+
+        if not lookup_word:
             return []
+
+        try:
+            pronunciations = loader.get_pronunciations(lookup_word)
+        except Exception:
+            pronunciations = []
+
+        if not pronunciations and pronouncing is not None:
+            try:
+                pronunciations = [
+                    phones.split()
+                    for phones in pronouncing.phones_for_word(lookup_word)
+                ]
+            except Exception:
+                pronunciations = []
+
+        return pronunciations
 
     @staticmethod
     def _stress_signature_from_phones(phones: List[str]) -> str:
@@ -591,8 +710,8 @@ class EnhancedPhoneticAnalyzer:
 
     @staticmethod
     def _consonance_score(word1: str, word2: str) -> float:
-        consonants1 = re.sub(r"[aeiou]", "", word1)
-        consonants2 = re.sub(r"[aeiou]", "", word2)
+        consonants1 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word1))
+        consonants2 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word2))
         if not consonants1 or not consonants2:
             return 0.0
         counter1 = Counter(consonants1)
@@ -709,7 +828,8 @@ class EnhancedPhoneticAnalyzer:
     def describe_word(self, word: str) -> Dict[str, Any]:
         """Return a phonetic profile for a single word."""
 
-        normalized = self._clean_word(word or "")
+        components = self._phrase_components(word or "")
+        normalized = components.normalized_phrase.strip()
         profile: Dict[str, Any] = {
             "word": word,
             "normalized": normalized,
@@ -721,17 +841,19 @@ class EnhancedPhoneticAnalyzer:
             "vowel_skeleton": "",
             "consonant_tail": "",
             "pronunciations": [],
+            "tokens": components.normalized_tokens,
+            "token_syllables": components.syllable_counts,
+            "anchor_word": components.anchor,
+            "anchor_display": components.anchor_display or components.anchor,
         }
+
+        if components.total_syllables:
+            profile["syllables"] = components.total_syllables
 
         if not normalized:
             return profile
 
-        try:
-            profile["syllables"] = self._count_syllables(normalized)
-        except Exception:
-            profile["syllables"] = None
-
-        pronunciations = self._get_pronunciation_variants(normalized)
+        pronunciations = self._get_pronunciation_variants(word)
         if pronunciations:
             stripped_variants = []
             for phones in pronunciations[:2]:
@@ -875,7 +997,7 @@ class EnhancedPhoneticAnalyzer:
             return False
 
 
-RhymeCandidate = Tuple[str, float, float, float]
+RhymeCandidate = Dict[str, Any]
 
 
 def get_cmu_rhymes(
@@ -893,16 +1015,13 @@ def get_cmu_rhymes(
         cmu_loader: Optional loader providing cached CMU pronunciations.
 
     Returns:
-        A list of tuples ``(candidate_word, similarity_score, rarity_score,
-        combined_score)`` sorted by descending combined score. Returns an
-        empty list when no candidates are found in either the local CMU cache
-        or the pronouncing fallback.
+        A list of scored rhyme candidates sorted by descending combined score.
     """
 
-    if not word or not word.strip() or limit <= 0:
+    if not word or not str(word).strip() or limit <= 0:
         return []
 
-    normalized_word = word.strip().lower()
+    base_phrase = str(word).strip()
 
     loader = cmu_loader
     if loader is None and analyzer is not None:
@@ -910,21 +1029,25 @@ def get_cmu_rhymes(
     if loader is None:
         loader = DEFAULT_CMU_LOADER
 
+    components = extract_phrase_components(base_phrase, loader)
+    normalized_phrase = components.normalized_phrase or base_phrase.lower()
+    anchor_lookup = components.anchor or normalized_phrase.split()[-1] if normalized_phrase else base_phrase.lower()
+
     local_candidates: List[str] = []
-    if loader is not None:
+    if loader is not None and anchor_lookup:
         try:
-            local_candidates = loader.get_rhyming_words(normalized_word)
+            local_candidates = loader.get_rhyming_words(anchor_lookup)
         except Exception:
             local_candidates = []
 
     candidate_words: List[str] = list(local_candidates)
 
-    if not candidate_words and pronouncing is not None:
+    if not candidate_words and pronouncing is not None and anchor_lookup:
         try:
-            candidates = pronouncing.rhymes(normalized_word)
+            candidates = pronouncing.rhymes(anchor_lookup)
 
             if not candidates:
-                phones = pronouncing.phones_for_word(normalized_word)
+                phones = pronouncing.phones_for_word(anchor_lookup)
                 for phone in phones:
                     rhyme_part = pronouncing.rhyming_part(phone)
                     if rhyme_part:
@@ -934,7 +1057,7 @@ def get_cmu_rhymes(
             seen = set()
             for candidate in candidates:
                 cleaned = candidate.strip().lower()
-                if not cleaned or cleaned == normalized_word or cleaned in seen:
+                if not cleaned or cleaned == anchor_lookup or cleaned in seen:
                     continue
                 seen.add(cleaned)
                 candidate_words.append(cleaned)
@@ -948,16 +1071,59 @@ def get_cmu_rhymes(
 
     rarity_source = getattr(scoring_analyzer, "rarity_map", None) or DEFAULT_RARITY_MAP
     combine_fn = getattr(scoring_analyzer, "combine_similarity_and_rarity", None)
-    scored_candidates: List[RhymeCandidate] = []
-    for candidate in candidate_words:
+
+    anchor_index = components.anchor_index
+    if anchor_index is None and components.normalized_tokens:
+        anchor_index = len(components.normalized_tokens) - 1
+
+    prefix_tokens_norm: List[str] = []
+    suffix_tokens_norm: List[str] = []
+    prefix_tokens_display: List[str] = []
+    suffix_tokens_display: List[str] = []
+
+    if anchor_index is not None:
+        prefix_tokens_norm = components.normalized_tokens[:anchor_index]
+        suffix_tokens_norm = components.normalized_tokens[anchor_index + 1 :]
+        prefix_tokens_display = components.tokens[:anchor_index]
+        suffix_tokens_display = components.tokens[anchor_index + 1 :]
+
+    prefix_text_norm = " ".join(prefix_tokens_norm).strip()
+    suffix_text_norm = " ".join(suffix_tokens_norm).strip()
+    prefix_text_display = " ".join(prefix_tokens_display).strip()
+    suffix_text_display = " ".join(suffix_tokens_display).strip()
+
+    scored_candidates: List[Dict[str, Any]] = []
+    seen_variants: Set[str] = set()
+
+    def _score_variant(suggestion: str, *, is_multi: bool, base_candidate: str) -> None:
+        normalized_suggestion = suggestion.strip()
+        if not normalized_suggestion:
+            return
+        normalized_key = normalized_suggestion.lower()
+        if normalized_key == normalized_phrase.lower():
+            return
+        if normalized_key in seen_variants:
+            return
+        seen_variants.add(normalized_key)
+
         try:
-            score = scoring_analyzer.get_phonetic_similarity(normalized_word, candidate)
+            score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
         except Exception:
             score = 0.0
+
         try:
-            rarity = float(rarity_source.get_rarity(candidate))
+            if " " in normalized_suggestion:
+                token_scores: List[float] = []
+                for token in normalized_suggestion.split():
+                    try:
+                        token_scores.append(float(rarity_source.get_rarity(token)))
+                    except Exception:
+                        token_scores.append(float(DEFAULT_RARITY_MAP.get_rarity(token)))
+                rarity = sum(token_scores) / len(token_scores) if token_scores else 0.0
+            else:
+                rarity = float(rarity_source.get_rarity(base_candidate))
         except Exception:
-            rarity = DEFAULT_RARITY_MAP.get_rarity(candidate)
+            rarity = DEFAULT_RARITY_MAP.get_rarity(base_candidate)
 
         if callable(combine_fn):
             try:
@@ -966,9 +1132,52 @@ def get_cmu_rhymes(
                 combined = score
         else:
             combined = score
-        scored_candidates.append((candidate, score, rarity, combined))
 
-    scored_candidates.sort(key=lambda item: item[3], reverse=True)
+        candidate_info = extract_phrase_components(suggestion, loader)
+
+        entry: Dict[str, Any] = {
+            "word": suggestion,
+            "target": suggestion,
+            "candidate": base_candidate,
+            "similarity": score,
+            "score": score,
+            "rarity": rarity,
+            "rarity_score": rarity,
+            "combined": combined,
+            "combined_score": combined,
+            "is_multi_word": is_multi,
+            "source_phrase": normalized_phrase,
+            "source_syllables": components.total_syllables,
+            "candidate_syllables": candidate_info.total_syllables,
+            "anchor": anchor_lookup,
+            "anchor_display": components.anchor_display or components.anchor,
+            "prefix": prefix_text_norm,
+            "suffix": suffix_text_norm,
+            "prefix_display": prefix_text_display,
+            "suffix_display": suffix_text_display,
+            "target_tokens": candidate_info.normalized_tokens,
+        }
+
+        scored_candidates.append(entry)
+
+    for candidate in candidate_words:
+        base_candidate = candidate.strip()
+        if not base_candidate:
+            continue
+        if base_candidate == anchor_lookup:
+            continue
+
+        _score_variant(base_candidate, is_multi=False, base_candidate=base_candidate)
+
+        if components.total_syllables >= 2:
+            multi_tokens = list(prefix_tokens_norm)
+            multi_tokens.append(base_candidate)
+            multi_tokens.extend(suffix_tokens_norm)
+            multi_phrase = " ".join(multi_tokens).strip()
+            if multi_phrase and multi_phrase != base_candidate:
+                _score_variant(multi_phrase, is_multi=True, base_candidate=base_candidate)
+
+    scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
     return scored_candidates[:limit]
 
 # Example usage and testing
