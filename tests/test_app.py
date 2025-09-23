@@ -161,12 +161,13 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
 
     app = RhymeRarityApp(db_path=str(db_path))
 
-    results = app.search_rhymes("above", limit=5, min_confidence=0.0)
+    results = app.search_rhymes("glove", limit=5, min_confidence=0.0)
 
     assert results, "Expected at least one rhyme suggestion"
     assert results[0]["target_word"] == "love"
-    assert results[0]["source_context"] == "Above in the hook"
-    assert results[0]["target_context"] == "Love in the verse"
+    assert results[0]["pattern"] == "glove / love"
+    assert results[0]["source_context"] == "Glove in the chorus"
+    assert results[0]["target_context"] == "Love in the bridge"
     assert all(result["target_word"] == "love" for result in results)
 
 
