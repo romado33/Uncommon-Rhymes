@@ -1500,36 +1500,19 @@ class RhymeRarityApp:
                         label="Max Line Distance",
                     )
 
-            search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
+            with gr.Row():
+                with gr.Column(scale=1, min_width=200):
+                    search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
+                with gr.Column(scale=3):
+                    gr.Markdown(
+                        "💡 Enter a word and adjust the filters, then press **Find Rhymes** to discover new lyric pairings."
+                    )
 
             output = gr.Textbox(
                 label="Rhyme Results",
                 lines=20,
                 max_lines=30,
                 show_copy_button=True
-            )
-
-            # Example inputs
-            gr.Examples(
-                examples=[
-                    ["love", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
-                    ["mind", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
-                    ["flow", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
-                    ["money", 15, 0.8, [], [], default_sources, "Any", [], "Any"],
-                    ["time", 15, 0.8, [], [], default_sources, "Any", [], "Any"]
-                ],
-                inputs=[
-                    word_input,
-                    max_results,
-                    min_confidence,
-                    cultural_dropdown,
-                    genre_dropdown,
-                    result_source_group,
-                    max_line_distance_dropdown,
-                    rhyme_type_dropdown,
-                    cadence_dropdown,
-                ],
-                label="Try these examples"
             )
 
             search_btn.click(
