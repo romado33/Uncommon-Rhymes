@@ -415,13 +415,26 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
                 rhyme_type = "perfect"
                 complexity = "steady"
                 cadence_ratio = 1.05
+                bradley_device = "multi"
+            elif target == "shove":
+                rhyme_type = None
+                complexity = "steady"
+                cadence_ratio = 1.1
+                bradley_device = "perfect"
             else:
                 rhyme_type = "slant"
                 complexity = "dense"
                 cadence_ratio = 1.4
+                bradley_device = "assonance"
 
             target_signatures = list(self.derive_rhyme_signatures(target))
             signature_matches = list(rhyme_signatures or [])
+
+            feature_profile = {"bradley_device": bradley_device}
+            if rhyme_type:
+                feature_profile["rhyme_type"] = rhyme_type
+
+            features = {"rhyme_type": rhyme_type} if rhyme_type else {}
 
             return {
                 "similarity": 0.9,
@@ -430,8 +443,8 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
                 "rhyme_type": rhyme_type,
                 "signature_matches": signature_matches,
                 "target_signatures": target_signatures,
-                "features": {"rhyme_type": rhyme_type},
-                "feature_profile": {"bradley_device": "multi"},
+                "features": features,
+                "feature_profile": feature_profile,
                 "prosody_profile": {
                     "complexity_tag": complexity,
                     "cadence_ratio": cadence_ratio,
@@ -451,6 +464,7 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
 
     assert filtered_results, "Expected matches that satisfy rhyme type and cadence filters"
     assert all(entry.get("rhyme_type") == "perfect" for entry in filtered_results)
+    assert all(entry.get("target_word") != "shove" for entry in filtered_results)
     assert all(
         (entry.get("prosody_profile") or {}).get("complexity_tag") == "steady"
         for entry in filtered_results
