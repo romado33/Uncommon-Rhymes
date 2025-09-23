@@ -97,7 +97,7 @@ def create_interface(
 
             with gr.Row(equal_height=True, elem_classes=["rr-main-row"]):
                 with gr.Column(scale=5, min_width=360):
-                    with gr.Box(elem_classes=["rr-panel", "rr-input-panel"]):
+                    with gr.Group(elem_classes=["rr-panel", "rr-input-panel"]):
                         gr.Markdown("### Search settings")
                         word_input = gr.Textbox(
                             label="Word to Find Rhymes For",
@@ -166,7 +166,7 @@ def create_interface(
                         )
 
                 with gr.Column(scale=5, min_width=360):
-                    with gr.Box(elem_classes=["rr-panel", "rr-results-panel"]):
+                    with gr.Group(elem_classes=["rr-panel", "rr-results-panel"]):
                         gr.Markdown("### Rhyme results")
                         output = gr.Markdown(
                             value="Start by entering a word on the left and click **Find Rhymes**.",
