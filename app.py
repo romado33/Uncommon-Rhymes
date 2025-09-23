@@ -8,7 +8,7 @@ References: patterns.db, module1_enhanced_core_phonetic.py, module2_enhanced_ant
 import gradio as gr
 import sqlite3
 import os
-from typing import List, Dict, Tuple, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import types
 import re
 
@@ -283,6 +283,14 @@ class RhymeRarityApp:
                 return []
 
             source_word = source_word.lower().strip()
+
+            try:
+                min_conf_threshold = float(min_confidence)
+            except (TypeError, ValueError):
+                min_conf_threshold = 0.0
+            if min_conf_threshold < 0:
+                min_conf_threshold = 0.0
+            min_confidence = min_conf_threshold
 
             def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
                 if value is None:
@@ -610,6 +618,15 @@ class RhymeRarityApp:
                     if prosody_profile:
                         entry["prosody_profile"] = prosody_profile
 
+                    try:
+                        entry_confidence = float(
+                            entry.get("combined_score", entry.get("confidence", 0.0))
+                        )
+                    except (TypeError, ValueError):
+                        entry_confidence = 0.0
+                    if entry_confidence < min_confidence:
+                        continue
+
                     phonetic_entries.append(entry)
 
                 phonetic_entries.sort(
@@ -930,11 +947,31 @@ class RhymeRarityApp:
                     internal_rhyme = None
                     if isinstance(feature_profile, dict):
                         internal_rhyme = feature_profile.get("internal_rhyme_score")
+                    try:
+                        confidence_float = float(getattr(pattern, "confidence", 0.0))
+                    except (TypeError, ValueError):
+                        confidence_float = 0.0
+                    combined_metric = getattr(pattern, "combined", None)
+                    if combined_metric is None:
+                        combined_metric = getattr(pattern, "combined_score", None)
+                    try:
+                        combined_float = (
+                            float(combined_metric)
+                            if combined_metric is not None
+                            else None
+                        )
+                    except (TypeError, ValueError):
+                        combined_float = None
+                    score_for_filter = (
+                        combined_float if combined_float is not None else confidence_float
+                    )
+                    if score_for_filter < min_confidence:
+                        continue
                     entry_payload = {
                         "source_word": source_word,
                         "target_word": pattern.target_word,
                         "pattern": f"{source_word} / {pattern.target_word}",
-                        "confidence": pattern.confidence,
+                        "confidence": confidence_float,
                         "rarity_score": pattern.rarity_score,
                         "llm_weakness_type": pattern.llm_weakness_type,
                         "cultural_depth": pattern.cultural_depth,
@@ -952,6 +989,7 @@ class RhymeRarityApp:
                     prosody_payload = getattr(pattern, "prosody_profile", None)
                     if isinstance(prosody_payload, dict):
                         entry_payload["prosody_profile"] = prosody_payload
+                    entry_payload["combined_score"] = score_for_filter
                     anti_llm_entries.append(entry_payload)
 
             combined_results = phonetic_entries + cultural_entries + anti_llm_entries
@@ -972,9 +1010,20 @@ class RhymeRarityApp:
                 seen_pairs.add(pair)
                 deduped.append(entry)
 
+            def _passes_min_confidence(entry: Dict) -> bool:
+                metric = entry.get("combined_score")
+                if metric is None:
+                    metric = entry.get("confidence")
+                try:
+                    return float(metric) >= min_confidence
+                except (TypeError, ValueError):
+                    return False
+
             filtered_entries: List[Dict] = []
-            if filters_active:
-                for entry in deduped:
+            for entry in deduped:
+                if not _passes_min_confidence(entry):
+                    continue
+                if filters_active:
                     if cultural_filters:
                         sig = entry.get("cultural_sig")
                         if sig is None or _normalize_source_name(str(sig)) not in cultural_filters:
@@ -1061,9 +1110,7 @@ class RhymeRarityApp:
                         distance_value = entry.get("distance")
                         if distance_value is None or distance_value > max_line_distance:
                             continue
-                    filtered_entries.append(entry)
-            else:
-                filtered_entries = deduped
+                filtered_entries.append(entry)
 
             for entry in filtered_entries:
                 entry.pop("source_word", None)
