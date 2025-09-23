@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import types
 
-from module1_enhanced_core_phonetic import (
+from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
     extract_phrase_components,
     get_cmu_rhymes,
 )
-from module2_enhanced_anti_llm import AntiLLMRhymeEngine
-from module3_enhanced_cultural_database import CulturalIntelligenceEngine
+from anti_llm import AntiLLMRhymeEngine
+from cultural.engine import CulturalIntelligenceEngine
 
 from ..data.database import SQLiteRhymeRepository
 
