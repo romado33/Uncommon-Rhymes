@@ -7,7 +7,7 @@ Part of the RhymeRarity system deployed on Hugging Face
 
 import sqlite3
 import json
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass
 from collections import defaultdict, Counter
 import re
@@ -42,8 +42,9 @@ class CulturalIntelligenceEngine:
     and cultural context that LLMs fundamentally cannot access
     """
     
-    def __init__(self, db_path: str = "patterns.db"):
+    def __init__(self, db_path: str = "patterns.db", phonetic_analyzer: Optional[Any] = None):
         self.db_path = db_path
+        self.phonetic_analyzer = phonetic_analyzer
         
         # Initialize cultural intelligence components
         self.artist_profiles = self._initialize_artist_profiles()
@@ -61,7 +62,136 @@ class CulturalIntelligenceEngine:
         
         print("🎯 Enhanced Cultural Database Engine initialized")
         print("Providing authentic cultural attribution beyond LLM capabilities")
-    
+ 
+    def set_phonetic_analyzer(self, analyzer: Any) -> None:
+        """Attach or replace the phonetic analyzer for phonetic validation."""
+        self.phonetic_analyzer = analyzer
+
+    def _estimate_syllables(self, word: str) -> int:
+        """Rough syllable count used for fallback rhyme signatures."""
+        if not word:
+            return 0
+        vowel_groups = re.findall(r"[aeiou]+", word)
+        count = len(vowel_groups)
+        if word.endswith("e") and count > 1:
+            count -= 1
+        return max(1, count)
+
+    def _approximate_rhyme_signature(self, word: str) -> Set[str]:
+        """Create lightweight rhyme signatures when CMU data is unavailable."""
+        cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
+        if not cleaned:
+            return set()
+        vowels = re.findall(r"[aeiou]+", cleaned)
+        last_vowel = vowels[-1] if vowels else ""
+        ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+        syllables = self._estimate_syllables(cleaned)
+        components = []
+        if last_vowel:
+            components.append(f"v:{last_vowel}")
+        components.append(f"e:{ending}")
+        base_signature = "|".join(components)
+        signatures = {base_signature}
+        if syllables:
+            signatures.add("|".join(components + [f"s:{syllables}"]))
+        return signatures
+
+    def derive_rhyme_signatures(self, word: str) -> Set[str]:
+        """Return available rhyme signatures for a given word."""
+        normalized = (word or "").strip().lower()
+        if not normalized:
+            return set()
+        signatures: Set[str] = set()
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        loader = getattr(analyzer, "cmu_loader", None) if analyzer else None
+        if loader is not None:
+            try:
+                signatures.update({sig for sig in loader.get_rhyme_parts(normalized) if sig})
+            except Exception:
+                pass
+        signatures.update(self._approximate_rhyme_signature(normalized))
+        return signatures
+
+    def evaluate_rhyme_alignment(
+        self,
+        source_word: str,
+        target_word: str,
+        threshold: Optional[float] = None,
+        rhyme_signatures: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and score phonetic alignment between two words."""
+        normalized_source = (source_word or "").strip().lower()
+        normalized_target = (target_word or "").strip().lower()
+        if not normalized_source or not normalized_target:
+            return None
+
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        source_signature_set = {sig for sig in (rhyme_signatures or set()) if sig}
+        target_signatures = self.derive_rhyme_signatures(normalized_target)
+        signature_matches = (
+            sorted(target_signatures.intersection(source_signature_set))
+            if source_signature_set
+            else []
+        )
+
+        if source_signature_set and target_signatures and not signature_matches:
+            return None
+
+        similarity: Optional[float] = None
+        rarity_value: Optional[float] = None
+        combined_value: Optional[float] = None
+        rhyme_type: Optional[str] = None
+        features: Dict[str, Any] = {}
+
+        if analyzer:
+            try:
+                match = analyzer.analyze_rhyme_pattern(normalized_source, normalized_target)
+            except Exception:
+                match = None
+            if match:
+                similarity = float(match.similarity_score)
+                features = dict(match.phonetic_features)
+                rhyme_type = match.rhyme_type
+            else:
+                try:
+                    similarity = float(analyzer.get_phonetic_similarity(normalized_source, normalized_target))
+                except Exception:
+                    similarity = 0.0
+                try:
+                    rhyme_type = analyzer.classify_rhyme_type(normalized_source, normalized_target, similarity)
+                except Exception:
+                    rhyme_type = None
+                features = {}
+            try:
+                rarity_value = float(analyzer.get_rarity_score(normalized_target))
+            except Exception:
+                rarity_value = None
+            if rarity_value is not None and similarity is not None:
+                try:
+                    combined_value = float(analyzer.combine_similarity_and_rarity(similarity, rarity_value))
+                except Exception:
+                    combined_value = None
+            if threshold is not None and similarity is not None:
+                effective_threshold = max(0.0, float(threshold) - 0.02)
+                if similarity < effective_threshold:
+                    return None
+        else:
+            similarity = None
+            rarity_value = None
+            combined_value = None
+            rhyme_type = None
+            features = {}
+
+        return {
+            "similarity": similarity,
+            "rarity": rarity_value,
+            "combined": combined_value,
+            "rhyme_type": rhyme_type,
+            "signature_matches": signature_matches,
+            "target_signatures": sorted(target_signatures),
+            "features": features,
+        }
+
     def _initialize_artist_profiles(self) -> Dict[str, ArtistProfile]:
         """Initialize comprehensive artist profiles for cultural intelligence"""
         return {

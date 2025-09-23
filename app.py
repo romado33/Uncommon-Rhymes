@@ -10,10 +10,11 @@ import sqlite3
 import pandas as pd
 import os
 import sys
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 import json
 import random
 import types
+import re
 
 # Import our custom modules
 try:
@@ -52,13 +53,59 @@ except ImportError as e:
     def get_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return []
     
+
     class AntiLLMRhymeEngine:
-        def __init__(self): pass
-        def generate_anti_llm_patterns(self, word): return []
-    
-    class CulturalIntelligenceEngine:
-        def __init__(self):
+        def __init__(self, *_args, **_kwargs):
             pass
+
+        def generate_anti_llm_patterns(self, word):
+            return []
+
+    class CulturalIntelligenceEngine:
+        def __init__(self, *_, **kwargs):
+            self.phonetic_analyzer = kwargs.get("phonetic_analyzer")
+
+        def set_phonetic_analyzer(self, analyzer):
+            self.phonetic_analyzer = analyzer
+
+        def derive_rhyme_signatures(self, word):
+            cleaned = re.sub(r"[^a-z]", "", str(word or "").lower())
+            if not cleaned:
+                return set()
+            vowels = re.findall(r"[aeiou]+", cleaned)
+            last_vowel = vowels[-1] if vowels else ""
+            ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+            components = []
+            if last_vowel:
+                components.append(f"v:{last_vowel}")
+            components.append(f"e:{ending}")
+            return {"|".join(components)}
+
+        def evaluate_rhyme_alignment(self, source_word, target_word, threshold=None, rhyme_signatures=None):
+            analyzer = getattr(self, "phonetic_analyzer", None)
+            similarity = None
+            if analyzer and source_word and target_word:
+                try:
+                    similarity = float(analyzer.get_phonetic_similarity(source_word, target_word))
+                except Exception:
+                    similarity = None
+            signature_set = self.derive_rhyme_signatures(target_word)
+            rhyme_set = {sig for sig in (rhyme_signatures or set()) if sig}
+            matches = sorted(signature_set.intersection(rhyme_set)) if rhyme_set else []
+            if rhyme_set and signature_set and not matches:
+                return None
+            if threshold is not None and similarity is not None:
+                if similarity < max(0.0, float(threshold) - 0.02):
+                    return None
+            return {
+                'similarity': similarity,
+                'rarity': None,
+                'combined': similarity,
+                'rhyme_type': None,
+                'signature_matches': matches,
+                'target_signatures': sorted(signature_set),
+                'features': {},
+            }
 
         def get_cultural_context(self, pattern):
             return {"significance": "mainstream"}
@@ -74,7 +121,13 @@ class RhymeRarityApp:
         self.cmu_loader = CMUDictLoader()
         self.phonetic_analyzer = EnhancedPhoneticAnalyzer(cmu_loader=self.cmu_loader)
         self.anti_llm_engine = AntiLLMRhymeEngine(db_path=self.db_path)
-        self.cultural_engine = CulturalIntelligenceEngine(db_path=self.db_path)
+        self.cultural_engine = CulturalIntelligenceEngine(
+            db_path=self.db_path,
+            phonetic_analyzer=self.phonetic_analyzer,
+        )
+        setter = getattr(self.cultural_engine, "set_phonetic_analyzer", None)
+        if callable(setter):
+            setter(self.phonetic_analyzer)
 
         # Initialize database
         self.check_database()
@@ -165,75 +218,187 @@ class RhymeRarityApp:
         print(f"✅ Demo database created with {len(sample_data)} sample patterns")
         self._refresh_rarity_map()
     
+
     def search_rhymes(
-        self,
-        source_word: str,
-        limit: int = 20,
-        min_confidence: float = 0.7,
-        cultural_significance: Optional[List[str]] = None,
-        genres: Optional[List[str]] = None,
-        result_sources: Optional[List[str]] = None,
-        max_line_distance: Optional[int] = None,
-    ) -> List[Dict]:
-        """Search for rhymes in the patterns.db database"""
-        if not source_word or not source_word.strip():
-            return []
-
-        source_word = source_word.lower().strip()
-
-        def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
-            if value is None:
+            self,
+            source_word: str,
+            limit: int = 20,
+            min_confidence: float = 0.7,
+            cultural_significance: Optional[List[str]] = None,
+            genres: Optional[List[str]] = None,
+            result_sources: Optional[List[str]] = None,
+            max_line_distance: Optional[int] = None,
+        ) -> List[Dict]:
+            """Search for rhymes in the patterns.db database"""
+            if not source_word or not source_word.strip():
                 return []
-            if isinstance(value, (list, tuple, set)):
-                return [str(v) for v in value if v is not None and str(v).strip()]
-            if isinstance(value, str):
-                return [value] if value.strip() else []
-            return [str(value)]
 
-        def _normalize_source_name(name: str) -> str:
-            return name.strip().lower().replace("_", "-")
+            source_word = source_word.lower().strip()
 
-        cultural_filters = {_normalize_source_name(sig) for sig in _normalize_to_list(cultural_significance)}
-        genre_filters = {_normalize_source_name(genre) for genre in _normalize_to_list(genres)}
+            def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
+                if value is None:
+                    return []
+                if isinstance(value, (list, tuple, set)):
+                    return [str(v) for v in value if v is not None and str(v).strip()]
+                if isinstance(value, str):
+                    return [value] if value.strip() else []
+                return [str(value)]
 
-        selected_sources = {
-            _normalize_source_name(source) for source in _normalize_to_list(result_sources)
-        }
-        if not selected_sources:
-            selected_sources = {"phonetic", "cultural", "anti-llm"}
+            def _normalize_source_name(name: str) -> str:
+                return name.strip().lower().replace("_", "-")
 
-        include_phonetic = "phonetic" in selected_sources
-        include_cultural = "cultural" in selected_sources
-        include_anti_llm = "anti-llm" in selected_sources
+            cultural_filters = {_normalize_source_name(sig) for sig in _normalize_to_list(cultural_significance)}
+            genre_filters = {_normalize_source_name(genre) for genre in _normalize_to_list(genres)}
 
-        filters_active = bool(
-            cultural_filters or genre_filters or (max_line_distance is not None)
-        )
+            selected_sources = {
+                _normalize_source_name(source) for source in _normalize_to_list(result_sources)
+            }
+            if not selected_sources:
+                selected_sources = {"phonetic", "cultural", "anti-llm"}
 
-        if limit <= 0:
-            return []
+            include_phonetic = "phonetic" in selected_sources
+            include_cultural = "cultural" in selected_sources
+            include_anti_llm = "anti-llm" in selected_sources
 
-        try:
+            filters_active = bool(
+                cultural_filters or genre_filters or (max_line_distance is not None)
+            )
+
+            if limit <= 0:
+                return []
+
+            analyzer = getattr(self, "phonetic_analyzer", None)
+            cultural_engine = getattr(self, "cultural_engine", None)
+            cmu_loader = None
+            if analyzer is not None:
+                cmu_loader = getattr(analyzer, "cmu_loader", None)
+            if cmu_loader is None:
+                cmu_loader = getattr(self, "cmu_loader", None)
+
+            def _fallback_signature(word: str) -> Set[str]:
+                cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
+                if not cleaned:
+                    return set()
+                vowels = re.findall(r"[aeiou]+", cleaned)
+                last_vowel = vowels[-1] if vowels else ""
+                ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+                signature_bits: List[str] = []
+                if last_vowel:
+                    signature_bits.append(f"v:{last_vowel}")
+                signature_bits.append(f"e:{ending}")
+                return {"|".join(signature_bits)}
+
+            source_signature_set: Set[str] = set()
+            if cultural_engine and hasattr(cultural_engine, "derive_rhyme_signatures"):
+                try:
+                    derived_signatures = cultural_engine.derive_rhyme_signatures(source_word)
+                    source_signature_set = {sig for sig in derived_signatures if sig}
+                except Exception:
+                    source_signature_set = set()
+            if not source_signature_set and cmu_loader is not None:
+                try:
+                    source_signature_set = {
+                        sig for sig in cmu_loader.get_rhyme_parts(source_word) if sig
+                    }
+                except Exception:
+                    source_signature_set = set()
+            if not source_signature_set:
+                source_signature_set = _fallback_signature(source_word)
+
+            source_signature_list = sorted(source_signature_set)
+
+            reference_limit = max(limit * 2, 10)
+            try:
+                cmu_candidates = get_cmu_rhymes(
+                    source_word,
+                    limit=reference_limit,
+                    analyzer=analyzer,
+                    cmu_loader=cmu_loader,
+                )
+            except Exception:
+                cmu_candidates = []
+
+            reference_similarity = 0.0
+            for candidate in cmu_candidates:
+                if isinstance(candidate, dict):
+                    try:
+                        score = float(candidate.get("similarity", candidate.get("score", 0.0)))
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    try:
+                        score = float(candidate[1]) if len(candidate) > 1 else 0.0
+                    except (TypeError, ValueError, IndexError):
+                        score = 0.0
+                if score > reference_similarity:
+                    reference_similarity = score
+
+            db_candidate_words: Set[str] = set()
+            if analyzer:
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT target_word FROM song_rhyme_patterns WHERE source_word = ? AND target_word IS NOT NULL LIMIT 50",
+                            (source_word,),
+                        )
+                        db_candidate_words.update(
+                            str(row[0]).strip().lower()
+                            for row in cursor.fetchall()
+                            if row and row[0]
+                        )
+                        cursor.execute(
+                            "SELECT source_word FROM song_rhyme_patterns WHERE target_word = ? AND source_word IS NOT NULL LIMIT 50",
+                            (source_word,),
+                        )
+                        db_candidate_words.update(
+                            str(row[0]).strip().lower()
+                            for row in cursor.fetchall()
+                            if row and row[0]
+                        )
+                except sqlite3.Error:
+                    db_candidate_words = set()
+
+                for candidate_word in db_candidate_words:
+                    if not candidate_word or candidate_word == source_word:
+                        continue
+                    try:
+                        score = float(analyzer.get_phonetic_similarity(source_word, candidate_word))
+                    except Exception:
+                        continue
+                    if score > reference_similarity:
+                        reference_similarity = score
+
+            phonetic_threshold = 0.7
+            if reference_similarity > 0:
+                phonetic_threshold = max(0.6, min(0.92, reference_similarity - 0.1))
+
+            source_phonetic_profile = {
+                "threshold": phonetic_threshold,
+                "reference_similarity": reference_similarity,
+                "signatures": source_signature_list,
+            }
+
             phonetic_entries: List[Dict] = []
             if include_phonetic and not filters_active:
-                phonetic_matches = get_cmu_rhymes(
-                    source_word,
-                    limit=limit,
-                    analyzer=getattr(self, "phonetic_analyzer", None),
-                    cmu_loader=getattr(self, "cmu_loader", None),
-                )
-
+                phonetic_matches = cmu_candidates[: max(limit, 1)]
+                rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
                 for candidate in phonetic_matches:
                     if isinstance(candidate, dict):
-                        target = candidate.get('word') or candidate.get('target')
-                        similarity = float(candidate.get('similarity', candidate.get('score', 0.0)))
-                        rarity_value = float(candidate.get('rarity', candidate.get('rarity_score', 0.0)))
-                        combined = float(candidate.get('combined', candidate.get('combined_score', similarity)))
+                        target = candidate.get("word") or candidate.get("target")
+                        similarity = float(candidate.get("similarity", candidate.get("score", 0.0)))
+                        rarity_value = float(candidate.get("rarity", candidate.get("rarity_score", 0.0)))
+                        combined = float(candidate.get("combined", candidate.get("combined_score", similarity)))
                     else:
                         try:
                             target = candidate[0]
                             similarity = float(candidate[1]) if len(candidate) > 1 else 0.0
-                            rarity_value = float(candidate[2]) if len(candidate) > 2 else self.phonetic_analyzer.get_rarity_score(candidate[0])
+                            if len(candidate) > 2:
+                                rarity_value = float(candidate[2])
+                            elif rarity_source and hasattr(rarity_source, "get_rarity_score"):
+                                rarity_value = float(rarity_source.get_rarity_score(candidate[0]))
+                            else:
+                                rarity_value = 0.0
                             combined = float(candidate[3]) if len(candidate) > 3 else similarity
                         except Exception:
                             target = candidate if isinstance(candidate, str) else None
@@ -243,28 +408,77 @@ class RhymeRarityApp:
 
                     if not target:
                         continue
-                    phonetic_entries.append({
-                        'source_word': source_word,
-                        'target_word': target,
-                        'artist': 'CMU Pronouncing Dictionary',
-                        'song': 'Phonetic Match',
-                        'pattern': f"{source_word} / {target}",
-                        'distance': None,
-                        'confidence': combined,
-                        'combined_score': combined,
-                        'phonetic_sim': similarity,
-                        'rarity_score': rarity_value,
-                        'cultural_sig': 'phonetic',
-                        'genre': None,
-                        'source_context': 'Phonetic match suggested by the CMU Pronouncing Dictionary.',
-                        'target_context': '',
-                        'result_source': 'phonetic',
-                    })
+
+                    alignment = None
+                    if cultural_engine and hasattr(cultural_engine, "evaluate_rhyme_alignment"):
+                        try:
+                            alignment = cultural_engine.evaluate_rhyme_alignment(
+                                source_word,
+                                target,
+                                threshold=phonetic_threshold,
+                                rhyme_signatures=source_signature_set,
+                            )
+                        except Exception:
+                            alignment = None
+                        if alignment is None:
+                            continue
+                    else:
+                        alignment = {
+                            "similarity": similarity,
+                            "rarity": rarity_value,
+                            "combined": combined,
+                            "signature_matches": [],
+                            "target_signatures": [],
+                            "features": {},
+                        }
+
+                    entry = {
+                        "source_word": source_word,
+                        "target_word": target,
+                        "artist": "CMU Pronouncing Dictionary",
+                        "song": "Phonetic Match",
+                        "pattern": f"{source_word} / {target}",
+                        "distance": None,
+                        "confidence": combined,
+                        "combined_score": combined,
+                        "phonetic_sim": similarity,
+                        "rarity_score": rarity_value,
+                        "cultural_sig": "phonetic",
+                        "genre": None,
+                        "source_context": "Phonetic match suggested by the CMU Pronouncing Dictionary.",
+                        "target_context": "",
+                        "result_source": "phonetic",
+                        "source_rhyme_signatures": source_signature_list,
+                        "source_phonetic_profile": source_phonetic_profile,
+                        "phonetic_threshold": phonetic_threshold,
+                    }
+
+                    entry["phonetic_sim"] = alignment.get("similarity", entry["phonetic_sim"])
+                    if alignment.get("rarity") is not None:
+                        entry["rarity_score"] = alignment["rarity"]
+                    if alignment.get("combined") is not None:
+                        entry["combined_score"] = alignment["combined"]
+                        try:
+                            entry["confidence"] = max(
+                                float(entry.get("confidence", 0.0)),
+                                float(alignment["combined"]),
+                            )
+                        except (TypeError, ValueError):
+                            entry["confidence"] = alignment["combined"]
+                    if alignment.get("rhyme_type"):
+                        entry["rhyme_type"] = alignment["rhyme_type"]
+                    entry["matched_signatures"] = alignment.get("signature_matches", [])
+                    entry["target_rhyme_signatures"] = alignment.get("target_signatures", [])
+                    features = alignment.get("features")
+                    if features:
+                        entry["phonetic_features"] = features
+
+                    phonetic_entries.append(entry)
 
                 phonetic_entries.sort(
                     key=lambda entry: (
-                        entry.get('combined_score', entry.get('confidence', 0.0)),
-                        entry.get('phonetic_sim', 0.0),
+                        entry.get("combined_score", entry.get("confidence", 0.0)),
+                        entry.get("phonetic_sim", 0.0),
                     ),
                     reverse=True,
                 )
@@ -272,21 +486,21 @@ class RhymeRarityApp:
             fetch_limit = max(limit * 2, limit, 1)
 
             base_query = """
-            SELECT DISTINCT
-                source_word,
-                target_word,
-                artist,
-                song_title,
-                pattern,
-                genre,
-                line_distance,
-                confidence_score,
-                phonetic_similarity,
-                cultural_significance,
-                source_context,
-                target_context
-            FROM song_rhyme_patterns
-            """
+                SELECT DISTINCT
+                    source_word,
+                    target_word,
+                    artist,
+                    song_title,
+                    pattern,
+                    genre,
+                    line_distance,
+                    confidence_score,
+                    phonetic_similarity,
+                    cultural_significance,
+                    source_context,
+                    target_context
+                FROM song_rhyme_patterns
+                """
 
             cultural_entries: List[Dict] = []
 
@@ -299,10 +513,16 @@ class RhymeRarityApp:
                     return dict(vars(context_obj))
                 return {"value": context_obj}
 
-            def _enrich_with_cultural_context(entry: Dict) -> Dict:
+            def _enrich_with_cultural_context(entry: Dict) -> Optional[Dict]:
                 engine = getattr(self, "cultural_engine", None)
                 if not engine:
                     return entry
+
+                entry.setdefault("source_phonetic_profile", source_phonetic_profile)
+                entry.setdefault("source_rhyme_signatures", source_signature_list)
+                entry.setdefault("phonetic_threshold", phonetic_threshold)
+                entry.setdefault("matched_signatures", [])
+                entry.setdefault("target_rhyme_signatures", [])
 
                 context_data = None
                 rarity_value = None
@@ -311,26 +531,26 @@ class RhymeRarityApp:
                     get_context = getattr(engine, "get_cultural_context", None)
                     if callable(get_context):
                         pattern_payload = {
-                            'artist': entry.get('artist'),
-                            'song': entry.get('song'),
-                            'source_word': entry.get('source_word', source_word),
-                            'target_word': entry.get('target_word'),
-                            'pattern': entry.get('pattern'),
-                            'cultural_significance': entry.get('cultural_sig'),
+                            "artist": entry.get("artist"),
+                            "song": entry.get("song"),
+                            "source_word": entry.get("source_word", source_word),
+                            "target_word": entry.get("target_word"),
+                            "pattern": entry.get("pattern"),
+                            "cultural_significance": entry.get("cultural_sig"),
                         }
                         context_data = get_context(pattern_payload)
                     elif hasattr(engine, "find_cultural_patterns"):
                         finder = getattr(engine, "find_cultural_patterns")
                         if callable(finder):
-                            patterns = finder(entry.get('source_word', source_word), limit=1)
+                            patterns = finder(entry.get("source_word", source_word), limit=1)
                             if patterns:
                                 pattern_info = patterns[0]
-                                context_data = pattern_info.get('cultural_context')
-                                rarity_value = pattern_info.get('cultural_rarity')
+                                context_data = pattern_info.get("cultural_context")
+                                rarity_value = pattern_info.get("cultural_rarity")
 
                     context_dict = _context_to_dict(context_data)
                     if context_dict:
-                        entry['cultural_context'] = context_dict
+                        entry["cultural_context"] = context_dict
 
                         rarity_fn = getattr(engine, "get_cultural_rarity_score", None)
                         if callable(rarity_fn):
@@ -340,10 +560,51 @@ class RhymeRarityApp:
                                 rarity_value = rarity_fn(context_dict)
 
                     if rarity_value is not None:
-                        entry['cultural_rarity'] = rarity_value
+                        entry["cultural_rarity"] = rarity_value
 
                 except Exception:
-                    # Cultural enrichment is optional; ignore errors to avoid breaking search
+                    pass
+
+                try:
+                    evaluate_alignment = getattr(engine, "evaluate_rhyme_alignment", None)
+                    if callable(evaluate_alignment):
+                        alignment = evaluate_alignment(
+                            entry.get("source_word", source_word),
+                            entry.get("target_word"),
+                            threshold=phonetic_threshold,
+                            rhyme_signatures=source_signature_set,
+                        )
+                        if alignment is None:
+                            return None
+                        sim_value = alignment.get("similarity")
+                        if sim_value is not None:
+                            entry["phonetic_sim"] = sim_value
+                        combined_value = alignment.get("combined")
+                        if combined_value is not None:
+                            entry["combined_score"] = combined_value
+                            try:
+                                entry["confidence"] = max(
+                                    float(entry.get("confidence", 0.0)),
+                                    float(combined_value),
+                                )
+                            except (TypeError, ValueError):
+                                entry["confidence"] = combined_value
+                        rarity_metric = alignment.get("rarity")
+                        if rarity_metric is not None:
+                            entry["rarity_score"] = rarity_metric
+                        rhyme_type = alignment.get("rhyme_type")
+                        if rhyme_type:
+                            entry["rhyme_type"] = rhyme_type
+                        entry["matched_signatures"] = alignment.get(
+                            "signature_matches", entry.get("matched_signatures", [])
+                        )
+                        entry["target_rhyme_signatures"] = alignment.get(
+                            "target_signatures", entry.get("target_rhyme_signatures", [])
+                        )
+                        features = alignment.get("features")
+                        if features:
+                            entry["phonetic_features"] = features
+                except Exception:
                     pass
 
                 return entry
@@ -351,6 +612,10 @@ class RhymeRarityApp:
             def build_query(word_column: str) -> Tuple[str, List]:
                 conditions = [f"{word_column} = ?", "confidence_score >= ?", "source_word != target_word"]
                 params: List = [source_word, min_confidence]
+
+                if phonetic_threshold is not None:
+                    conditions.append("phonetic_similarity >= ?")
+                    params.append(phonetic_threshold)
 
                 if cultural_filters:
                     placeholders = ",".join(["?"] * len(cultural_filters))
@@ -387,41 +652,54 @@ class RhymeRarityApp:
                     cursor.execute(query, params)
                     target_results = cursor.fetchall()
 
-            def build_entry(row: Tuple, swap: bool = False) -> Dict:
+            def build_entry(row: Tuple, swap: bool = False) -> Optional[Dict]:
                 entry = {
-                    'source_word': row[0],
-                    'target_word': row[1],
-                    'artist': row[2],
-                    'song': row[3],
-                    'pattern': row[4],
-                    'genre': row[5],
-                    'distance': row[6],
-                    'confidence': row[7],
-                    'phonetic_sim': row[8],
-                    'cultural_sig': row[9],
-                    'source_context': row[10],
-                    'target_context': row[11],
-                    'result_source': 'cultural',
+                    "source_word": row[0],
+                    "target_word": row[1],
+                    "artist": row[2],
+                    "song": row[3],
+                    "pattern": row[4],
+                    "genre": row[5],
+                    "distance": row[6],
+                    "confidence": row[7],
+                    "phonetic_sim": row[8],
+                    "cultural_sig": row[9],
+                    "source_context": row[10],
+                    "target_context": row[11],
+                    "result_source": "cultural",
+                    "combined_score": row[7],
+                    "source_phonetic_profile": source_phonetic_profile,
+                    "source_rhyme_signatures": source_signature_list,
+                    "phonetic_threshold": phonetic_threshold,
                 }
 
                 if swap:
                     entry = {
                         **entry,
-                        'source_word': row[1],
-                        'target_word': row[0],
-                        'source_context': row[11],
-                        'target_context': row[10],
+                        "source_word": row[1],
+                        "target_word": row[0],
+                        "source_context": row[11],
+                        "target_context": row[10],
                     }
 
                 return _enrich_with_cultural_context(entry)
 
             for row in source_results:
-                cultural_entries.append(build_entry(row))
+                enriched_entry = build_entry(row)
+                if enriched_entry:
+                    cultural_entries.append(enriched_entry)
 
             for row in target_results:
-                cultural_entries.append(build_entry(row, swap=True))
+                enriched_entry = build_entry(row, swap=True)
+                if enriched_entry:
+                    cultural_entries.append(enriched_entry)
 
-            cultural_entries.sort(key=lambda r: (-r['confidence'], -r['phonetic_sim']))
+            cultural_entries.sort(
+                key=lambda r: (
+                    -float(r.get("confidence", 0.0)),
+                    -float(r.get("phonetic_sim", 0.0)),
+                )
+            )
 
             anti_llm_entries: List[Dict] = []
             if include_anti_llm and not filters_active:
@@ -431,14 +709,17 @@ class RhymeRarityApp:
                 )
                 for pattern in anti_patterns:
                     anti_llm_entries.append({
-                        'source_word': source_word,
-                        'target_word': pattern.target_word,
-                        'pattern': f"{source_word} / {pattern.target_word}",
-                        'confidence': pattern.confidence,
-                        'rarity_score': pattern.rarity_score,
-                        'llm_weakness_type': pattern.llm_weakness_type,
-                        'cultural_depth': pattern.cultural_depth,
-                        'result_source': 'anti_llm',
+                        "source_word": source_word,
+                        "target_word": pattern.target_word,
+                        "pattern": f"{source_word} / {pattern.target_word}",
+                        "confidence": pattern.confidence,
+                        "rarity_score": pattern.rarity_score,
+                        "llm_weakness_type": pattern.llm_weakness_type,
+                        "cultural_depth": pattern.cultural_depth,
+                        "result_source": "anti_llm",
+                        "source_rhyme_signatures": source_signature_list,
+                        "source_phonetic_profile": source_phonetic_profile,
+                        "phonetic_threshold": phonetic_threshold,
                     })
 
             combined_results = phonetic_entries + cultural_entries + anti_llm_entries
@@ -446,9 +727,13 @@ class RhymeRarityApp:
             deduped: List[Dict] = []
             seen_pairs = set()
             for entry in combined_results:
+                target_value = entry.get("target_word")
+                if not target_value:
+                    continue
+                source_value = entry.get("source_word", source_word)
                 pair = (
-                    entry.get('source_word', source_word).lower(),
-                    entry['target_word'].lower(),
+                    str(source_value).lower(),
+                    str(target_value).lower(),
                 )
                 if pair in seen_pairs:
                     continue
@@ -459,15 +744,15 @@ class RhymeRarityApp:
             if filters_active:
                 for entry in deduped:
                     if cultural_filters:
-                        sig = entry.get('cultural_sig')
+                        sig = entry.get("cultural_sig")
                         if sig is None or _normalize_source_name(str(sig)) not in cultural_filters:
                             continue
                     if genre_filters:
-                        genre_value = entry.get('genre')
+                        genre_value = entry.get("genre")
                         if genre_value is None or _normalize_source_name(str(genre_value)) not in genre_filters:
                             continue
                     if max_line_distance is not None:
-                        distance_value = entry.get('distance')
+                        distance_value = entry.get("distance")
                         if distance_value is None or distance_value > max_line_distance:
                             continue
                     filtered_entries.append(entry)
@@ -475,14 +760,9 @@ class RhymeRarityApp:
                 filtered_entries = deduped
 
             for entry in filtered_entries:
-                entry.pop('source_word', None)
+                entry.pop("source_word", None)
 
             return filtered_entries[:limit]
-
-        except sqlite3.Error as e:
-            print(f"Database error: {e}")
-            return []
-    
     def format_rhyme_results(self, source_word: str, rhymes: List[Dict]) -> str:
         """Format rhyme search results for display"""
         if not rhymes:
