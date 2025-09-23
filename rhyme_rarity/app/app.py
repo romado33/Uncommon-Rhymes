@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from module1_enhanced_core_phonetic import (
-    CMUDictLoader,
-    EnhancedPhoneticAnalyzer,
-)
-from module2_enhanced_anti_llm import AntiLLMRhymeEngine
-from module3_enhanced_cultural_database import CulturalIntelligenceEngine
+from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
+from anti_llm import AntiLLMRhymeEngine
+from cultural.engine import CulturalIntelligenceEngine
 
 from .data.database import SQLiteRhymeRepository
 from .services.search_service import SearchService

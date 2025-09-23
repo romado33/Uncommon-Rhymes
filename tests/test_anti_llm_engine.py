@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from module2_enhanced_anti_llm import AntiLLMRhymeEngine, SeedCandidate
+from anti_llm import AntiLLMRhymeEngine, SeedCandidate
 
 
 class DummyRarityMap:
@@ -88,7 +88,7 @@ def test_syllable_complexity_uses_estimator(monkeypatch: pytest.MonkeyPatch):
         return 4
 
     monkeypatch.setattr(
-        "module2_enhanced_anti_llm.estimate_syllable_count", fake_estimator
+        "anti_llm.engine.estimate_syllable_count", fake_estimator
     )
 
     engine = AntiLLMRhymeEngine()

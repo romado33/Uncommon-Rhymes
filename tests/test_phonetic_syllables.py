@@ -1,4 +1,4 @@
-from module1_enhanced_core_phonetic import (
+from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
     extract_phrase_components,
     get_cmu_rhymes,

@@ -1,4 +1,4 @@
-from module1_enhanced_core_phonetic import CMUDictLoader
+from rhyme_rarity.core import CMUDictLoader
 
 
 def test_cmudict_loader_retries_after_file_creation(tmp_path):

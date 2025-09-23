@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import rhyme_rarity.app.services.search_service as search_service_module
 from rhyme_rarity.app.app import RhymeRarityApp
-from module2_enhanced_anti_llm import AntiLLMPattern
+from anti_llm import AntiLLMPattern
 
 
 if os.path.exists("patterns.db"):
