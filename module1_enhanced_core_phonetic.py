@@ -540,6 +540,44 @@ class EnhancedPhoneticAnalyzer:
         return tail[-3:]
 
     @staticmethod
+    def _meter_hint_from_stress(stress_pattern: str) -> Dict[str, Optional[str]]:
+        """Return a simple metrical interpretation for a stress signature."""
+
+        if not stress_pattern:
+            return {"foot": None, "description": None}
+
+        normalized = stress_pattern.replace("2", "1")
+        foot: Optional[str] = None
+        description: Optional[str] = None
+
+        if len(normalized) == 1:
+            foot = "monosyllabic"
+            description = (
+                "Single stressed syllable"
+                if normalized == "1"
+                else "Single unstressed syllable"
+            )
+        elif normalized.startswith("01"):
+            foot = "iamb"
+            description = "Likely iambic opening (unstressed → stressed)"
+        elif normalized.startswith("10"):
+            foot = "trochee"
+            description = "Likely trochaic opening (stressed → unstressed)"
+        elif normalized.startswith("001"):
+            foot = "anapest"
+            description = "Hints at anapestic foot (two unstressed then stressed)"
+        elif normalized.startswith("100"):
+            foot = "dactyl"
+            description = "Hints at dactylic foot (stressed then two unstressed)"
+        elif normalized.startswith("11"):
+            foot = "spondee"
+            description = "Double stress opening (spondaic cadence)"
+        else:
+            description = "Mixed stress profile"
+
+        return {"foot": foot, "description": description}
+
+    @staticmethod
     def _assonance_score(word1: str, word2: str) -> float:
         vowels1 = re.findall(r"[aeiou]+", word1)
         vowels2 = re.findall(r"[aeiou]+", word2)
@@ -667,6 +705,57 @@ class EnhancedPhoneticAnalyzer:
             internal_rhyme_score=internal_rhyme_score,
             bradley_device=bradley_device,
         )
+
+    def describe_word(self, word: str) -> Dict[str, Any]:
+        """Return a phonetic profile for a single word."""
+
+        normalized = self._clean_word(word or "")
+        profile: Dict[str, Any] = {
+            "word": word,
+            "normalized": normalized,
+            "syllables": None,
+            "stress_pattern": "",
+            "stress_pattern_display": "",
+            "meter_hint": None,
+            "metrical_foot": None,
+            "vowel_skeleton": "",
+            "consonant_tail": "",
+            "pronunciations": [],
+        }
+
+        if not normalized:
+            return profile
+
+        try:
+            profile["syllables"] = self._count_syllables(normalized)
+        except Exception:
+            profile["syllables"] = None
+
+        pronunciations = self._get_pronunciation_variants(normalized)
+        if pronunciations:
+            stripped_variants = []
+            for phones in pronunciations[:2]:
+                try:
+                    stress_signature = self._stress_signature_from_phones(phones)
+                except Exception:
+                    stress_signature = ""
+                if stress_signature and not profile["stress_pattern"]:
+                    profile["stress_pattern"] = stress_signature
+                    profile["stress_pattern_display"] = "-".join(stress_signature)
+                stripped_variants.append(
+                    " ".join(self._strip_stress_markers(phones))
+                )
+            profile["pronunciations"] = stripped_variants
+
+        if profile["stress_pattern"]:
+            meter_info = self._meter_hint_from_stress(profile["stress_pattern"])
+            profile["meter_hint"] = meter_info.get("description")
+            profile["metrical_foot"] = meter_info.get("foot")
+
+        profile["vowel_skeleton"] = self._vowel_skeleton(normalized)
+        profile["consonant_tail"] = self._consonant_tail(normalized)
+
+        return profile
 
     def estimate_syllables(self, word: str) -> int:
         """Public helper for downstream modules that need syllable counts."""
