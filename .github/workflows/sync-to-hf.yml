@@ -20,8 +20,9 @@ jobs:
           cd hf-space
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          echo "✅ HF Space cloned, contents:"
-          ls -R .
+          git remote set-url origin https://__token__:$HF_TOKEN@huggingface.co/spaces/romado33/RhymeRater
+          echo "✅ Remote configured:"
+          git remote -v
 
       - name: Copy project files but exclude patterns.db
         run: |
@@ -42,6 +43,6 @@ jobs:
           git status
           git commit -m "Sync from GitHub" || echo "⚠️ No changes to commit"
           echo "🚀 Pushing changes to Hugging Face..."
-          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/RhymeRater main
+          git push origin main
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
