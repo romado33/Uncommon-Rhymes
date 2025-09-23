@@ -176,6 +176,14 @@ class RhymeRarityApp:
 
         print(f"🎵 RhymeRarity App initialized with database: {db_path}")
 
+    @staticmethod
+    def _normalize_source_name(name: Optional[str]) -> str:
+        """Normalise filter labels for consistent lookups and comparisons."""
+
+        if name is None:
+            return ""
+        return str(name).strip().lower().replace("_", "-")
+
     def _refresh_rarity_map(self) -> None:
         analyzer = getattr(self, "phonetic_analyzer", None)
         if not analyzer:
@@ -301,23 +309,23 @@ class RhymeRarityApp:
                     return [value] if value.strip() else []
                 return [str(value)]
 
-            def _normalize_source_name(name: str) -> str:
-                return name.strip().lower().replace("_", "-")
+            normalize_name = self._normalize_source_name
 
-            cultural_filters = {_normalize_source_name(sig) for sig in _normalize_to_list(cultural_significance)}
-            genre_filters = {_normalize_source_name(genre) for genre in _normalize_to_list(genres)}
+            def _normalized_set(value: Optional[List[str] | str]) -> Set[str]:
+                return {
+                    normalized
+                    for normalized in (normalize_name(item) for item in _normalize_to_list(value))
+                    if normalized
+                }
 
-            rhyme_type_filters = {
-                _normalize_source_name(rhyme_type)
-                for rhyme_type in _normalize_to_list(allowed_rhyme_types)
-            }
-            bradley_filters = {
-                _normalize_source_name(device)
-                for device in _normalize_to_list(bradley_devices)
-            }
+            cultural_filters = _normalized_set(cultural_significance)
+            genre_filters = _normalized_set(genres)
+
+            rhyme_type_filters = _normalized_set(allowed_rhyme_types)
+            bradley_filters = _normalized_set(bradley_devices)
             cadence_focus_normalized = None
             if isinstance(cadence_focus, str) and cadence_focus.strip():
-                cadence_focus_normalized = _normalize_source_name(cadence_focus)
+                cadence_focus_normalized = normalize_name(cadence_focus) or None
 
             min_syllable_threshold = None if min_syllables is None else max(1, int(min_syllables))
             max_syllable_threshold = None if max_syllables is None else max(1, int(max_syllables))
@@ -334,9 +342,7 @@ class RhymeRarityApp:
                 except (TypeError, ValueError):
                     min_stress_threshold = None
 
-            selected_sources = {
-                _normalize_source_name(source) for source in _normalize_to_list(result_sources)
-            }
+            selected_sources = _normalized_set(result_sources)
             if not selected_sources:
                 selected_sources = {"phonetic", "cultural", "anti-llm"}
 
@@ -871,7 +877,9 @@ class RhymeRarityApp:
 
                 if cultural_filters:
                     placeholders = ",".join(["?"] * len(cultural_filters))
-                    conditions.append(f"LOWER(cultural_significance) IN ({placeholders})")
+                    conditions.append(
+                        f"REPLACE(LOWER(cultural_significance), '_', '-') IN ({placeholders})"
+                    )
                     params.extend(sorted(cultural_filters))
 
                 if genre_filters:
@@ -1048,11 +1056,11 @@ class RhymeRarityApp:
                 if filters_active:
                     if cultural_filters:
                         sig = entry.get("cultural_sig")
-                        if sig is None or _normalize_source_name(str(sig)) not in cultural_filters:
+                        if sig is None or normalize_name(str(sig)) not in cultural_filters:
                             continue
                     if genre_filters:
                         genre_value = entry.get("genre")
-                        if genre_value is None or _normalize_source_name(str(genre_value)) not in genre_filters:
+                        if genre_value is None or normalize_name(str(genre_value)) not in genre_filters:
                             continue
                     if rhyme_type_filters:
                         entry_rhyme = entry.get("rhyme_type")
@@ -1062,13 +1070,13 @@ class RhymeRarityApp:
                             entry_rhyme = (
                                 (entry.get("feature_profile") or {}).get("rhyme_type")
                             )
-                        if not entry_rhyme or _normalize_source_name(str(entry_rhyme)) not in rhyme_type_filters:
+                        if not entry_rhyme or normalize_name(str(entry_rhyme)) not in rhyme_type_filters:
                             continue
                     if bradley_filters:
                         device_value = entry.get("bradley_device")
                         if not device_value and entry.get("feature_profile"):
                             device_value = entry["feature_profile"].get("bradley_device")
-                        if not device_value or _normalize_source_name(str(device_value)) not in bradley_filters:
+                        if not device_value or normalize_name(str(device_value)) not in bradley_filters:
                             continue
                     if min_rarity_threshold is not None:
                         rarity_metric = entry.get("rarity_score")
@@ -1095,7 +1103,7 @@ class RhymeRarityApp:
                         cadence_value = prosody.get("complexity_tag") if isinstance(prosody, dict) else None
                         if cadence_value is None:
                             cadence_value = entry.get("feature_profile", {}).get("complexity_tag")
-                        if not cadence_value or _normalize_source_name(str(cadence_value)) != cadence_focus_normalized:
+                        if not cadence_value or normalize_name(str(cadence_value)) != cadence_focus_normalized:
                             continue
                     if require_internal:
                         internal_value = entry.get("internal_rhyme_score")
@@ -1370,19 +1378,35 @@ class RhymeRarityApp:
             )
             return self.format_rhyme_results(word, rhymes)
 
-        cultural_options = sorted(
-            getattr(getattr(self, "cultural_engine", None), "cultural_categories", {}).keys()
-        )
+        normalized_cultural_labels: Set[str] = set()
+        cultural_engine = getattr(self, "cultural_engine", None)
+        if cultural_engine:
+            for raw_label in getattr(cultural_engine, "cultural_categories", {}).keys():
+                normalized = self._normalize_source_name(raw_label)
+                if normalized:
+                    normalized_cultural_labels.add(normalized)
 
+        genre_options: List[str] = []
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT DISTINCT cultural_significance FROM song_rhyme_patterns "
+                    "WHERE cultural_significance IS NOT NULL"
+                )
+                for (value,) in cursor.fetchall():
+                    normalized = self._normalize_source_name(value)
+                    if normalized:
+                        normalized_cultural_labels.add(normalized)
+
                 cursor.execute(
                     "SELECT DISTINCT genre FROM song_rhyme_patterns WHERE genre IS NOT NULL ORDER BY genre"
                 )
                 genre_options = [row[0] for row in cursor.fetchall() if row[0]]
         except sqlite3.Error:
             genre_options = []
+
+        cultural_options = sorted(normalized_cultural_labels)
 
         default_sources = ["phonetic", "cultural"]
 
@@ -1426,7 +1450,7 @@ class RhymeRarityApp:
                         choices=cultural_options,
                         multiselect=True,
                         label="Cultural Significance",
-                        info="Filter by cultural importance",
+                        info="Filter by cultural importance (labels such as classic, cultural-icon, underground)",
                         value=[],
                     )
 
