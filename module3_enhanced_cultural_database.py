@@ -352,7 +352,7 @@ class CulturalIntelligenceEngine:
     
     def get_cultural_context(self, pattern_data: Dict) -> CulturalContext:
         """Generate comprehensive cultural context for a rhyme pattern"""
-        artist = pattern_data.get('artist', '').lower()
+        artist = (pattern_data.get('artist') or '').strip().lower()
         song = pattern_data.get('song', '')
         
         # Get artist profile
