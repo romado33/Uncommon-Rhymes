@@ -112,12 +112,65 @@ class CulturalIntelligenceEngine:
         signatures.update(self._approximate_rhyme_signature(normalized))
         return signatures
 
+    # ------------------------------------------------------------------
+    # Prosody helpers inspired by rhythm-focused scholarship
+    # ------------------------------------------------------------------
+
+    def _phrase_syllable_vector(self, text: Optional[str]) -> List[int]:
+        if not text:
+            return []
+        tokens = re.findall(r"[a-zA-Z']+", text)
+        return [self._estimate_syllables(token.lower()) for token in tokens if token]
+
+    def _prosody_profile(
+        self,
+        source_context: Optional[str],
+        target_context: Optional[str],
+        feature_profile: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        source_vector = self._phrase_syllable_vector(source_context)
+        target_vector = self._phrase_syllable_vector(target_context)
+
+        total_source = sum(source_vector)
+        total_target = sum(target_vector)
+
+        avg_source = total_source / max(len(source_vector), 1)
+        avg_target = total_target / max(len(target_vector), 1)
+
+        cadence_ratio = 0.0
+        if total_source and total_target:
+            cadence_ratio = total_target / total_source
+
+        stress_alignment = None
+        if feature_profile:
+            stress_alignment = feature_profile.get("stress_alignment")
+
+        complexity_tag = "steady"
+        if avg_target >= 3 or avg_source >= 3:
+            complexity_tag = "polysyllabic"
+        if len(target_vector) >= 3 and any(count >= 4 for count in target_vector):
+            complexity_tag = "dense"
+
+        return {
+            "source_total_syllables": total_source,
+            "target_total_syllables": total_target,
+            "source_average_syllables": avg_source,
+            "target_average_syllables": avg_target,
+            "cadence_ratio": cadence_ratio,
+            "stress_alignment": stress_alignment,
+            "complexity_tag": complexity_tag,
+            "source_vector": source_vector,
+            "target_vector": target_vector,
+        }
+
     def evaluate_rhyme_alignment(
         self,
         source_word: str,
         target_word: str,
         threshold: Optional[float] = None,
         rhyme_signatures: Optional[Set[str]] = None,
+        source_context: Optional[str] = None,
+        target_context: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Validate and score phonetic alignment between two words."""
         normalized_source = (source_word or "").strip().lower()
@@ -142,6 +195,8 @@ class CulturalIntelligenceEngine:
         combined_value: Optional[float] = None
         rhyme_type: Optional[str] = None
         features: Dict[str, Any] = {}
+        feature_profile_dict: Dict[str, Any] = {}
+        prosody_profile: Dict[str, Any] = {}
 
         if analyzer:
             try:
@@ -152,7 +207,9 @@ class CulturalIntelligenceEngine:
                 similarity = float(match.similarity_score)
                 features = dict(match.phonetic_features)
                 rhyme_type = match.rhyme_type
+                profile_obj = getattr(match, "feature_profile", None)
             else:
+                profile_obj = None
                 try:
                     similarity = float(analyzer.get_phonetic_similarity(normalized_source, normalized_target))
                 except Exception:
@@ -162,6 +219,29 @@ class CulturalIntelligenceEngine:
                 except Exception:
                     rhyme_type = None
                 features = {}
+            if profile_obj is None:
+                try:
+                    profile_obj = analyzer.derive_rhyme_profile(
+                        normalized_source,
+                        normalized_target,
+                        similarity=similarity,
+                        rhyme_type=rhyme_type,
+                    )
+                except Exception:
+                    profile_obj = None
+            if profile_obj is not None:
+                if hasattr(profile_obj, "as_dict"):
+                    try:
+                        feature_profile_dict = dict(profile_obj.as_dict())
+                    except Exception:
+                        feature_profile_dict = {}
+                elif isinstance(profile_obj, dict):
+                    feature_profile_dict = dict(profile_obj)
+                else:
+                    try:
+                        feature_profile_dict = dict(vars(profile_obj))
+                    except Exception:
+                        feature_profile_dict = {}
             try:
                 rarity_value = float(analyzer.get_rarity_score(normalized_target))
             except Exception:
@@ -182,6 +262,12 @@ class CulturalIntelligenceEngine:
             rhyme_type = None
             features = {}
 
+        prosody_profile = self._prosody_profile(
+            source_context,
+            target_context,
+            feature_profile_dict,
+        )
+
         return {
             "similarity": similarity,
             "rarity": rarity_value,
@@ -190,6 +276,8 @@ class CulturalIntelligenceEngine:
             "signature_matches": signature_matches,
             "target_signatures": sorted(target_signatures),
             "features": features,
+            "feature_profile": feature_profile_dict,
+            "prosody_profile": prosody_profile,
         }
 
     def _initialize_artist_profiles(self) -> Dict[str, ArtistProfile]:

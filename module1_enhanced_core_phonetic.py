@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Set, Iterable
+from typing import Any, Dict, List, Tuple, Optional, Set, Iterable
 from dataclasses import dataclass
 import difflib
 import math
@@ -295,6 +295,53 @@ DEFAULT_RARITY_MAP = WordRarityMap()
 
 
 @dataclass
+class RhymeFeatureProfile:
+    """Rich description of rhyme craft elements between two words.
+
+    The profile draws on scholarship around rap poetics – in particular
+    frameworks popularised by Adam Bradley's *Book of Rhymes* – to surface
+    information about syllable span, stress alignment, and sonic devices like
+    assonance or consonance. These metrics power downstream filters that help
+    writers locate uncommon-yet-musical pairings.
+    """
+
+    source_word: str
+    target_word: str
+    syllable_span: Tuple[int, int]
+    stress_alignment: float
+    stress_pattern_source: str
+    stress_pattern_target: str
+    vowel_skeleton_source: str
+    vowel_skeleton_target: str
+    consonant_tail_source: str
+    consonant_tail_target: str
+    assonance_score: float
+    consonance_score: float
+    internal_rhyme_score: float
+    bradley_device: str
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Return a JSON‑serialisable representation of the profile."""
+
+        return {
+            "source_word": self.source_word,
+            "target_word": self.target_word,
+            "syllable_span": self.syllable_span,
+            "stress_alignment": self.stress_alignment,
+            "stress_pattern_source": self.stress_pattern_source,
+            "stress_pattern_target": self.stress_pattern_target,
+            "vowel_skeleton_source": self.vowel_skeleton_source,
+            "vowel_skeleton_target": self.vowel_skeleton_target,
+            "consonant_tail_source": self.consonant_tail_source,
+            "consonant_tail_target": self.consonant_tail_target,
+            "assonance_score": self.assonance_score,
+            "consonance_score": self.consonance_score,
+            "internal_rhyme_score": self.internal_rhyme_score,
+            "bradley_device": self.bradley_device,
+        }
+
+
+@dataclass
 class PhoneticMatch:
     """Represents a phonetic match between two words"""
 
@@ -305,6 +352,7 @@ class PhoneticMatch:
     rhyme_type: str  # perfect, near, slant, etc.
     rarity_score: float = 0.0
     combined_score: float = 0.0
+    feature_profile: Optional[RhymeFeatureProfile] = None
 
 class EnhancedPhoneticAnalyzer:
     """
@@ -483,12 +531,198 @@ class EnhancedPhoneticAnalyzer:
         word = word.lower()
         vowel_groups = re.findall(r'[aeiou]+', word)
         syllable_count = len(vowel_groups)
-        
+
         # Adjust for silent 'e'
         if word.endswith('e') and syllable_count > 1:
             syllable_count -= 1
-        
+
         return max(1, syllable_count)  # Minimum 1 syllable
+
+    # ------------------------------------------------------------------
+    # Research-driven feature extraction
+    # ------------------------------------------------------------------
+
+    def _get_pronunciation_variants(self, word: str) -> List[List[str]]:
+        loader = getattr(self, "cmu_loader", None)
+        if loader is None:
+            return []
+        try:
+            return loader.get_pronunciations(word)  # type: ignore[arg-type]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _stress_signature_from_phones(phones: List[str]) -> str:
+        signature_parts: List[str] = []
+        for phone in phones:
+            stress_marker = re.search(r"(\d)", phone)
+            if stress_marker:
+                signature_parts.append(stress_marker.group(1))
+        return "".join(signature_parts)
+
+    @staticmethod
+    def _strip_stress_markers(phones: List[str]) -> List[str]:
+        return [re.sub(r"\d", "", phone) for phone in phones]
+
+    @staticmethod
+    def _vowel_skeleton(word: str) -> str:
+        vowels = re.findall(r"[aeiou]+", word)
+        return "-".join(vowels)
+
+    @staticmethod
+    def _consonant_tail(word: str) -> str:
+        tail = re.sub(r"[aeiou]", "", word)
+        return tail[-3:]
+
+    @staticmethod
+    def _assonance_score(word1: str, word2: str) -> float:
+        vowels1 = re.findall(r"[aeiou]+", word1)
+        vowels2 = re.findall(r"[aeiou]+", word2)
+        if not vowels1 or not vowels2:
+            return 0.0
+        counter1 = Counter(vowels1)
+        counter2 = Counter(vowels2)
+        shared = sum(min(counter1[v], counter2[v]) for v in counter1)
+        total = max(sum(counter1.values()), sum(counter2.values()), 1)
+        return shared / total
+
+    @staticmethod
+    def _consonance_score(word1: str, word2: str) -> float:
+        consonants1 = re.sub(r"[aeiou]", "", word1)
+        consonants2 = re.sub(r"[aeiou]", "", word2)
+        if not consonants1 or not consonants2:
+            return 0.0
+        counter1 = Counter(consonants1)
+        counter2 = Counter(consonants2)
+        shared = sum(min(counter1[c], counter2[c]) for c in counter1)
+        total = max(len(consonants1), len(consonants2))
+        if total == 0:
+            return 0.0
+        return shared / total
+
+    def _derive_bradley_device(
+        self,
+        similarity: float,
+        rhyme_type: str,
+        assonance: float,
+        consonance: float,
+        syllables: Tuple[int, int],
+    ) -> str:
+        """Classify rhyme device using rap poetics scholarship."""
+
+        if similarity >= 0.95 or rhyme_type == "perfect":
+            return "pure rhyme"
+        if assonance >= 0.7 and consonance >= 0.5:
+            return "compound rhyme"
+        if assonance >= 0.7:
+            return "assonance"
+        if consonance >= 0.6:
+            return "consonance"
+        if min(syllables) >= 2 and similarity >= 0.7:
+            return "multisyllabic"
+        if rhyme_type in {"slant", "eye"}:
+            return "slant rhyme"
+        return "resonant wordplay"
+
+    def build_feature_profile(
+        self,
+        source_word: str,
+        target_word: str,
+        similarity: Optional[float] = None,
+        rhyme_type: Optional[str] = None,
+    ) -> Optional[RhymeFeatureProfile]:
+        """Create a research-aligned feature profile for a rhyme pair."""
+
+        if not source_word or not target_word:
+            return None
+
+        normalized_source = source_word.lower()
+        normalized_target = target_word.lower()
+
+        syllables_source = self._count_syllables(normalized_source)
+        syllables_target = self._count_syllables(normalized_target)
+        syllable_span = (syllables_source, syllables_target)
+
+        pronunciations_source = self._get_pronunciation_variants(normalized_source)
+        pronunciations_target = self._get_pronunciation_variants(normalized_target)
+
+        stress_source = ""
+        stress_target = ""
+
+        if pronunciations_source:
+            stress_source = self._stress_signature_from_phones(pronunciations_source[0])
+        if pronunciations_target:
+            stress_target = self._stress_signature_from_phones(pronunciations_target[0])
+
+        stress_alignment = 0.0
+        if stress_source and stress_target:
+            matches = sum(1 for a, b in zip(stress_source, stress_target) if a == b)
+            stress_alignment = matches / max(len(stress_source), len(stress_target))
+
+        vowel_skeleton_source = self._vowel_skeleton(normalized_source)
+        vowel_skeleton_target = self._vowel_skeleton(normalized_target)
+        consonant_tail_source = self._consonant_tail(normalized_source)
+        consonant_tail_target = self._consonant_tail(normalized_target)
+
+        assonance = self._assonance_score(normalized_source, normalized_target)
+        consonance_value = self._consonance_score(normalized_source, normalized_target)
+
+        internal_rhyme_base = (assonance + consonance_value) / 2.0
+        if min(syllable_span) >= 2:
+            internal_rhyme_base += 0.2
+        internal_rhyme_score = min(1.0, max(0.0, internal_rhyme_base))
+
+        resolved_rhyme_type = rhyme_type or self.classify_rhyme_type(
+            normalized_source,
+            normalized_target,
+            similarity or self.get_phonetic_similarity(normalized_source, normalized_target),
+        )
+
+        bradley_device = self._derive_bradley_device(
+            similarity or 0.0,
+            resolved_rhyme_type,
+            assonance,
+            consonance_value,
+            syllable_span,
+        )
+
+        return RhymeFeatureProfile(
+            source_word=normalized_source,
+            target_word=normalized_target,
+            syllable_span=syllable_span,
+            stress_alignment=stress_alignment,
+            stress_pattern_source=stress_source,
+            stress_pattern_target=stress_target,
+            vowel_skeleton_source=vowel_skeleton_source,
+            vowel_skeleton_target=vowel_skeleton_target,
+            consonant_tail_source=consonant_tail_source,
+            consonant_tail_target=consonant_tail_target,
+            assonance_score=assonance,
+            consonance_score=consonance_value,
+            internal_rhyme_score=internal_rhyme_score,
+            bradley_device=bradley_device,
+        )
+
+    def estimate_syllables(self, word: str) -> int:
+        """Public helper for downstream modules that need syllable counts."""
+
+        return self._count_syllables(word)
+
+    def derive_rhyme_profile(
+        self,
+        source_word: str,
+        target_word: str,
+        similarity: Optional[float] = None,
+        rhyme_type: Optional[str] = None,
+    ) -> Optional[RhymeFeatureProfile]:
+        """Public wrapper for compatibility with downstream modules."""
+
+        return self.build_feature_profile(
+            source_word,
+            target_word,
+            similarity=similarity,
+            rhyme_type=rhyme_type,
+        )
     
     def classify_rhyme_type(self, word1: str, word2: str, similarity: float) -> str:
         """Classify the type of rhyme based on similarity score"""
@@ -512,6 +746,13 @@ class EnhancedPhoneticAnalyzer:
         clean_word1 = self._clean_word(word1)
         clean_word2 = self._clean_word(word2)
 
+        profile = self.build_feature_profile(
+            clean_word1,
+            clean_word2,
+            similarity=similarity,
+            rhyme_type=rhyme_type,
+        )
+
         # Calculate detailed phonetic features
         features = {
             'ending_similarity': self._calculate_ending_similarity(clean_word1, clean_word2),
@@ -520,12 +761,22 @@ class EnhancedPhoneticAnalyzer:
             'syllable_similarity': self._calculate_syllable_similarity(clean_word1, clean_word2)
         }
 
+        if profile is not None:
+            features.update(
+                {
+                    'assonance_score': profile.assonance_score,
+                    'consonance_score': profile.consonance_score,
+                    'internal_rhyme_score': profile.internal_rhyme_score,
+                }
+            )
+
         return PhoneticMatch(
             word1=word1,
             word2=word2,
             similarity_score=similarity,
             phonetic_features=features,
-            rhyme_type=rhyme_type
+            rhyme_type=rhyme_type,
+            feature_profile=profile,
         )
 
     def get_rhyme_candidates(self, target_word: str, word_list: List[str],
