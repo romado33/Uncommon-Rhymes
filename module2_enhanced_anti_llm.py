@@ -7,7 +7,7 @@ Part of the RhymeRarity system deployed on Hugging Face
 
 import sqlite3
 import random
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict, Counter
 import re
@@ -21,6 +21,11 @@ class AntiLLMPattern:
     cultural_depth: str
     llm_weakness_type: str  # phonological, cultural, frequency, etc.
     confidence: float
+    bradley_device: str = "undetermined"
+    syllable_span: Tuple[int, int] = (0, 0)
+    stress_alignment: float = 0.0
+    feature_profile: Dict[str, Any] = field(default_factory=dict)
+    prosody_profile: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -31,6 +36,8 @@ class SeedCandidate:
     rarity: float = 0.0
     combined: float = 0.0
     signatures: Set[str] = field(default_factory=set)
+    feature_profile: Dict[str, Any] = field(default_factory=dict)
+    prosody_profile: Dict[str, Any] = field(default_factory=dict)
 
     def normalized(self) -> str:
         return self.word.lower().strip()
@@ -41,9 +48,10 @@ class AntiLLMRhymeEngine:
     Exploits documented weaknesses in large language model rhyme generation
     """
     
-    def __init__(self, db_path: str = "patterns.db"):
+    def __init__(self, db_path: str = "patterns.db", phonetic_analyzer: Optional[Any] = None):
         self.db_path = db_path
-        
+        self.phonetic_analyzer = phonetic_analyzer
+
         # Initialize anti-LLM strategies
         self.llm_weaknesses = self._initialize_llm_weaknesses()
         self.rarity_multipliers = self._initialize_rarity_multipliers()
@@ -65,6 +73,11 @@ class AntiLLMRhymeEngine:
         
         print("🚀 Enhanced Anti-LLM Rhyme Engine initialized")
         print("Targeting documented LLM weaknesses in phonological processing")
+
+    def set_phonetic_analyzer(self, analyzer: Any) -> None:
+        """Attach an analyzer so that generated patterns expose feature profiles."""
+
+        self.phonetic_analyzer = analyzer
     
     def _initialize_llm_weaknesses(self) -> Dict[str, Dict]:
         """Initialize known LLM weaknesses in rhyme generation"""
@@ -114,6 +127,78 @@ class AntiLLMRhymeEngine:
             'era_specific': 2.8,    # Time period specific language
             'artist_signature': 2.5, # Artist's unique style
             'mainstream': 1.0       # Widely known patterns
+        }
+
+    # ------------------------------------------------------------------
+    # Feature profile support
+    # ------------------------------------------------------------------
+
+    def _extract_feature_profile(self, source_word: str, target_word: str) -> Dict[str, Any]:
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer is None:
+            return {}
+
+        builder = getattr(analyzer, "derive_rhyme_profile", None)
+        if not callable(builder):
+            builder = getattr(analyzer, "build_feature_profile", None)
+        if not callable(builder):
+            return {}
+
+        try:
+            profile = builder(source_word, target_word)
+        except Exception:
+            return {}
+
+        if profile is None:
+            return {}
+
+        if hasattr(profile, "as_dict"):
+            try:
+                return dict(profile.as_dict())
+            except Exception:
+                pass
+
+        if isinstance(profile, dict):
+            return dict(profile)
+
+        try:
+            return dict(profile.__dict__)
+        except Exception:
+            return {}
+
+    def _attach_profile(self, pattern: AntiLLMPattern) -> None:
+        profile = self._extract_feature_profile(pattern.source_word, pattern.target_word)
+        if not profile:
+            return
+
+        pattern.feature_profile = profile
+
+        bradley = profile.get("bradley_device")
+        if isinstance(bradley, str) and bradley:
+            pattern.bradley_device = bradley
+
+        syllable_span = profile.get("syllable_span")
+        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
+            try:
+                pattern.syllable_span = (int(syllable_span[0]), int(syllable_span[1]))
+            except (TypeError, ValueError):
+                pass
+
+        stress_alignment = profile.get("stress_alignment")
+        if isinstance(stress_alignment, (int, float)):
+            pattern.stress_alignment = float(stress_alignment)
+
+        internal_score = profile.get("internal_rhyme_score")
+        if isinstance(internal_score, (int, float)):
+            pattern.rarity_score *= 1.0 + max(0.0, float(internal_score)) * 0.15
+
+        pattern.prosody_profile = {
+            "complexity_tag": "dense"
+            if profile.get("syllable_span") and max(profile["syllable_span"]) >= 3
+            else "steady",
+            "stress_alignment": pattern.stress_alignment,
+            "assonance": profile.get("assonance_score"),
+            "consonance": profile.get("consonance_score"),
         }
     
     def generate_anti_llm_patterns(
@@ -259,9 +344,11 @@ class AntiLLMRhymeEngine:
                     llm_weakness_type="rare_word_combinations",
                     confidence=confidence
                 ))
-                
+
+                self._attach_profile(patterns[-1])
+
                 self.anti_llm_stats['rare_patterns_generated'] += 1
-        
+
         return patterns[:limit]
     
     def _find_phonological_challenges(self, cursor, source_word: str, limit: int) -> List[AntiLLMPattern]:
@@ -295,9 +382,11 @@ class AntiLLMRhymeEngine:
                     llm_weakness_type="phonological_processing",
                     confidence=confidence
                 ))
-                
+
+                self._attach_profile(patterns[-1])
+
                 self.anti_llm_stats['phonological_challenges'] += 1
-        
+
         return patterns[:limit]
     
     def _find_cultural_depth_patterns(self, cursor, source_word: str, limit: int) -> List[AntiLLMPattern]:
@@ -327,9 +416,11 @@ class AntiLLMRhymeEngine:
                 llm_weakness_type="cultural_context",
                 confidence=confidence
             ))
-            
+
+            self._attach_profile(patterns[-1])
+
             self.anti_llm_stats['cultural_patterns_found'] += 1
-        
+
         return patterns[:limit]
     
     def _find_complex_syllable_patterns(self, cursor, source_word: str, limit: int) -> List[AntiLLMPattern]:
@@ -363,6 +454,8 @@ class AntiLLMRhymeEngine:
                     confidence=confidence
                 ))
 
+                self._attach_profile(patterns[-1])
+
         return patterns[:limit]
 
     @staticmethod
@@ -386,6 +479,8 @@ class AntiLLMRhymeEngine:
             rarity_value = 0.0
             combined_value = 0.0
             signatures: Set[str] = set()
+            feature_profile: Dict[str, Any] = {}
+            prosody_profile: Dict[str, Any] = {}
 
             if isinstance(raw_seed, str):
                 word = raw_seed
@@ -415,6 +510,12 @@ class AntiLLMRhymeEngine:
                                 signatures.add(str(sig))
                     else:
                         signatures.add(str(signature_values))
+                feature_candidate = raw_seed.get("feature_profile")
+                if isinstance(feature_candidate, dict):
+                    feature_profile = dict(feature_candidate)
+                prosody_candidate = raw_seed.get("prosody_profile")
+                if isinstance(prosody_candidate, dict):
+                    prosody_profile = dict(prosody_candidate)
             else:
                 try:
                     word = raw_seed[0]
@@ -447,6 +548,8 @@ class AntiLLMRhymeEngine:
                     rarity=rarity_value,
                     combined=combined_value,
                     signatures=set(signatures),
+                    feature_profile=feature_profile,
+                    prosody_profile=prosody_profile,
                 )
             )
 
@@ -572,6 +675,14 @@ class AntiLLMRhymeEngine:
             combined_signatures.update(seed.signatures)
             combined_signatures.update(self._get_phonetic_fingerprint(seed_word))
 
+            if seed.feature_profile:
+                stress_hint = seed.feature_profile.get("stress_alignment")
+                if isinstance(stress_hint, (int, float)):
+                    combined_signatures.add(f"stress::{round(float(stress_hint), 2)}")
+                device_hint = seed.feature_profile.get("bradley_device")
+                if device_hint:
+                    combined_signatures.add(f"device::{str(device_hint).lower()}")
+
             candidate_dicts: List[Dict[str, Any]] = []
 
             candidate_dicts.extend(
@@ -637,6 +748,10 @@ class AntiLLMRhymeEngine:
                     base_rarity + seed_boost + complexity * 0.6 + syllable_complexity * 0.3,
                 )
 
+                stress_hint = seed.feature_profile.get("stress_alignment") if seed.feature_profile else None
+                if isinstance(stress_hint, (int, float)):
+                    final_score += min(0.4, max(0.0, float(stress_hint)) * 0.3)
+
                 if final_score < 1.6:
                     continue
 
@@ -665,16 +780,18 @@ class AntiLLMRhymeEngine:
                     or f"Seed cascade via {seed_word}"
                 )
 
-                results.append(
-                    AntiLLMPattern(
-                        source_word=source_word,
-                        target_word=target,
-                        rarity_score=final_score,
-                        cultural_depth=str(cultural_depth),
-                        llm_weakness_type=weakness,
-                        confidence=confidence,
-                    )
+                pattern = AntiLLMPattern(
+                    source_word=source_word,
+                    target_word=target,
+                    rarity_score=final_score,
+                    cultural_depth=str(cultural_depth),
+                    llm_weakness_type=weakness,
+                    confidence=confidence,
                 )
+
+                self._attach_profile(pattern)
+
+                results.append(pattern)
 
                 self.anti_llm_stats['seed_expansions'] += 1
                 seen_targets.add(normalized_target)
