@@ -284,6 +284,8 @@ class RhymeRarityApp:
             min_confidence = min_conf_threshold
 
             def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
+                """Return ``value`` coerced to a list of non-empty strings."""
+
                 if value is None:
                     return []
                 if isinstance(value, (list, tuple, set)):
@@ -295,6 +297,8 @@ class RhymeRarityApp:
             normalize_name = self._normalize_source_name
 
             def _normalized_set(value: Optional[List[str] | str]) -> Set[str]:
+                """Return a set of normalised filter names for user-supplied values."""
+
                 return {
                     normalized
                     for normalized in (normalize_name(item) for item in _normalize_to_list(value))
@@ -302,6 +306,8 @@ class RhymeRarityApp:
                 }
 
             def _coerce_float(value: Any) -> Optional[float]:
+                """Safely convert a value to ``float`` for numeric filters."""
+
                 if value is None:
                     return None
                 try:
@@ -310,6 +316,8 @@ class RhymeRarityApp:
                     return None
 
             def _prepare_confidence_defaults(entry: Dict) -> float:
+                """Populate common confidence fields and return the comparison score."""
+
                 combined_value = _coerce_float(entry.get("combined_score"))
                 confidence_value = _coerce_float(entry.get("confidence"))
 
@@ -388,6 +396,8 @@ class RhymeRarityApp:
                 cmu_loader = getattr(self, "cmu_loader", None)
 
             def _fallback_signature(word: str) -> Set[str]:
+                """Lightweight rhyme signature used when no analyzer data is available."""
+
                 cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
                 if not cleaned:
                     return set()
@@ -400,6 +410,9 @@ class RhymeRarityApp:
                 signature_bits.append(f"e:{ending}")
                 return {"|".join(signature_bits)}
 
+            # Build the source word signature set using progressively simpler
+            # strategies so that downstream comparisons always have at least a
+            # minimal representation to work with.
             source_signature_set: Set[str] = set()
             if cultural_engine and hasattr(cultural_engine, "derive_rhyme_signatures"):
                 try:
@@ -419,6 +432,9 @@ class RhymeRarityApp:
 
             source_signature_list = sorted(source_signature_set)
 
+            # Fetch more CMU candidates than requested results so that scoring
+            # filters can discard low-quality matches without leaving the
+            # response empty.
             reference_limit = max(limit * 2, 10)
             try:
                 cmu_candidates = get_cmu_rhymes(
@@ -524,6 +540,9 @@ class RhymeRarityApp:
                     if not target:
                         continue
 
+                    # Attempt to evaluate cultural alignment when the cultural
+                    # engine is available; otherwise fall back to a lightweight
+                    # profile derived from the phonetic analyzer.
                     alignment = None
                     if cultural_engine and hasattr(cultural_engine, "evaluate_rhyme_alignment"):
                         try:
@@ -616,6 +635,9 @@ class RhymeRarityApp:
                     if features:
                         entry["phonetic_features"] = features
 
+                    # Normalize optional feature profile information from the
+                    # alignment payload so that downstream UI components always
+                    # interact with plain dictionaries.
                     feature_profile_obj = alignment.get("feature_profile") or {}
                     feature_profile: Dict[str, Any] = {}
                     if feature_profile_obj:
