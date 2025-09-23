@@ -598,8 +598,19 @@ class RhymeRarityApp:
                     if features:
                         entry["phonetic_features"] = features
 
-                    feature_profile = alignment.get("feature_profile") or {}
+                    feature_profile_obj = alignment.get("feature_profile") or {}
+                    feature_profile: Dict[str, Any] = {}
+                    if feature_profile_obj:
+                        if isinstance(feature_profile_obj, dict):
+                            feature_profile = dict(feature_profile_obj)
+                        else:
+                            try:
+                                feature_profile = dict(feature_profile_obj)
+                            except Exception:
+                                feature_profile = {}
                     if feature_profile:
+                        if entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
+                            feature_profile["rhyme_type"] = entry["rhyme_type"]
                         entry["feature_profile"] = feature_profile
                         bradley_device = feature_profile.get("bradley_device")
                         if bradley_device:
@@ -816,8 +827,19 @@ class RhymeRarityApp:
                         features = alignment.get("features")
                         if features:
                             entry["phonetic_features"] = features
-                        feature_profile = alignment.get("feature_profile")
+                        feature_profile_obj = alignment.get("feature_profile")
+                        feature_profile: Dict[str, Any] = {}
+                        if feature_profile_obj:
+                            if isinstance(feature_profile_obj, dict):
+                                feature_profile = dict(feature_profile_obj)
+                            else:
+                                try:
+                                    feature_profile = dict(feature_profile_obj)
+                                except Exception:
+                                    feature_profile = {}
                         if feature_profile:
+                            if entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
+                                feature_profile["rhyme_type"] = entry["rhyme_type"]
                             entry["feature_profile"] = feature_profile
                             device = feature_profile.get("bradley_device")
                             if device:
@@ -1037,7 +1059,9 @@ class RhymeRarityApp:
                         if not entry_rhyme and entry.get("phonetic_features"):
                             entry_rhyme = entry["phonetic_features"].get("rhyme_type")
                         if not entry_rhyme:
-                            entry_rhyme = entry.get("feature_profile", {}).get("bradley_device")
+                            entry_rhyme = (
+                                (entry.get("feature_profile") or {}).get("rhyme_type")
+                            )
                         if not entry_rhyme or _normalize_source_name(str(entry_rhyme)) not in rhyme_type_filters:
                             continue
                     if bradley_filters:
