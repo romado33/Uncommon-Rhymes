@@ -154,6 +154,7 @@ class SearchService:
             genre_filters = _normalized_set(genres)
 
             rhyme_type_filters = _normalized_set(allowed_rhyme_types)
+            bradley_filters = _normalized_set(bradley_devices)
             cadence_focus_normalized = None
             if isinstance(cadence_focus, str) and cadence_focus.strip():
                 cadence_focus_normalized = normalize_name(cadence_focus) or None
@@ -192,6 +193,7 @@ class SearchService:
                 or (min_rarity_threshold is not None)
                 or (min_stress_threshold is not None)
                 or require_internal
+                or bradley_filters
             )
 
             if limit <= 0:
@@ -309,9 +311,19 @@ class SearchService:
                     except Exception:
                         profile_dict = {}
 
-                for banned_key in ("bradley_device", "assonance_score", "consonance_score"):
+                bradley_value = None
+                if "bradley_device" in profile_dict:
+                    bradley_value = profile_dict.get("bradley_device")
+                    profile_dict.pop("bradley_device", None)
+                if entry.get("bradley_device") is not None and bradley_value is None:
+                    bradley_value = entry.get("bradley_device")
+
+                for banned_key in ("assonance_score", "consonance_score"):
                     if banned_key in profile_dict:
                         profile_dict.pop(banned_key, None)
+
+                if bradley_value is not None:
+                    entry["_bradley_device"] = bradley_value
 
                 entry["feature_profile"] = profile_dict
                 entry.pop("bradley_device", None)
@@ -1151,6 +1163,17 @@ class SearchService:
                 if rhyme_type_filters:
                     if not entry_rhyme or normalize_name(str(entry_rhyme)) not in rhyme_type_filters:
                         return False
+                if bradley_filters:
+                    device_value = entry.get("bradley_device")
+                    if device_value is None and entry.get("feature_profile"):
+                        device_value = entry["feature_profile"].get("bradley_device")
+                    if device_value is None and entry.get("_bradley_device"):
+                        device_value = entry.get("_bradley_device")
+                    if (
+                        device_value is None
+                        or normalize_name(str(device_value)) not in bradley_filters
+                    ):
+                        return False
                 if min_rarity_threshold is not None:
                     rarity_metric = entry.get("rarity_score")
                     if rarity_metric is None:
@@ -1291,6 +1314,10 @@ class SearchService:
                 entry.setdefault("target_context", None)
                 entry.setdefault("distance", None)
                 _ensure_target_phonetics(entry)
+
+                bradley_value = entry.pop("_bradley_device", None)
+                if bradley_value is not None:
+                    entry.setdefault("bradley_device", bradley_value)
 
                 return entry
 
