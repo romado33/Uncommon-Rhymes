@@ -318,6 +318,35 @@ class RhymeRarityApp:
                     if normalized
                 }
 
+            def _coerce_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            def _prepare_confidence_defaults(entry: Dict) -> float:
+                combined_value = _coerce_float(entry.get("combined_score"))
+                confidence_value = _coerce_float(entry.get("confidence"))
+
+                score_for_filter = (
+                    combined_value
+                    if combined_value is not None
+                    else confidence_value
+                )
+                if score_for_filter is None:
+                    score_for_filter = 0.0
+
+                entry["combined_score"] = (
+                    combined_value if combined_value is not None else score_for_filter
+                )
+                entry["confidence"] = (
+                    confidence_value if confidence_value is not None else score_for_filter
+                )
+
+                return score_for_filter
+
             cultural_filters = _normalized_set(cultural_significance)
             genre_filters = _normalized_set(genres)
 
@@ -635,13 +664,8 @@ class RhymeRarityApp:
                     if prosody_profile:
                         entry["prosody_profile"] = prosody_profile
 
-                    try:
-                        entry_confidence = float(
-                            entry.get("combined_score", entry.get("confidence", 0.0))
-                        )
-                    except (TypeError, ValueError):
-                        entry_confidence = 0.0
-                    if entry_confidence < min_confidence:
+                    score_for_filter = _prepare_confidence_defaults(entry)
+                    if score_for_filter < min_confidence:
                         continue
 
                     phonetic_entries.append(entry)
@@ -977,26 +1001,13 @@ class RhymeRarityApp:
                     internal_rhyme = None
                     if isinstance(feature_profile, dict):
                         internal_rhyme = feature_profile.get("internal_rhyme_score")
-                    try:
-                        confidence_float = float(getattr(pattern, "confidence", 0.0))
-                    except (TypeError, ValueError):
+                    confidence_float = _coerce_float(getattr(pattern, "confidence", None))
+                    if confidence_float is None:
                         confidence_float = 0.0
                     combined_metric = getattr(pattern, "combined", None)
                     if combined_metric is None:
                         combined_metric = getattr(pattern, "combined_score", None)
-                    try:
-                        combined_float = (
-                            float(combined_metric)
-                            if combined_metric is not None
-                            else None
-                        )
-                    except (TypeError, ValueError):
-                        combined_float = None
-                    score_for_filter = (
-                        combined_float if combined_float is not None else confidence_float
-                    )
-                    if score_for_filter < min_confidence:
-                        continue
+                    combined_float = _coerce_float(combined_metric)
                     entry_payload = {
                         "source_word": source_word,
                         "target_word": pattern.target_word,
@@ -1019,7 +1030,12 @@ class RhymeRarityApp:
                     prosody_payload = getattr(pattern, "prosody_profile", None)
                     if isinstance(prosody_payload, dict):
                         entry_payload["prosody_profile"] = prosody_payload
-                    entry_payload["combined_score"] = score_for_filter
+                    entry_payload["combined_score"] = (
+                        combined_float if combined_float is not None else confidence_float
+                    )
+                    score_for_filter = _prepare_confidence_defaults(entry_payload)
+                    if score_for_filter < min_confidence:
+                        continue
                     anti_llm_entries.append(entry_payload)
 
             combined_results = phonetic_entries + cultural_entries + anti_llm_entries
@@ -1041,13 +1057,8 @@ class RhymeRarityApp:
                 deduped.append(entry)
 
             def _passes_min_confidence(entry: Dict) -> bool:
-                metric = entry.get("combined_score")
-                if metric is None:
-                    metric = entry.get("confidence")
-                try:
-                    return float(metric) >= min_confidence
-                except (TypeError, ValueError):
-                    return False
+                score = _prepare_confidence_defaults(entry)
+                return score >= min_confidence
 
             filtered_entries: List[Dict] = []
             for entry in deduped:
