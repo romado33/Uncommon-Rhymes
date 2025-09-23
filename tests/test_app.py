@@ -284,3 +284,92 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
     assert "LLM Weakness: Rare Word Combinations" in formatted
     assert "Cultural Depth: Sentinel Depth" in formatted
 
+
+def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    class MockCulturalEngine:
+        cultural_categories = {"legendary": {}, "mainstream": {}}
+
+        def __init__(self):
+            self.phonetic_analyzer = None
+
+        def derive_rhyme_signatures(self, word):
+            if not word:
+                return set()
+            cleaned = str(word).strip().lower()
+            if not cleaned:
+                return set()
+            return {f"sig:{cleaned[-2:]}"}
+
+        def get_cultural_context(self, pattern_data):
+            return {"style_characteristics": ["storytelling"]}
+
+        def get_cultural_rarity_score(self, _context):
+            return 2.0
+
+        def evaluate_rhyme_alignment(
+            self,
+            source_word,
+            target_word,
+            threshold=None,
+            rhyme_signatures=None,
+            source_context=None,
+            target_context=None,
+        ):
+            target = (target_word or "").lower()
+            if not target:
+                return None
+
+            if target in {"love", "glove"}:
+                rhyme_type = "perfect"
+                complexity = "steady"
+                cadence_ratio = 1.05
+            else:
+                rhyme_type = "slant"
+                complexity = "dense"
+                cadence_ratio = 1.4
+
+            target_signatures = list(self.derive_rhyme_signatures(target))
+            signature_matches = list(rhyme_signatures or [])
+
+            return {
+                "similarity": 0.9,
+                "rarity": 0.6,
+                "combined": 0.75,
+                "rhyme_type": rhyme_type,
+                "signature_matches": signature_matches,
+                "target_signatures": target_signatures,
+                "features": {"rhyme_type": rhyme_type},
+                "feature_profile": {"bradley_device": "multi"},
+                "prosody_profile": {
+                    "complexity_tag": complexity,
+                    "cadence_ratio": cadence_ratio,
+                },
+            }
+
+    app.cultural_engine = MockCulturalEngine()
+
+    filtered_results = app.search_rhymes(
+        "love",
+        limit=5,
+        min_confidence=0.0,
+        result_sources=["cultural"],
+        allowed_rhyme_types=["perfect"],
+        cadence_focus="steady",
+    )
+
+    assert filtered_results, "Expected matches that satisfy rhyme type and cadence filters"
+    assert all(entry.get("rhyme_type") == "perfect" for entry in filtered_results)
+    assert all(
+        (entry.get("prosody_profile") or {}).get("complexity_tag") == "steady"
+        for entry in filtered_results
+    )
+
+    formatted = app.format_rhyme_results("love", filtered_results)
+    assert "Rhyme Type: Perfect" in formatted
+    assert "Cadence: Steady" in formatted
+
