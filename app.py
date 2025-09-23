@@ -19,6 +19,7 @@ try:
     from module1_enhanced_core_phonetic import (
         CMUDictLoader,
         EnhancedPhoneticAnalyzer,
+        extract_phrase_components,
         get_cmu_rhymes,
     )
     from module2_enhanced_anti_llm import AntiLLMRhymeEngine
@@ -50,6 +51,29 @@ except ImportError as e:
 
     def get_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return []
+
+    def extract_phrase_components(phrase, cmu_loader=None):
+        base = str(phrase or "").strip()
+        tokens = base.split()
+        normalized_tokens = [token.lower() for token in tokens]
+        normalized_phrase = " ".join(normalized_tokens)
+        anchor_index = len(normalized_tokens) - 1 if normalized_tokens else None
+        anchor = normalized_tokens[-1] if normalized_tokens else ""
+        anchor_display = tokens[-1] if tokens else anchor
+        syllable_counts = [1 for _ in normalized_tokens]
+        total_syllables = max(1, len(syllable_counts)) if syllable_counts else 1
+        return types.SimpleNamespace(
+            original=base,
+            tokens=tokens,
+            normalized_tokens=normalized_tokens,
+            normalized_phrase=normalized_phrase,
+            anchor=anchor,
+            anchor_display=anchor_display,
+            anchor_index=anchor_index,
+            syllable_counts=syllable_counts,
+            total_syllables=total_syllables,
+            anchor_pronunciations=[],
+        )
     
 
     class AntiLLMRhymeEngine:
@@ -398,11 +422,14 @@ class RhymeRarityApp:
             if cmu_loader is None:
                 cmu_loader = getattr(self, "cmu_loader", None)
 
+            source_components = extract_phrase_components(source_word, cmu_loader)
+            source_anchor_word = source_components.anchor or source_word
+
             def _build_word_phonetics(word: Optional[str]) -> Dict[str, Any]:
                 base_word = "" if word is None else str(word)
                 defaults: Dict[str, Any] = {
                     "word": base_word,
-                    "normalized": re.sub(r"[^a-z]", "", base_word.lower()),
+                    "normalized": base_word.lower().strip(),
                     "syllables": None,
                     "stress_pattern": "",
                     "stress_pattern_display": "",
@@ -411,6 +438,11 @@ class RhymeRarityApp:
                     "vowel_skeleton": "",
                     "consonant_tail": "",
                     "pronunciations": [],
+                    "tokens": [],
+                    "token_syllables": [],
+                    "anchor_word": "",
+                    "anchor_display": "",
+                    "is_multi_word": False,
                 }
 
                 if analyzer and hasattr(analyzer, "describe_word"):
@@ -432,6 +464,21 @@ class RhymeRarityApp:
                                 if key in desc_dict and desc_dict[key] not in (None, ""):
                                     defaults[key] = desc_dict[key]
 
+                if not defaults.get("tokens") and defaults.get("normalized"):
+                    defaults["tokens"] = defaults["normalized"].split()
+
+                if not defaults.get("anchor_word") and defaults.get("tokens"):
+                    defaults["anchor_word"] = defaults["tokens"][-1].lower()
+
+                if not defaults.get("anchor_display") and defaults.get("tokens"):
+                    defaults["anchor_display"] = defaults["tokens"][-1]
+
+                defaults["is_multi_word"] = bool(
+                    defaults.get("tokens") and len(defaults["tokens"]) > 1
+                )
+                if not defaults["is_multi_word"] and isinstance(defaults.get("normalized"), str):
+                    defaults["is_multi_word"] = " " in defaults["normalized"]
+
                 if defaults["syllables"] is None:
                     estimate_fn = getattr(analyzer, "estimate_syllables", None)
                     try:
@@ -448,7 +495,7 @@ class RhymeRarityApp:
                     pronunciations: List[str] = []
                     if analyzer and hasattr(analyzer, "_get_pronunciation_variants"):
                         try:
-                            variants = analyzer._get_pronunciation_variants(defaults["normalized"])
+                            variants = analyzer._get_pronunciation_variants(base_word)
                         except Exception:
                             variants = []
                         for phones in variants[:2]:
@@ -523,15 +570,15 @@ class RhymeRarityApp:
                     source_signature_set = {sig for sig in derived_signatures if sig}
                 except Exception:
                     source_signature_set = set()
-            if not source_signature_set and cmu_loader is not None:
+            if not source_signature_set and cmu_loader is not None and source_anchor_word:
                 try:
                     source_signature_set = {
-                        sig for sig in cmu_loader.get_rhyme_parts(source_word) if sig
+                        sig for sig in cmu_loader.get_rhyme_parts(source_anchor_word) if sig
                     }
                 except Exception:
                     source_signature_set = set()
             if not source_signature_set:
-                source_signature_set = _fallback_signature(source_word)
+                source_signature_set = _fallback_signature(source_anchor_word or source_word)
 
             source_signature_list = sorted(source_signature_set)
 
@@ -569,24 +616,31 @@ class RhymeRarityApp:
                 try:
                     with sqlite3.connect(self.db_path) as conn:
                         cursor = conn.cursor()
-                        cursor.execute(
-                            "SELECT target_word FROM song_rhyme_patterns WHERE source_word = ? AND target_word IS NOT NULL LIMIT 50",
-                            (source_word,),
-                        )
-                        db_candidate_words.update(
-                            str(row[0]).strip().lower()
-                            for row in cursor.fetchall()
-                            if row and row[0]
-                        )
-                        cursor.execute(
-                            "SELECT source_word FROM song_rhyme_patterns WHERE target_word = ? AND source_word IS NOT NULL LIMIT 50",
-                            (source_word,),
-                        )
-                        db_candidate_words.update(
-                            str(row[0]).strip().lower()
-                            for row in cursor.fetchall()
-                            if row and row[0]
-                        )
+                        lookup_terms = {source_word}
+                        if source_anchor_word and source_anchor_word != source_word:
+                            lookup_terms.add(source_anchor_word)
+
+                        for lookup in lookup_terms:
+                            cursor.execute(
+                                "SELECT target_word FROM song_rhyme_patterns WHERE source_word = ? AND target_word IS NOT NULL LIMIT 50",
+                                (lookup,),
+                            )
+                            db_candidate_words.update(
+                                str(row[0]).strip().lower()
+                                for row in cursor.fetchall()
+                                if row and row[0]
+                            )
+
+                        for lookup in lookup_terms:
+                            cursor.execute(
+                                "SELECT source_word FROM song_rhyme_patterns WHERE target_word = ? AND source_word IS NOT NULL LIMIT 50",
+                                (lookup,),
+                            )
+                            db_candidate_words.update(
+                                str(row[0]).strip().lower()
+                                for row in cursor.fetchall()
+                                if row and row[0]
+                            )
                 except sqlite3.Error:
                     db_candidate_words = set()
 
@@ -604,12 +658,27 @@ class RhymeRarityApp:
             if reference_similarity > 0:
                 phonetic_threshold = max(0.6, min(0.92, reference_similarity - 0.1))
 
+            source_phonetics = _build_word_phonetics(source_word)
+
+            prefix_tokens = []
+            suffix_tokens = []
+            if source_components.anchor_index is not None:
+                prefix_tokens = source_components.normalized_tokens[: source_components.anchor_index]
+                suffix_tokens = source_components.normalized_tokens[source_components.anchor_index + 1 :]
+
             source_phonetic_profile = {
                 "word": source_word,
                 "threshold": phonetic_threshold,
                 "reference_similarity": reference_similarity,
                 "signatures": source_signature_list,
-                "phonetics": _build_word_phonetics(source_word),
+                "phonetics": source_phonetics,
+                "anchor_word": source_anchor_word,
+                "anchor_display": source_components.anchor_display or source_anchor_word,
+                "phrase_tokens": source_components.normalized_tokens,
+                "phrase_prefix": " ".join(prefix_tokens).strip(),
+                "phrase_suffix": " ".join(suffix_tokens).strip(),
+                "token_syllables": source_components.syllable_counts,
+                "is_multi_word": bool(source_phonetics.get("is_multi_word")),
             }
 
             phonetic_entries: List[Dict] = []
@@ -621,11 +690,45 @@ class RhymeRarityApp:
                 phonetic_matches = cmu_candidates[:slice_limit]
                 rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
                 for candidate in phonetic_matches:
+                    is_multi_variant = False
+                    variant_candidate: Optional[str] = None
+                    candidate_tokens: List[str] = []
+                    candidate_syllables: Optional[int] = None
+                    phrase_prefix = None
+                    phrase_suffix = None
+                    prefix_display = None
+                    suffix_display = None
+                    candidate_source_phrase = None
+                    anchor_display = None
+
                     if isinstance(candidate, dict):
-                        target = candidate.get("word") or candidate.get("target")
-                        similarity = float(candidate.get("similarity", candidate.get("score", 0.0)))
-                        rarity_value = float(candidate.get("rarity", candidate.get("rarity_score", 0.0)))
-                        combined = float(candidate.get("combined", candidate.get("combined_score", similarity)))
+                        target = (
+                            candidate.get("word")
+                            or candidate.get("target")
+                            or candidate.get("candidate")
+                        )
+                        similarity = float(
+                            candidate.get("similarity", candidate.get("score", 0.0))
+                        )
+                        rarity_value = float(
+                            candidate.get("rarity", candidate.get("rarity_score", 0.0))
+                        )
+                        combined = float(
+                            candidate.get("combined", candidate.get("combined_score", similarity))
+                        )
+                        is_multi_variant = bool(candidate.get("is_multi_word"))
+                        variant_candidate = (
+                            candidate.get("candidate")
+                            or (target if isinstance(target, str) else None)
+                        )
+                        candidate_tokens = candidate.get("target_tokens") or []
+                        candidate_syllables = candidate.get("candidate_syllables")
+                        phrase_prefix = candidate.get("prefix")
+                        phrase_suffix = candidate.get("suffix")
+                        prefix_display = candidate.get("prefix_display")
+                        suffix_display = candidate.get("suffix_display")
+                        candidate_source_phrase = candidate.get("source_phrase")
+                        anchor_display = candidate.get("anchor_display")
                     else:
                         try:
                             target = candidate[0]
@@ -642,9 +745,29 @@ class RhymeRarityApp:
                             similarity = 0.0
                             rarity_value = 0.0
                             combined = 0.0
+                        variant_candidate = target if isinstance(target, str) else None
 
                     if not target:
                         continue
+
+                    if variant_candidate is None and isinstance(target, str):
+                        variant_candidate = target
+                    target_text = str(target)
+                    entry_is_multi = is_multi_variant or (" " in target_text.strip())
+                    entry_prefix = (
+                        phrase_prefix
+                        if phrase_prefix is not None
+                        else source_phonetic_profile.get("phrase_prefix")
+                    )
+                    entry_suffix = (
+                        phrase_suffix
+                        if phrase_suffix is not None
+                        else source_phonetic_profile.get("phrase_suffix")
+                    )
+
+                    candidate_source_phrase = (
+                        candidate_source_phrase if candidate_source_phrase is not None else source_word
+                    )
 
                     # Attempt to evaluate cultural alignment when the cultural
                     # engine is available; otherwise fall back to a lightweight
@@ -700,12 +823,14 @@ class RhymeRarityApp:
                             "prosody_profile": {},
                         }
 
+                    pattern_source = candidate_source_phrase or source_word
+                    pattern_separator = " // " if entry_is_multi else " / "
                     entry = {
-                        "source_word": source_word,
-                        "target_word": target,
+                        "source_word": pattern_source,
+                        "target_word": target_text,
                         "artist": "CMU Pronouncing Dictionary",
                         "song": "Phonetic Match",
-                        "pattern": f"{source_word} / {target}",
+                        "pattern": f"{pattern_source}{pattern_separator}{target_text}",
                         "distance": None,
                         "confidence": combined,
                         "combined_score": combined,
@@ -719,6 +844,18 @@ class RhymeRarityApp:
                         "source_rhyme_signatures": source_signature_list,
                         "source_phonetic_profile": source_phonetic_profile,
                         "phonetic_threshold": phonetic_threshold,
+                        "is_multi_word": entry_is_multi,
+                        "result_variant": "multi_word" if entry_is_multi else "single_word",
+                        "candidate_word": variant_candidate,
+                        "phrase_prefix": entry_prefix,
+                        "phrase_suffix": entry_suffix,
+                        "prefix_display": prefix_display or entry_prefix,
+                        "suffix_display": suffix_display or entry_suffix,
+                        "target_tokens": candidate_tokens,
+                        "candidate_syllables": candidate_syllables,
+                        "source_phrase": pattern_source,
+                        "source_anchor": source_anchor_word,
+                        "anchor_display": anchor_display or source_phonetic_profile.get("anchor_display"),
                     }
 
                     entry["phonetic_sim"] = alignment.get("similarity", entry["phonetic_sim"])
@@ -1082,6 +1219,18 @@ class RhymeRarityApp:
                         "target_context": row[10],
                     }
 
+                target_text = str(entry.get("target_word", ""))
+                is_multi = " " in target_text.strip() if target_text else False
+                entry.setdefault("is_multi_word", is_multi)
+                entry.setdefault("result_variant", "multi_word" if is_multi else "single_word")
+                if is_multi and target_text:
+                    entry["pattern"] = f"{entry.get('source_word', source_word)} // {target_text}"
+                entry.setdefault("source_phrase", entry.get("source_word", source_word))
+                entry.setdefault("source_anchor", source_anchor_word)
+                entry.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
+                entry.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
+                entry.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
+
                 return _enrich_with_cultural_context(entry)
 
             for row in source_results:
@@ -1141,6 +1290,16 @@ class RhymeRarityApp:
                         "stress_alignment": stress_alignment,
                         "internal_rhyme_score": internal_rhyme,
                     }
+                    is_multi = " " in str(pattern.target_word or "").strip()
+                    entry_payload["is_multi_word"] = is_multi
+                    entry_payload["result_variant"] = "multi_word" if is_multi else "single_word"
+                    if is_multi and pattern.target_word:
+                        entry_payload["pattern"] = f"{source_word} // {pattern.target_word}"
+                    entry_payload.setdefault("source_phrase", source_word)
+                    entry_payload.setdefault("source_anchor", source_anchor_word)
+                    entry_payload.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
+                    entry_payload.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
+                    entry_payload.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
                     if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
                         entry_payload["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
                     prosody_payload = getattr(pattern, "prosody_profile", None)
@@ -1357,8 +1516,28 @@ class RhymeRarityApp:
 
             def _normalize_entry(entry: Dict, category_key: str) -> Dict:
                 entry["result_source"] = category_key
-                if not entry.get("pattern") and entry.get("target_word"):
-                    entry["pattern"] = f"{source_word} / {entry['target_word']}"
+                if not entry.get("source_phrase"):
+                    entry["source_phrase"] = entry.get("source_word", source_word)
+                entry.setdefault("source_anchor", source_anchor_word)
+                entry.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
+                entry.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
+                entry.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
+
+                target_text = str(entry.get("target_word", ""))
+                is_multi = bool(entry.get("is_multi_word"))
+                if not is_multi and target_text:
+                    is_multi = " " in target_text.strip()
+                entry["is_multi_word"] = is_multi
+                if not entry.get("result_variant"):
+                    entry["result_variant"] = "multi_word" if is_multi else "single_word"
+
+                if entry.get("pattern") and target_text:
+                    connector = " // " if is_multi else " / "
+                    source_value = str(entry.get("source_word", source_word))
+                    entry["pattern"] = f"{source_value}{connector}{target_text}"
+                elif not entry.get("pattern") and target_text:
+                    connector = " // " if is_multi else " / "
+                    entry["pattern"] = f"{source_word}{connector}{target_text}"
                 if entry.get("combined_score") is None and entry.get("confidence") is not None:
                     entry["combined_score"] = entry["confidence"]
                 if entry.get("confidence") is None and entry.get("combined_score") is not None:
@@ -1584,7 +1763,8 @@ class RhymeRarityApp:
 
             for entry in entries:
                 target_word = entry.get("target_word") or "(unknown)"
-                lines.append(f"• **{str(target_word).upper()}**")
+                variant_note = " (phrase)" if entry.get("is_multi_word") else ""
+                lines.append(f"• **{str(target_word).upper()}**{variant_note}")
 
                 target_phonetics = entry.get("target_phonetics") or {}
                 phonetic_bits: List[str] = []

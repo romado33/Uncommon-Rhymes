@@ -1,4 +1,8 @@
-from module1_enhanced_core_phonetic import EnhancedPhoneticAnalyzer
+from module1_enhanced_core_phonetic import (
+    EnhancedPhoneticAnalyzer,
+    extract_phrase_components,
+    get_cmu_rhymes,
+)
 from syllable_utils import estimate_syllable_count
 
 
@@ -12,3 +16,45 @@ def test_enhanced_phonetic_analyzer_uses_shared_syllable_helper():
 
 def test_shared_syllable_helper_minimum_one_syllable():
     assert estimate_syllable_count("") == 1
+
+
+def test_extract_phrase_components_for_phrase():
+    components = extract_phrase_components("Paper Trail")
+    assert components.anchor == "trail"
+    assert components.normalized_phrase == "paper trail"
+    assert components.total_syllables == estimate_syllable_count("paper") + estimate_syllable_count("trail")
+
+
+class DummyLoader:
+    def __init__(self):
+        self.requests = []
+
+    def get_rhyming_words(self, word):
+        self.requests.append(word)
+        return ["fail", "mail"]
+
+    def get_pronunciations(self, word):
+        pronunciations = {
+            "paper": [["P", "EY1", "P", "ER0"]],
+            "trail": [["T", "R", "EY1", "L"]],
+            "fail": [["F", "EY1", "L"]],
+            "mail": [["M", "EY1", "L"]],
+        }
+        return pronunciations.get(word, [])
+
+    def get_rhyme_parts(self, word):
+        return {"EY1 L"}
+
+
+def test_get_cmu_rhymes_uses_anchor_and_produces_phrase_variants():
+    loader = DummyLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+    results = get_cmu_rhymes("paper trail", analyzer=analyzer, cmu_loader=loader, limit=10)
+
+    assert loader.requests == ["trail"], "Expected anchor lookup for the final stressed token"
+    words = {entry["word"] for entry in results}
+    assert "fail" in words
+    assert "mail" in words
+    assert any(" " in entry["word"] for entry in results if entry.get("is_multi_word"))
+    phrase_words = {entry["word"] for entry in results if entry.get("is_multi_word")}
+    assert "paper fail" in phrase_words or "paper mail" in phrase_words
