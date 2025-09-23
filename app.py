@@ -941,10 +941,16 @@ class RhymeRarityApp:
                 }
 
                 if swap:
+                    swapped_source = row[1]
+                    swapped_target = row[0]
+                    swapped_pattern = entry["pattern"]
+                    if swapped_source and swapped_target:
+                        swapped_pattern = f"{swapped_source} / {swapped_target}"
                     entry = {
                         **entry,
-                        "source_word": row[1],
-                        "target_word": row[0],
+                        "source_word": swapped_source,
+                        "target_word": swapped_target,
+                        "pattern": swapped_pattern,
                         "source_context": row[11],
                         "target_context": row[10],
                     }
