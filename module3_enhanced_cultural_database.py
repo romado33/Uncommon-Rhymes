@@ -10,6 +10,8 @@ from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass
 import re
 
+from syllable_utils import estimate_syllable_count
+
 @dataclass
 class CulturalContext:
     """Represents cultural context for a rhyme pattern"""
@@ -68,11 +70,13 @@ class CulturalIntelligenceEngine:
         """Rough syllable count used for fallback rhyme signatures."""
         if not word:
             return 0
-        vowel_groups = re.findall(r"[aeiou]+", word)
-        count = len(vowel_groups)
-        if word.endswith("e") and count > 1:
-            count -= 1
-        return max(1, count)
+        analyzer = getattr(self.phonetic_analyzer, "estimate_syllables", None)
+        if callable(analyzer):
+            try:
+                return int(analyzer(word))
+            except Exception:
+                pass
+        return estimate_syllable_count(word)
 
     def _approximate_rhyme_signature(self, word: str) -> Set[str]:
         """Create lightweight rhyme signatures when CMU data is unavailable."""
