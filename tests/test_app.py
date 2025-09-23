@@ -128,6 +128,21 @@ def create_test_database(db_path):
             "Love in the intro",
             "Shove in the outro",
         ),
+        (
+            5,
+            "paper trail / major fail",
+            "paper trail",
+            "major fail",
+            "Artist E",
+            "Song E",
+            "hip-hop",
+            1,
+            0.88,
+            0.90,
+            "legendary",
+            "Paper trail in the verse",
+            "Major fail in the hook",
+        ),
     ]
 
     cursor.executemany(
@@ -197,6 +212,56 @@ def test_search_rhymes_filters_by_cultural_significance(tmp_path):
     assert rap_results, "Expected filtered results for cultural significance"
     assert all(result["cultural_sig"] == "legendary" for result in rap_results)
     assert all(result["target_word"] == "glove" for result in rap_results)
+
+
+class LoaderStub:
+    def __init__(self):
+        self.requests = []
+
+    def get_rhyming_words(self, word):
+        self.requests.append(word)
+        return ["fail", "mail"]
+
+    def get_pronunciations(self, word):
+        pronunciations = {
+            "paper": [["P", "EY1", "P", "ER0"]],
+            "trail": [["T", "R", "EY1", "L"]],
+            "fail": [["F", "EY1", "L"]],
+            "mail": [["M", "EY1", "L"]],
+        }
+        return pronunciations.get(word, [])
+
+    def get_rhyme_parts(self, word):
+        return {"EY1 L"}
+
+
+def test_search_rhymes_handles_multi_word_phrases(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    loader = LoaderStub()
+    app.cmu_loader = loader
+    app.phonetic_analyzer.cmu_loader = loader
+    if hasattr(app.cultural_engine, "set_phonetic_analyzer"):
+        app.cultural_engine.set_phonetic_analyzer(app.phonetic_analyzer)
+
+    results = app.search_rhymes("paper trail", limit=5, min_confidence=0.0)
+
+    assert loader.requests == ["trail"]
+    source_profile = results["source_profile"]
+    assert source_profile["phonetics"].get("is_multi_word")
+
+    cmu_results = results["cmu"]
+    assert any(entry["is_multi_word"] for entry in cmu_results)
+    cmu_multi = next(entry for entry in cmu_results if entry["is_multi_word"])
+    assert " // " in cmu_multi["pattern"]
+
+    rap_results = results["rap_db"]
+    assert any(entry["is_multi_word"] for entry in rap_results)
+    rap_multi = next(entry for entry in rap_results if entry["is_multi_word"])
+    assert " // " in rap_multi["pattern"]
 
 
 def test_cultural_context_enrichment_in_formatting(tmp_path):
@@ -562,5 +627,5 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     formatted = app.format_rhyme_results("love", filtered_results)
     assert "Rhyme type: Perfect" in formatted
     assert "Cadence: Steady" in formatted
-    assert "Stress align: 0.90" in formatted
+    assert "Stress align" not in formatted
 
