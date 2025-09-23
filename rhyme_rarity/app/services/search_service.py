@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import types
@@ -79,7 +80,7 @@ class SearchService:
             """
 
             def _empty_response() -> Dict[str, List[Dict]]:
-                return {"cmu": [], "multi_word": [], "rap_db": []}
+                return {"cmu": [], "anti_llm": [], "rap_db": []}
 
             if not source_word or not source_word.strip():
                 return _empty_response()
@@ -741,7 +742,7 @@ class SearchService:
                         continue
                     module1_seed_payload.append(candidate)
 
-            fetch_limit = max(limit * 2, limit, 1)
+            fetch_limit = None
 
             cultural_entries: List[Dict] = []
 
@@ -1297,6 +1298,142 @@ class SearchService:
                 if not entries:
                     return []
 
+                if category_key == "rap_db":
+                    grouped: "OrderedDict[Tuple[str, str], Dict[str, Any]]" = OrderedDict()
+                    for entry in entries:
+                        normalized_entry = _normalize_entry(entry, category_key)
+                        if not _filter_entry(normalized_entry):
+                            continue
+
+                        artist_key = str(normalized_entry.get("artist") or "").strip().lower()
+                        song_key = str(normalized_entry.get("song") or "").strip().lower()
+                        group_key = (artist_key, song_key)
+                        group = grouped.get(group_key)
+                        if group is None:
+                            group = {
+                                "artist": normalized_entry.get("artist"),
+                                "song": normalized_entry.get("song"),
+                                "genre": normalized_entry.get("genre"),
+                                "cultural_sig": normalized_entry.get("cultural_sig"),
+                                "cultural_context": normalized_entry.get("cultural_context"),
+                                "result_source": category_key,
+                                "grouped_targets": [],
+                                "max_confidence": 0.0,
+                                "max_phonetic_sim": 0.0,
+                                "max_cultural_rarity": None,
+                                "max_rarity_score": None,
+                                "is_multi_word": False,
+                                "pattern": None,
+                                "source_context": None,
+                                "target_context": None,
+                                "prosody_profile": None,
+                                "_rhyme_types": set(),
+                            }
+                            grouped[group_key] = group
+                        else:
+                            if not group.get("genre") and normalized_entry.get("genre"):
+                                group["genre"] = normalized_entry.get("genre")
+                            if not group.get("cultural_sig") and normalized_entry.get("cultural_sig"):
+                                group["cultural_sig"] = normalized_entry.get("cultural_sig")
+                            if not group.get("cultural_context") and normalized_entry.get("cultural_context"):
+                                group["cultural_context"] = normalized_entry.get("cultural_context")
+
+                        target_key = (
+                            str(normalized_entry.get("target_word") or "").strip().lower(),
+                            str(normalized_entry.get("pattern") or "").strip().lower(),
+                        )
+                        seen_targets = group.setdefault("_seen_targets", set())
+                        if target_key in seen_targets:
+                            continue
+                        seen_targets.add(target_key)
+
+                        target_payload = dict(normalized_entry)
+                        target_payload.pop("source_word", None)
+
+                        group["grouped_targets"].append(target_payload)
+                        group["target_word"] = group["grouped_targets"][0].get("target_word")
+                        if group.get("pattern") is None and target_payload.get("pattern"):
+                            group["pattern"] = target_payload.get("pattern")
+                        if group.get("source_context") is None and target_payload.get("source_context"):
+                            group["source_context"] = target_payload.get("source_context")
+                        if group.get("target_context") is None and target_payload.get("target_context"):
+                            group["target_context"] = target_payload.get("target_context")
+                        if target_payload.get("is_multi_word"):
+                            group["is_multi_word"] = True
+                        if group.get("prosody_profile") is None and target_payload.get("prosody_profile"):
+                            group["prosody_profile"] = target_payload.get("prosody_profile")
+                        rhythm_metric = target_payload.get("rhythm_score")
+                        if rhythm_metric is None:
+                            rhythm_metric = target_payload.get("stress_alignment")
+                        try:
+                            rhythm_float = float(rhythm_metric)
+                        except (TypeError, ValueError):
+                            rhythm_float = None
+                        if rhythm_float is not None:
+                            current_rhythm = group.get("rhythm_score")
+                            if current_rhythm is None or rhythm_float > float(current_rhythm):
+                                group["rhythm_score"] = rhythm_float
+                                group["stress_alignment"] = rhythm_float
+                        group["max_confidence"] = max(
+                            group["max_confidence"],
+                            _confidence_value(target_payload),
+                        )
+                        group["max_phonetic_sim"] = max(
+                            group["max_phonetic_sim"],
+                            float(target_payload.get("phonetic_sim") or 0.0),
+                        )
+                        rarity_metric = target_payload.get("cultural_rarity")
+                        if rarity_metric is None:
+                            rarity_metric = target_payload.get("rarity_score")
+                        try:
+                            rarity_float = float(rarity_metric)
+                        except (TypeError, ValueError):
+                            rarity_float = None
+                        if rarity_float is not None:
+                            current_cultural = group.get("max_cultural_rarity")
+                            if current_cultural is None or rarity_float > current_cultural:
+                                group["max_cultural_rarity"] = rarity_float
+                        rarity_score_metric = target_payload.get("rarity_score")
+                        try:
+                            rarity_score_float = float(rarity_score_metric)
+                        except (TypeError, ValueError):
+                            rarity_score_float = None
+                        if rarity_score_float is not None:
+                            current_score = group.get("max_rarity_score")
+                            if current_score is None or rarity_score_float > current_score:
+                                group["max_rarity_score"] = rarity_score_float
+                        target_rhyme_type = target_payload.get("rhyme_type")
+                        if target_rhyme_type:
+                            rhyme_set = group.setdefault("_rhyme_types", set())
+                            rhyme_set.add(target_rhyme_type)
+
+                    processed_groups: List[Dict[str, Any]] = []
+                    for group in grouped.values():
+                        targets = group.get("grouped_targets") or []
+                        if not targets:
+                            continue
+                        group["group_size"] = len(targets)
+                        group["confidence"] = group.get("max_confidence")
+                        group["combined_score"] = group.get("max_confidence")
+                        group["phonetic_sim"] = group.get("max_phonetic_sim")
+                        if group.get("max_cultural_rarity") is not None:
+                            group["cultural_rarity"] = group.get("max_cultural_rarity")
+                        if group.get("max_rarity_score") is not None:
+                            group["rarity_score"] = group.get("max_rarity_score")
+                        rhyme_types = group.pop("_rhyme_types", set())
+                        if len(rhyme_types) == 1:
+                            group["rhyme_type"] = next(iter(rhyme_types))
+                        elif not rhyme_types:
+                            group["rhyme_type"] = group.get("rhyme_type")
+                        else:
+                            group["rhyme_type"] = None
+                        group.pop("_seen_targets", None)
+                        group.pop("max_cultural_rarity", None)
+                        group.pop("max_rarity_score", None)
+                        processed_groups.append(group)
+
+                    return processed_groups
+
                 processed: List[Dict] = []
                 seen_pairs = set()
                 for entry in entries:
@@ -1341,7 +1478,7 @@ class SearchService:
             return {
                 "source_profile": source_phonetic_profile,
                 "cmu": _process_entries(phonetic_entries if include_phonetic else [], "cmu"),
-                "multi_word": _process_entries(anti_llm_entries if include_anti_llm else [], "multi_word"),
+                "anti_llm": _process_entries(anti_llm_entries if include_anti_llm else [], "anti_llm"),
                 "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
             }
 
@@ -1352,17 +1489,18 @@ class SearchService:
         """Render grouped rhyme results with shared phonetic context."""
 
         category_order: List[Tuple[str, str]] = [
-            ("cmu", "📚 CMU Pronouncing Dictionary"),
-            ("rap_db", "🎤 Cultural Pattern Database"),
-            ("multi_word", "🧠 Anti-LLM Multi-Word Patterns"),
+            ("cmu", "📚 CMU — Uncommon Rhymes"),
+            ("anti_llm", "🧠 Anti-LLM — Uncommon Patterns"),
+            ("rap_db", "🎤 Rap & Cultural Matches"),
         ]
 
         def _normalize_source_key(value: Optional[str]) -> str:
             mapping = {
                 "phonetic": "cmu",
                 "cultural": "rap_db",
-                "anti_llm": "multi_word",
-                "anti-llm": "multi_word",
+                "anti_llm": "anti_llm",
+                "anti-llm": "anti_llm",
+                "multi_word": "anti_llm",
             }
             if value is None:
                 return ""
@@ -1476,6 +1614,150 @@ class SearchService:
             lines.append(header)
             lines.append("-" * len(header))
 
+            if key == "rap_db":
+                for entry in entries:
+                    targets = entry.get("grouped_targets") or []
+                    if not targets:
+                        continue
+
+                    artist_name = entry.get("artist") or "Unknown Artist"
+                    song_title = entry.get("song") or "Unknown Track"
+                    lines.append(f"• **{artist_name} — {song_title}**")
+
+                    meta_bits: List[str] = []
+                    genre_value = entry.get("genre")
+                    if genre_value:
+                        meta_bits.append(f"Genre: {genre_value}")
+                    cultural_sig = entry.get("cultural_sig")
+                    if cultural_sig:
+                        meta_bits.append(
+                            f"Significance: {str(cultural_sig).replace('_', ' ').title()}"
+                        )
+                    group_size = entry.get("group_size")
+                    if group_size:
+                        meta_bits.append(f"Targets: {int(group_size)}")
+                    if meta_bits:
+                        lines.append(f"   • {' | '.join(meta_bits)}")
+
+                    group_scores: List[str] = []
+                    top_confidence = _format_float(entry.get("max_confidence") or entry.get("confidence"))
+                    if top_confidence:
+                        group_scores.append(f"Top confidence: {top_confidence}")
+                    top_similarity = _format_float(entry.get("max_phonetic_sim") or entry.get("phonetic_sim"))
+                    if top_similarity:
+                        group_scores.append(f"Top similarity: {top_similarity}")
+                    if group_scores:
+                        lines.append(f"   • {' | '.join(group_scores)}")
+
+                    context_info = _as_dict(entry.get("cultural_context"))
+                    cultural_bits: List[str] = []
+                    style_line: Optional[str] = None
+                    for key_name, label in (
+                        ("era", "Era"),
+                        ("regional_origin", "Region"),
+                        ("cultural_significance", "Significance"),
+                    ):
+                        value = context_info.get(key_name)
+                        if not value and key_name == "cultural_significance":
+                            value = entry.get("cultural_sig")
+                        if value:
+                            cultural_bits.append(f"{label}: {str(value).replace('_', ' ').title()}")
+                    styles = context_info.get("style_characteristics")
+                    if isinstance(styles, (list, tuple)) and styles:
+                        formatted_styles = ", ".join(
+                            str(style).replace('_', ' ').title() for style in styles if style
+                        )
+                        if formatted_styles:
+                            style_line = formatted_styles
+                    if cultural_bits:
+                        lines.append(f"   • Cultural: {' | '.join(cultural_bits)}")
+                    if style_line:
+                        lines.append(f"   • Styles: {style_line}")
+
+                    for target in targets:
+                        target_word = target.get("target_word") or "(unknown)"
+                        variant_note = " (phrase)" if target.get("is_multi_word") else ""
+                        lines.append(f"   • **{str(target_word).upper()}**{variant_note}")
+
+                        target_phonetics = target.get("target_phonetics") or {}
+                        phonetic_bits: List[str] = []
+                        target_syllables = target_phonetics.get("syllables")
+                        if isinstance(target_syllables, (int, float)):
+                            phonetic_bits.append(f"Syllables: {int(target_syllables)}")
+                        target_stress = target_phonetics.get("stress_pattern_display") or target_phonetics.get("stress_pattern")
+                        if target_stress:
+                            phonetic_bits.append(f"Stress: {target_stress}")
+                        target_meter = target_phonetics.get("meter_hint")
+                        target_foot = target_phonetics.get("metrical_foot")
+                        if target_meter:
+                            phonetic_bits.append(f"Meter: {target_meter}")
+                        elif target_foot:
+                            phonetic_bits.append(f"Foot: {str(target_foot).title()}")
+                        syllable_span = target.get("syllable_span")
+                        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
+                            try:
+                                phonetic_bits.append(
+                                    f"Span: {int(syllable_span[0])}→{int(syllable_span[1])}"
+                                )
+                            except Exception:
+                                pass
+                        if phonetic_bits:
+                            lines.append(f"      • Phonetics: {' | '.join(phonetic_bits)}")
+
+                        pronunciation_variants = target_phonetics.get("pronunciations") or []
+                        if pronunciation_variants:
+                            lines.append(f"      • Phonemes: {', '.join(pronunciation_variants)}")
+
+                        score_parts: List[str] = []
+                        similarity_value = _format_float(target.get("phonetic_sim"))
+                        if similarity_value:
+                            score_parts.append(f"Similarity: {similarity_value}")
+                        confidence_value = target.get("combined_score")
+                        if confidence_value is None:
+                            confidence_value = target.get("confidence")
+                        confidence_formatted = _format_float(confidence_value)
+                        if confidence_formatted:
+                            score_parts.append(f"Confidence: {confidence_formatted}")
+                        rarity_value = target.get("rarity_score")
+                        if rarity_value is None:
+                            rarity_value = target.get("cultural_rarity")
+                        rarity_formatted = _format_float(rarity_value)
+                        if rarity_formatted:
+                            score_parts.append(f"Rarity: {rarity_formatted}")
+                        if score_parts:
+                            lines.append(f"      • Scores: {' | '.join(score_parts)}")
+
+                        rhyme_label = _resolve_rhyme_type(target)
+                        if rhyme_label:
+                            lines.append(f"      • Rhyme type: {rhyme_label}")
+
+                        pattern_text = target.get("pattern")
+                        if pattern_text:
+                            lines.append(f"      • Pattern: {pattern_text}")
+
+                        source_context = target.get("source_context")
+                        target_context = target.get("target_context")
+                        context_parts: List[str] = []
+                        if source_context:
+                            context_parts.append(str(source_context))
+                        if target_context:
+                            context_parts.append(str(target_context))
+                        if context_parts:
+                            lines.append(f"      • Context: {' | '.join(context_parts)}")
+
+                        prosody = target.get("prosody_profile")
+                        if isinstance(prosody, dict):
+                            cadence = prosody.get("complexity_tag")
+                            if cadence:
+                                lines.append(
+                                    f"      • Cadence: {str(cadence).replace('_', ' ').title()}"
+                                )
+
+                    lines.append("")
+
+                lines.append("")
+                continue
+
             for entry in entries:
                 target_word = entry.get("target_word") or "(unknown)"
                 variant_note = " (phrase)" if entry.get("is_multi_word") else ""
@@ -1508,7 +1790,7 @@ class SearchService:
                 if pronunciation_variants:
                     lines.append(f"   • Phonemes: {', '.join(pronunciation_variants)}")
 
-                score_parts: List[str] = []
+                score_parts = []
                 similarity_value = _format_float(entry.get("phonetic_sim"))
                 if similarity_value:
                     score_parts.append(f"Similarity: {similarity_value}")
@@ -1534,7 +1816,7 @@ class SearchService:
                 normalized_source = _normalize_source_key(entry.get("result_source")) or key
                 if normalized_source == "cmu":
                     lines.append("   • Source: CMU Pronouncing Dictionary")
-                elif normalized_source == "multi_word":
+                elif normalized_source == "anti_llm":
                     weakness = entry.get("llm_weakness_type")
                     if weakness:
                         lines.append(f"   • LLM weakness: {str(weakness).replace('_', ' ').title()}")
@@ -1556,7 +1838,7 @@ class SearchService:
                         lines.append(f"   • Genre: {genre_value}")
 
                     context_info = _as_dict(entry.get("cultural_context"))
-                    cultural_bits: List[str] = []
+                    cultural_bits = []
                     for key_name, label in (
                         ("era", "Era"),
                         ("regional_origin", "Region"),

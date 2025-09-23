@@ -156,7 +156,7 @@ class SQLiteRhymeRepository:
         cultural_filters: Sequence[str],
         genre_filters: Sequence[str],
         max_line_distance: Optional[int],
-        limit: int,
+        limit: Optional[int] = None,
     ) -> Tuple[List[Tuple], List[Tuple]]:
         """Return rhyme matches treating the word as both source and target."""
 
@@ -206,8 +206,10 @@ class SQLiteRhymeRepository:
                 params.append(max_line_distance)
 
             query = base_query + " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY confidence_score DESC, phonetic_similarity DESC LIMIT ?"
-            params.append(limit)
+            query += " ORDER BY confidence_score DESC, phonetic_similarity DESC"
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
             return query, params
 
         with self._connect() as conn:

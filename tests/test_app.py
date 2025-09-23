@@ -351,11 +351,11 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    multi_word_results = results["multi_word"]
+    anti_llm_results = results["anti_llm"]
 
-    assert multi_word_results, "Expected anti-LLM results when engine is patched"
-    anti_entry = multi_word_results[0]
-    assert anti_entry["result_source"] == "multi_word"
+    assert anti_llm_results, "Expected anti-LLM results when engine is patched"
+    anti_entry = anti_llm_results[0]
+    assert anti_entry["result_source"] == "anti_llm"
     assert anti_entry["rarity_score"] == pytest.approx(4.2)
 
     formatted = app.format_rhyme_results("love", results)
@@ -505,15 +505,15 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    multi_word_results = results["multi_word"]
+    anti_llm_results = results["anti_llm"]
 
-    assert multi_word_results, "Expected at least one high-confidence anti-LLM suggestion"
-    targets = {entry["target_word"] for entry in multi_word_results}
+    assert anti_llm_results, "Expected at least one high-confidence anti-LLM suggestion"
+    targets = {entry["target_word"] for entry in anti_llm_results}
     assert "delta" in targets
     assert "gamma" not in targets
     assert all(
         float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
-        for entry in multi_word_results
+        for entry in anti_llm_results
     )
 
 
