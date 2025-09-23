@@ -13,6 +13,8 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Clone Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -x
           echo "📥 Cloning Hugging Face Space..."
@@ -33,6 +35,8 @@ jobs:
           ls -R hf-space
 
       - name: Commit and push changes
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -x
           cd hf-space
@@ -44,5 +48,5 @@ jobs:
           git commit -m "Sync from GitHub" || echo "⚠️ No changes to commit"
           echo "🚀 Pushing changes to Hugging Face..."
           git push origin main
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          echo "✅ Push complete"
+          git log -1
