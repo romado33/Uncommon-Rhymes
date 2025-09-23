@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Protocol, Sequence, Set
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Set
 
 Row = Dict[str, Any]
 
@@ -35,6 +35,7 @@ class SQLitePatternRepository:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        self._cultural_significance_labels: Optional[List[str]] = None
 
     def _execute(self, query: str, params: Sequence[Any]) -> List[sqlite3.Row]:
         with sqlite3.connect(self.db_path) as conn:
@@ -76,19 +77,52 @@ class SQLitePatternRepository:
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_cultural_depth_patterns(self, source_word: str, limit: int) -> List[Row]:
-        query = """
+        categories = self._get_cultural_significance_labels()
+        conditions = [
+            "source_word = ?",
+            "source_word != target_word",
+        ]
+        params: List[Any] = [source_word]
+
+        if categories:
+            placeholders = ", ".join("?" for _ in categories)
+            conditions.append(f"TRIM(cultural_significance) IN ({placeholders})")
+            params.extend(categories)
+        else:
+            conditions.append("TRIM(COALESCE(cultural_significance, '')) != ''")
+
+        query = f"""
             SELECT target_word, artist, song_title, confidence_score, cultural_significance
             FROM song_rhyme_patterns
-            WHERE source_word = ?
-              AND source_word != target_word
-              AND cultural_significance IN (
-                'underground', 'regional', 'era_specific', 'artist_signature'
-              )
+            WHERE {' AND '.join(conditions)}
             ORDER BY confidence_score DESC
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        params.append(max(1, limit))
+
+        rows = self._execute(query, tuple(params))
         return [self._row_to_dict(row) for row in rows]
+
+    def _get_cultural_significance_labels(self) -> List[str]:
+        if self._cultural_significance_labels is not None:
+            return self._cultural_significance_labels
+
+        query = """
+            SELECT DISTINCT TRIM(cultural_significance) AS label
+            FROM song_rhyme_patterns
+            WHERE cultural_significance IS NOT NULL
+              AND TRIM(cultural_significance) != ''
+            ORDER BY label
+        """
+        rows = self._execute(query, ())
+        labels: List[str] = []
+        for row in rows:
+            value = str(row["label"]).strip()
+            if value:
+                labels.append(value)
+
+        self._cultural_significance_labels = labels
+        return labels
 
     def fetch_complex_syllable_patterns(self, source_word: str, limit: int) -> List[Row]:
         query = """
