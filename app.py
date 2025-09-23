@@ -7,12 +7,8 @@ References: patterns.db, module1_enhanced_core_phonetic.py, module2_enhanced_ant
 
 import gradio as gr
 import sqlite3
-import pandas as pd
 import os
-import sys
 from typing import List, Dict, Tuple, Optional, Set
-import json
-import random
 import types
 import re
 
