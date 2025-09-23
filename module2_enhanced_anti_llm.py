@@ -6,10 +6,8 @@ Part of the RhymeRarity system deployed on Hugging Face
 """
 
 import sqlite3
-import random
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
-from collections import defaultdict, Counter
 import re
 
 @dataclass

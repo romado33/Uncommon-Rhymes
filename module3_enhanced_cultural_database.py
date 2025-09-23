@@ -6,12 +6,9 @@ Part of the RhymeRarity system deployed on Hugging Face
 """
 
 import sqlite3
-import json
 from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass
-from collections import defaultdict, Counter
 import re
-from datetime import datetime
 
 @dataclass
 class CulturalContext:
