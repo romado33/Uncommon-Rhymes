@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
-from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER
+from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER, VOWEL_PHONEMES
 from .feature_profile import (
     PhraseComponents,
     PhoneticMatch,
@@ -94,6 +94,22 @@ class EnhancedPhoneticAnalyzer:
 
         if clean1 == clean2:
             return 1.0
+
+        pronunciations1 = self._get_pronunciation_variants(clean1)
+        pronunciations2 = self._get_pronunciation_variants(clean2)
+
+        if pronunciations1 and pronunciations2:
+            rhyme_tails1 = self._get_rhyme_tails(clean1, pronunciations1)
+            rhyme_tails2 = self._get_rhyme_tails(clean2, pronunciations2)
+
+            phoneme_scores = [
+                self._phoneme_tail_similarity(tail1, tail2)
+                for tail1 in rhyme_tails1
+                for tail2 in rhyme_tails2
+            ]
+
+            if phoneme_scores:
+                return max(phoneme_scores)
 
         # Calculate multiple phonetic features
         ending_sim = self._calculate_ending_similarity(clean1, clean2)
@@ -255,6 +271,94 @@ class EnhancedPhoneticAnalyzer:
     @staticmethod
     def _strip_stress_markers(phones: List[str]) -> List[str]:
         return [re.sub(r"\d", "", phone) for phone in phones]
+
+    @staticmethod
+    def _extract_phoneme_tail(phones: Iterable[str]) -> List[str]:
+        sequence = list(phones)
+        if not sequence:
+            return []
+
+        last_stress_index: Optional[int] = None
+        last_vowel_index: Optional[int] = None
+
+        for index, phone in enumerate(sequence):
+            base = re.sub(r"\d", "", phone).upper()
+            if base not in VOWEL_PHONEMES:
+                continue
+
+            last_vowel_index = index
+            if re.search(r"[12]", phone):
+                last_stress_index = index
+
+        anchor_index = last_stress_index if last_stress_index is not None else last_vowel_index
+        if anchor_index is None:
+            return []
+
+        return sequence[anchor_index:]
+
+    def _get_rhyme_tails(
+        self,
+        word: str,
+        pronunciations: List[List[str]],
+    ) -> List[List[str]]:
+        loader = getattr(self, "cmu_loader", None)
+        tails: List[List[str]] = []
+
+        if loader is not None:
+            try:
+                rhyme_parts = loader.get_rhyme_parts(word)
+            except Exception:
+                rhyme_parts = set()
+
+            for part in rhyme_parts:
+                tail = part.split()
+                if tail:
+                    tails.append(tail)
+
+        if not tails:
+            for phones in pronunciations:
+                tail = self._extract_phoneme_tail(phones)
+                if tail:
+                    tails.append(tail)
+
+        unique_tails: List[List[str]] = []
+        seen: Set[Tuple[str, ...]] = set()
+
+        for tail in tails:
+            key = tuple(tail)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_tails.append(list(tail))
+
+        return unique_tails
+
+    @classmethod
+    def _phoneme_tail_similarity(cls, tail1: Iterable[str], tail2: Iterable[str]) -> float:
+        seq1 = list(tail1)
+        seq2 = list(tail2)
+
+        if not seq1 or not seq2:
+            return 0.0
+
+        if seq1 == seq2:
+            return 1.0
+
+        base1 = cls._strip_stress_markers(seq1)
+        base2 = cls._strip_stress_markers(seq2)
+
+        base_similarity = difflib.SequenceMatcher(None, base1, base2).ratio()
+        coda_similarity = 0.0
+        if len(base1) > 1 and len(base2) > 1:
+            coda_similarity = difflib.SequenceMatcher(
+                None, base1[1:], base2[1:]
+            ).ratio()
+
+        vowel_bonus = 0.15 if base1 and base2 and base1[0] == base2[0] else 0.0
+        stress_bonus = 0.05 if seq1 and seq2 and seq1[0] == seq2[0] else 0.0
+
+        similarity = (base_similarity * 0.6) + (coda_similarity * 0.2) + vowel_bonus + stress_bonus
+        return max(0.0, min(similarity, 1.0))
 
     @staticmethod
     def _vowel_skeleton(word: str) -> str:
