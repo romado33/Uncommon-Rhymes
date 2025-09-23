@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
@@ -102,6 +103,16 @@ class RhymeRarityApp:
                 pass
 
 
+def _should_share_interface() -> bool:
+    """Return whether the Gradio UI should request a public share link."""
+
+    env_value = os.environ.get("RHYMES_SHARE", "")
+    if not env_value:
+        return False
+    normalized = str(env_value).strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
 def main() -> None:
     app = RhymeRarityApp()
     interface = app.create_gradio_interface()
@@ -109,7 +120,7 @@ def main() -> None:
         server_name="0.0.0.0",
         server_port=7860,
         show_api=True,
-        share=True,
+        share=_should_share_interface(),
     )
 
 
