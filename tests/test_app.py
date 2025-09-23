@@ -32,8 +32,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import app as app_module
-from app import RhymeRarityApp
+import rhyme_rarity.app.services.search_service as search_service_module
+from rhyme_rarity.app.app import RhymeRarityApp
 from module2_enhanced_anti_llm import AntiLLMPattern
 
 
@@ -243,6 +243,7 @@ def test_search_rhymes_handles_multi_word_phrases(tmp_path):
 
     loader = LoaderStub()
     app.cmu_loader = loader
+    app.search_service.cmu_loader = loader
     app.phonetic_analyzer.cmu_loader = loader
     if hasattr(app.cultural_engine, "set_phonetic_analyzer"):
         app.cultural_engine.set_phonetic_analyzer(app.phonetic_analyzer)
@@ -291,7 +292,7 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
             self.rarity_calls.append(context)
             return 3.5
 
-    app.cultural_engine = MockCulturalEngine()
+    app.set_cultural_engine(MockCulturalEngine())
 
     results = app.search_rhymes(
         "love",
@@ -341,7 +342,7 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
         ):
             return [sentinel_pattern]
 
-    app.anti_llm_engine = StubAntiLLMEngine()
+    app.set_anti_llm_engine(StubAntiLLMEngine())
 
     results = app.search_rhymes(
         "love",
@@ -370,7 +371,7 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
     create_test_database(str(db_path))
 
     app = RhymeRarityApp(db_path=str(db_path))
-    app.cultural_engine = None
+    app.set_cultural_engine(None)
 
     def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return [
@@ -378,7 +379,7 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
             {"word": "beta", "similarity": 0.82, "combined": 0.6, "rarity": 0.4},
         ]
 
-    monkeypatch.setattr(app_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
 
     results = app.search_rhymes(
         "love",
@@ -414,7 +415,7 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
     def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
         return [dict(candidate) for candidate in cmu_payload]
 
-    monkeypatch.setattr(app_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
 
     class FilteringCulturalEngine:
         def __init__(self):
@@ -442,7 +443,7 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
                 "prosody_profile": {},
             }
 
-    app.cultural_engine = FilteringCulturalEngine()
+    app.set_cultural_engine(FilteringCulturalEngine())
 
     results = app.search_rhymes(
         "love",
@@ -465,7 +466,7 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
     create_test_database(str(db_path))
 
     app = RhymeRarityApp(db_path=str(db_path))
-    app.cultural_engine = None
+    app.set_cultural_engine(None)
 
     low_conf_pattern = AntiLLMPattern(
         source_word="love",
@@ -495,7 +496,7 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
         ):
             return [low_conf_pattern, high_conf_pattern]
 
-    app.anti_llm_engine = StubAntiLLMEngine()
+    app.set_anti_llm_engine(StubAntiLLMEngine())
 
     results = app.search_rhymes(
         "love",
@@ -599,7 +600,7 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
                 },
             }
 
-    app.cultural_engine = MockCulturalEngine()
+    app.set_cultural_engine(MockCulturalEngine())
 
     filtered_results = app.search_rhymes(
         "love",
