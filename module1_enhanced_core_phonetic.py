@@ -61,10 +61,12 @@ class CMUDictLoader:
         if self._loaded:
             return
 
-        self._loaded = True
-
         if not self.dict_path.exists():
             return
+
+        pronunciations: Dict[str, List[List[str]]] = {}
+        rhyme_parts: Dict[str, Set[str]] = {}
+        rhyme_index: Dict[str, Set[str]] = {}
 
         try:
             with self.dict_path.open("r", encoding="utf-8") as handle:
@@ -82,19 +84,22 @@ class CMUDictLoader:
                     if not word:
                         continue
 
-                    self._pronunciations.setdefault(word, []).append(phones)
+                    pronunciations.setdefault(word, []).append(phones)
 
                     rhyme_part = self._extract_rhyme_part(phones)
                     if not rhyme_part:
                         continue
 
-                    self._rhyme_parts.setdefault(word, set()).add(rhyme_part)
-                    self._rhyme_index.setdefault(rhyme_part, set()).add(word)
-        except OSError:
+                    rhyme_parts.setdefault(word, set()).add(rhyme_part)
+                    rhyme_index.setdefault(rhyme_part, set()).add(word)
+        except (OSError, UnicodeDecodeError):
             # If the dictionary cannot be read we simply operate without cache.
-            self._pronunciations.clear()
-            self._rhyme_parts.clear()
-            self._rhyme_index.clear()
+            return
+
+        self._pronunciations = pronunciations
+        self._rhyme_parts = rhyme_parts
+        self._rhyme_index = rhyme_index
+        self._loaded = True
 
     def _extract_rhyme_part(self, phones: List[str]) -> Optional[str]:
         """Return the final stressed vowel plus trailing phonemes."""
