@@ -42,6 +42,25 @@ The refreshed release integrates insights from contemporary rap-poetics scholars
 └── requirements.txt
 ```
 
+## Requirements
+
+The codebase targets **Python 3.10+** so it can use modern typing syntax such as
+`Sequence[str] | None`. Verify your interpreter with `python --version` before
+creating a virtual environment.
+
+`requirements.txt` lists the third-party packages exercised by the modules and
+tests:
+
+| Package | Why it is included |
+| --- | --- |
+| `gradio` | Powers the Blocks UI defined in `rhyme_rarity/app/ui/gradio.py`. |
+| `pronouncing` | Provides a fallback pronunciation search when a word is missing from `cmudict.7b`. |
+| `pandas` | Handy for exporting rhyme searches or performing quick exploratory analysis on `patterns.db`. |
+| `pytest` | Runs the regression suite under `tests/` to keep the phonetic, cultural, and anti-LLM engines aligned. |
+
+All packages are pinned to the major versions that have been exercised in the
+test suite so upgrades remain predictable.
+
 ## Getting started
 
 ### 1. Create a virtual environment (recommended)
@@ -59,7 +78,9 @@ Install all runtime and development dependencies with:
 pip install -r requirements.txt
 ```
 
-The requirements include Gradio for the UI, Pandas for potential data export, Pronouncing as an optional fallback rhyme source, and Pytest for the bundled tests.
+If you do not need the optional helpers (`pandas`, `pytest`) in production you
+can install just the UI stack via `pip install gradio pronouncing`, but keeping
+the full requirements file ensures the local test suite stays runnable.
 
 ### 3. Launch the Gradio app
 
@@ -69,7 +90,7 @@ Run the following command from the project root:
 python app.py
 ```
 
-The first launch will validate (or build) `patterns.db` and start a Gradio server on <http://localhost:7860>. Use the interface to search for rhymes, filter by cultural metadata, and compare results from the phonetic, cultural, and anti-LLM engines. Set the `server_name` and `server_port` arguments inside `app.py` if you need to deploy to a different host or port.
+The first launch will validate (or build) `patterns.db` and start a Gradio server on <http://localhost:7860>. Use the interface to search for rhymes, filter by cultural metadata, and compare results from the phonetic, cultural, and anti-LLM engines. Set the `server_name` and `server_port` arguments inside `app.py` if you need to deploy to a different host or port. You can also run `python -m rhyme_rarity.app.app` if you prefer module syntax.
 
 ### 4. Run the automated tests
 
