@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass
 import re
 
+from profile_utils import normalize_profile_dict
 from syllable_utils import estimate_syllable_count
 
 @dataclass
@@ -230,19 +231,7 @@ class CulturalIntelligenceEngine:
                     )
                 except Exception:
                     profile_obj = None
-            if profile_obj is not None:
-                if hasattr(profile_obj, "as_dict"):
-                    try:
-                        feature_profile_dict = dict(profile_obj.as_dict())
-                    except Exception:
-                        feature_profile_dict = {}
-                elif isinstance(profile_obj, dict):
-                    feature_profile_dict = dict(profile_obj)
-                else:
-                    try:
-                        feature_profile_dict = dict(vars(profile_obj))
-                    except Exception:
-                        feature_profile_dict = {}
+            feature_profile_dict = normalize_profile_dict(profile_obj)
             try:
                 rarity_value = float(analyzer.get_rarity_score(normalized_target))
             except Exception:
