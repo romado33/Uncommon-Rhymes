@@ -17,6 +17,7 @@ import sqlite3
 from collections import Counter
 
 from syllable_utils import estimate_syllable_count
+from demo_data import build_demo_frequencies
 
 VOWEL_PHONEMES: Set[str] = {
     "AA",
@@ -170,41 +171,10 @@ class WordRarityMap:
     downstream scoring can prioritise uncommon rhymes.
     """
 
-    #: Fallback frequency data derived from the demo dataset embedded in
-    #: :mod:`app`. The values loosely reflect how often each target word
-    #: appears and provide sensible defaults when no database is available.
-    _DEFAULT_FREQUENCIES: Dict[str, int] = {
-        "love": 42,
-        "above": 21,
-        "mind": 18,
-        "find": 17,
-        "flow": 15,
-        "go": 14,
-        "money": 11,
-        "honey": 9,
-        "time": 10,
-        "rhyme": 8,
-        "night": 13,
-        "light": 12,
-        "pain": 7,
-        "rain": 7,
-        "real": 6,
-        "feel": 6,
-        "street": 5,
-        "beat": 5,
-        "life": 4,
-        "knife": 3,
-        "word": 4,
-        "heard": 4,
-        "game": 5,
-        "fame": 5,
-        "soul": 4,
-        "goal": 3,
-        "way": 5,
-        "day": 5,
-        "back": 6,
-        "track": 6,
-    }
+    #: Fallback frequency data derived from the shared demo dataset in
+    #: :mod:`demo_data`. Centralising the values ensures the rarity map and
+    #: demo database remain aligned when no external database is available.
+    _DEFAULT_FREQUENCIES: Dict[str, int] = build_demo_frequencies()
 
     def __init__(self, frequencies: Optional[Dict[str, int]] = None) -> None:
         self._frequencies: Counter[str] = Counter()
