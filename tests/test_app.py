@@ -373,7 +373,7 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
     )
 
 
-def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
+def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     db_path = tmp_path / "patterns.db"
     create_test_database(str(db_path))
 
@@ -416,26 +416,29 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
                 rhyme_type = "perfect"
                 complexity = "steady"
                 cadence_ratio = 1.05
+                stress_alignment = 0.9
                 bradley_device = "multi"
             elif target == "shove":
                 rhyme_type = None
                 complexity = "steady"
                 cadence_ratio = 1.1
+                stress_alignment = 0.65
                 bradley_device = "perfect"
             else:
                 rhyme_type = "slant"
                 complexity = "dense"
                 cadence_ratio = 1.4
+                stress_alignment = 0.72
                 bradley_device = "assonance"
 
             target_signatures = list(self.derive_rhyme_signatures(target))
             signature_matches = list(rhyme_signatures or [])
 
-            feature_profile = {"bradley_device": bradley_device}
+            feature_profile = {"bradley_device": bradley_device, "stress_alignment": stress_alignment}
             if rhyme_type:
                 feature_profile["rhyme_type"] = rhyme_type
 
-            features = {"rhyme_type": rhyme_type} if rhyme_type else {}
+            features = {"rhyme_type": rhyme_type, "stress_alignment": stress_alignment} if rhyme_type else {}
 
             return {
                 "similarity": 0.9,
@@ -449,6 +452,7 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
                 "prosody_profile": {
                     "complexity_tag": complexity,
                     "cadence_ratio": cadence_ratio,
+                    "stress_alignment": stress_alignment,
                 },
             }
 
@@ -460,6 +464,7 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
         min_confidence=0.0,
         result_sources=["cultural"],
         allowed_rhyme_types=["perfect"],
+        min_stress_alignment=0.85,
         cadence_focus="steady",
     )
 
@@ -470,8 +475,12 @@ def test_search_rhymes_respects_rhyme_type_and_cadence_filters(tmp_path):
         (entry.get("prosody_profile") or {}).get("complexity_tag") == "steady"
         for entry in filtered_results
     )
+    assert all(
+        float(entry.get("rhythm_score", 0.0)) >= 0.85 for entry in filtered_results
+    )
 
     formatted = app.format_rhyme_results("love", filtered_results)
     assert "Rhyme Type: Perfect" in formatted
     assert "Cadence: Steady" in formatted
+    assert "Rhythm Match: 0.90" in formatted
 
