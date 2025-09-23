@@ -1,0 +1,33 @@
+name: Sync to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v3
+
+      - name: Clone Hugging Face Space
+        run: |
+          git clone https://huggingface.co/spaces/romado33/Uncommon-Rhymes hf-space
+          cd hf-space
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+      - name: Copy project files but exclude patterns.db
+        run: |
+          rsync -av --exclude='.git' --exclude='patterns.db' ./ hf-space/
+
+      - name: Commit and push changes
+        run: |
+          cd hf-space
+          git add .
+          git commit -m "Sync from GitHub" || echo "No changes"
+          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/Uncommon-Rhymes main
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
