@@ -28,6 +28,6 @@ jobs:
           cd hf-space
           git add .
           git commit -m "Sync from GitHub" || echo "No changes"
-          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/Uncommon-Rhymes main
+          git push https://$HF_TOKEN@huggingface.co/spaces/romado33/RhymeRater/ main
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
