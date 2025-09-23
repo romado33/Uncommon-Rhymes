@@ -8,6 +8,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from anti_llm import AntiLLMRhymeEngine, SeedCandidate
+from anti_llm.strategies import find_cultural_depth_patterns
+from rhyme_rarity.app.data.database import SQLiteRhymeRepository
 
 
 class DummyRarityMap:
@@ -108,3 +110,22 @@ def test_syllable_complexity_uses_estimator(monkeypatch: pytest.MonkeyPatch):
     expected_complexity = 4 * 0.5 + pattern_changes * 0.1
 
     assert complexity == pytest.approx(expected_complexity)
+
+
+def test_cultural_depth_strategy_returns_patterns(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    repository_builder = SQLiteRhymeRepository(str(db_path))
+    repository_builder.ensure_database()
+
+    engine = AntiLLMRhymeEngine(db_path=str(db_path))
+
+    patterns = find_cultural_depth_patterns(
+        engine.repository,
+        source_word="love",
+        limit=5,
+        cultural_weights=engine.cultural_depth_weights,
+        attach_profile=lambda pattern: None,
+    )
+
+    assert patterns
+    assert any("[mainstream]" in pattern.cultural_depth for pattern in patterns)
