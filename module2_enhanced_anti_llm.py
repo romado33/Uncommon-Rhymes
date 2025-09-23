@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import re
 
 from module1_enhanced_core_phonetic import DEFAULT_RARITY_MAP, WordRarityMap
+from profile_utils import normalize_profile_dict
 
 @dataclass
 class AntiLLMPattern:
@@ -165,22 +166,7 @@ class AntiLLMRhymeEngine:
         except Exception:
             return {}
 
-        if profile is None:
-            return {}
-
-        if hasattr(profile, "as_dict"):
-            try:
-                return dict(profile.as_dict())
-            except Exception:
-                pass
-
-        if isinstance(profile, dict):
-            return dict(profile)
-
-        try:
-            return dict(profile.__dict__)
-        except Exception:
-            return {}
+        return normalize_profile_dict(profile)
 
     def _attach_profile(self, pattern: AntiLLMPattern) -> None:
         profile = self._extract_feature_profile(pattern.source_word, pattern.target_word)
