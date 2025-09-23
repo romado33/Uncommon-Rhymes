@@ -14,7 +14,7 @@ jobs:
 
       - name: Clone Hugging Face Space
         run: |
-          git clone https://huggingface.co/spaces/romado33/Uncommon-Rhymes hf-space
+          git clone https://huggingface.co/spaces/romado33/RhymeRater/ hf-space
           cd hf-space
           git config user.name "github-actions"
           git config user.email "actions@github.com"
