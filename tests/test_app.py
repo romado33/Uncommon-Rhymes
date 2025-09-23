@@ -163,12 +163,14 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
 
     results = app.search_rhymes("glove", limit=5, min_confidence=0.0)
 
-    assert results, "Expected at least one rhyme suggestion"
-    assert results[0]["target_word"] == "love"
-    assert results[0]["pattern"] == "glove / love"
-    assert results[0]["source_context"] == "Glove in the chorus"
-    assert results[0]["target_context"] == "Love in the bridge"
-    assert all(result["target_word"] == "love" for result in results)
+    rap_results = results["rap_db"]
+    assert rap_results, "Expected at least one rhyme suggestion"
+    first = rap_results[0]
+    assert first["target_word"] == "love"
+    assert first["pattern"] == "glove / love"
+    assert first["source_context"] == "Glove in the chorus"
+    assert first["target_context"] == "Love in the bridge"
+    assert all(result["target_word"] == "love" for result in rap_results)
 
 
 def test_search_rhymes_filters_by_cultural_significance(tmp_path):
@@ -185,9 +187,11 @@ def test_search_rhymes_filters_by_cultural_significance(tmp_path):
         result_sources=["cultural"],
     )
 
-    assert results, "Expected filtered results for cultural significance"
-    assert all(result["cultural_sig"] == "legendary" for result in results)
-    assert all(result["target_word"] == "glove" for result in results)
+    rap_results = results["rap_db"]
+
+    assert rap_results, "Expected filtered results for cultural significance"
+    assert all(result["cultural_sig"] == "legendary" for result in rap_results)
+    assert all(result["target_word"] == "glove" for result in rap_results)
 
 
 def test_cultural_context_enrichment_in_formatting(tmp_path):
@@ -226,8 +230,10 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
         result_sources=["cultural"],
     )
 
-    assert results, "Expected results enriched with cultural context"
-    enriched_entry = results[0]
+    rap_results = results["rap_db"]
+
+    assert rap_results, "Expected results enriched with cultural context"
+    enriched_entry = rap_results[0]
     assert "cultural_context" in enriched_entry
     assert enriched_entry["cultural_rarity"] == 3.5
 
@@ -274,9 +280,11 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    assert results, "Expected anti-LLM results when engine is patched"
-    anti_entry = results[0]
-    assert anti_entry["result_source"] in {"anti_llm", "anti-llm"}
+    multi_word_results = results["multi_word"]
+
+    assert multi_word_results, "Expected anti-LLM results when engine is patched"
+    anti_entry = multi_word_results[0]
+    assert anti_entry["result_source"] == "multi_word"
     assert anti_entry["rarity_score"] == pytest.approx(4.2)
 
     formatted = app.format_rhyme_results("love", results)
@@ -309,13 +317,15 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
         result_sources=["phonetic"],
     )
 
-    assert results, "Expected high-confidence phonetic suggestions"
-    targets = {entry["target_word"] for entry in results}
+    cmu_results = results["cmu"]
+
+    assert cmu_results, "Expected high-confidence phonetic suggestions"
+    targets = {entry["target_word"] for entry in cmu_results}
     assert "alpha" in targets
     assert "beta" not in targets
     assert all(
         float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
-        for entry in results
+        for entry in cmu_results
     )
 
 
@@ -363,13 +373,15 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    assert results, "Expected at least one high-confidence anti-LLM suggestion"
-    targets = {entry["target_word"] for entry in results}
+    multi_word_results = results["multi_word"]
+
+    assert multi_word_results, "Expected at least one high-confidence anti-LLM suggestion"
+    targets = {entry["target_word"] for entry in multi_word_results}
     assert "delta" in targets
     assert "gamma" not in targets
     assert all(
         float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
-        for entry in results
+        for entry in multi_word_results
     )
 
 
@@ -468,15 +480,17 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
         cadence_focus="steady",
     )
 
-    assert filtered_results, "Expected matches that satisfy rhyme type and cadence filters"
-    assert all(entry.get("rhyme_type") == "perfect" for entry in filtered_results)
-    assert all(entry.get("target_word") != "shove" for entry in filtered_results)
+    rap_results = filtered_results["rap_db"]
+
+    assert rap_results, "Expected matches that satisfy rhyme type and cadence filters"
+    assert all(entry.get("rhyme_type") == "perfect" for entry in rap_results)
+    assert all(entry.get("target_word") != "shove" for entry in rap_results)
     assert all(
         (entry.get("prosody_profile") or {}).get("complexity_tag") == "steady"
-        for entry in filtered_results
+        for entry in rap_results
     )
     assert all(
-        float(entry.get("rhythm_score", 0.0)) >= 0.85 for entry in filtered_results
+        float(entry.get("rhythm_score", 0.0)) >= 0.85 for entry in rap_results
     )
 
     formatted = app.format_rhyme_results("love", filtered_results)
