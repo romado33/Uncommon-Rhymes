@@ -85,6 +85,7 @@ Running the tests ensures the fallback database creation and rhyme search behave
 
 - The CMU dictionary (`cmudict.7b`) must remain alongside `module1_enhanced_core_phonetic.py` so that the phonetic loader can locate it. You can swap in a larger dictionary file if desired.
 - If you maintain your own rhyme database, replace `patterns.db` with your dataset. The application will automatically derive rarity scores and cultural filters from the supplied data.
+- Cultural significance filters blend values stored in your database with curated category descriptions (e.g., `classic`, `cultural-icon`, `underground`) so the dropdown always reflects available metadata.
 - `app.py` contains helper methods such as `format_rhyme_results` and `search_rhymes` that you can import into other projects or wrap with alternative front-ends.
 
 Happy rhyming!

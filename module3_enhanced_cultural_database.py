@@ -352,11 +352,53 @@ class CulturalIntelligenceEngine:
                 'rarity_multiplier': 3.5,
                 'examples': ['Tupac', 'Biggie', 'Jay-Z', 'Eminem']
             },
+            'classic': {
+                'description': 'Timeless anthems regarded as essential hip-hop staples',
+                'influence_score': 8,
+                'rarity_multiplier': 3.0,
+                'examples': ['Nas', 'Jay-Z', 'OutKast']
+            },
+            'artistic': {
+                'description': 'Avant-garde creators celebrated for experimental artistry',
+                'influence_score': 7,
+                'rarity_multiplier': 2.9,
+                'examples': ['Kendrick Lamar', 'Tyler, The Creator', 'Lauryn Hill']
+            },
             'lyrical_genius': {
                 'description': 'Masters of wordplay and lyrical complexity',
                 'influence_score': 8,
                 'rarity_multiplier': 3.2,
                 'examples': ['Nas', 'Kendrick Lamar', 'MF DOOM', 'Black Thought']
+            },
+            'innovative': {
+                'description': 'Trendsetters who continually push sonic and conceptual boundaries',
+                'influence_score': 7,
+                'rarity_multiplier': 2.7,
+                'examples': ['Kanye West', 'Missy Elliott', 'André 3000']
+            },
+            'emotional': {
+                'description': 'Artists known for vulnerable, heartfelt storytelling',
+                'influence_score': 6,
+                'rarity_multiplier': 2.6,
+                'examples': ['Tupac', 'DMX', 'Phonte']
+            },
+            'conscious': {
+                'description': 'Voices centering social commentary and political awareness',
+                'influence_score': 7,
+                'rarity_multiplier': 2.5,
+                'examples': ['Common', 'Talib Kweli', 'Killer Mike']
+            },
+            'authentic': {
+                'description': 'Grounded storytellers whose credibility anchors their narratives',
+                'influence_score': 6,
+                'rarity_multiplier': 2.4,
+                'examples': ['J. Cole', 'Pusha T', 'Scarface']
+            },
+            'ambitious': {
+                'description': 'Driven voices chronicling hustle, aspiration, and reinvention',
+                'influence_score': 6,
+                'rarity_multiplier': 2.3,
+                'examples': ['The Game', 'Nicki Minaj', 'Meek Mill']
             },
             'regional_pioneer': {
                 'description': 'Artists who established regional hip-hop scenes',
@@ -364,17 +406,41 @@ class CulturalIntelligenceEngine:
                 'rarity_multiplier': 2.8,
                 'examples': ['OutKast', 'UGK', 'Bone Thugs', 'Tech N9ne']
             },
+            'foundational': {
+                'description': 'Architects who laid the groundwork for the culture to flourish',
+                'influence_score': 8,
+                'rarity_multiplier': 3.4,
+                'examples': ['Rakim', 'KRS-One', 'Queen Latifah']
+            },
             'underground_legend': {
                 'description': 'Respected in hip-hop circles but less mainstream',
                 'influence_score': 6,
                 'rarity_multiplier': 3.8,
                 'examples': ['MF DOOM', 'Aesop Rock', 'Roc Marciano', 'Ka']
             },
+            'underground': {
+                'description': 'Cult-favourite movements thriving outside the mainstream glare',
+                'influence_score': 5,
+                'rarity_multiplier': 3.2,
+                'examples': ['Atmosphere', 'Murs', 'Freddie Gibbs']
+            },
             'mainstream': {
                 'description': 'Popular artists with wide commercial appeal',
                 'influence_score': 5,
                 'rarity_multiplier': 1.5,
                 'examples': ['Drake', 'Post Malone', 'Travis Scott']
+            },
+            'emerging': {
+                'description': 'Newcomers gaining traction and cultural visibility',
+                'influence_score': 4,
+                'rarity_multiplier': 1.8,
+                'examples': ['Baby Keem', 'Tierra Whack', 'Doja Cat']
+            },
+            'dark': {
+                'description': 'Moody, gothic, or horrorcore-inflected aesthetics',
+                'influence_score': 5,
+                'rarity_multiplier': 2.8,
+                'examples': ['Eminem', 'Tech N9ne', 'Griselda']
             }
         }
     
