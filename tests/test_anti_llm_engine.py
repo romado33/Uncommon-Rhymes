@@ -78,3 +78,33 @@ def test_seed_expansion_uses_shared_rarity_map():
     assert patterns
     assert patterns[0].target_word == "Novel"
     assert patterns[0].rarity_score >= 3.0
+
+
+def test_syllable_complexity_uses_estimator(monkeypatch: pytest.MonkeyPatch):
+    calls = []
+
+    def fake_estimator(word: str) -> int:
+        calls.append(word)
+        return 4
+
+    monkeypatch.setattr(
+        "module2_enhanced_anti_llm.estimate_syllable_count", fake_estimator
+    )
+
+    engine = AntiLLMRhymeEngine()
+
+    complexity = engine._calculate_syllable_complexity("Cascade")
+
+    assert calls == ["Cascade"]
+
+    pattern_changes = 0
+    word = "Cascade"
+    for i in range(1, len(word)):
+        is_vowel_now = word[i] in "aeiou"
+        was_vowel_before = word[i - 1] in "aeiou"
+        if is_vowel_now != was_vowel_before:
+            pattern_changes += 1
+
+    expected_complexity = 4 * 0.5 + pattern_changes * 0.1
+
+    assert complexity == pytest.approx(expected_complexity)
