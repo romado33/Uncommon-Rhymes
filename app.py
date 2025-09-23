@@ -1810,106 +1810,111 @@ class RhymeRarityApp:
 
         # Create Gradio interface
         with gr.Blocks(title="RhymeRarity - Advanced Rhyme Generator", theme=gr.themes.Soft()) as interface:
-            gr.Markdown("""
-            # 🎵 RhymeRarity - Advanced Rhyme Generator
+            gr.Markdown(
+                "## 🎵 RhymeRarity - Advanced Rhyme Generator\n"
+                "Discover culturally grounded rhyme pairs sourced from authentic hip-hop lyrics."
+            )
 
-            **Find perfect rhymes from authentic hip-hop lyrics and cultural patterns**
-
-            This system uses real rap lyrics from 200+ artists to find rhymes that LLMs can't generate,
-            with full cultural attribution and context.
-            """)
-
-            with gr.Row():
-                with gr.Column(scale=2):
+            with gr.Row(equal_height=True):
+                with gr.Column(scale=5, min_width=360):
                     word_input = gr.Textbox(
                         label="Word to Find Rhymes For",
                         placeholder="Enter a word (e.g., love, mind, flow, money)",
-                        lines=1
+                        lines=1,
                     )
 
-                    max_results = gr.Slider(
-                        minimum=5,
-                        maximum=50,
-                        value=15,
-                        step=1,
-                        label="Max Results"
-                    )
+                    with gr.Row():
+                        max_results = gr.Slider(
+                            minimum=5,
+                            maximum=50,
+                            value=15,
+                            step=1,
+                            label="Max Results",
+                        )
 
-                    min_confidence = gr.Slider(
-                        minimum=0.5,
-                        maximum=1.0,
-                        value=0.7,
-                        step=0.05,
-                        label="Min Confidence"
-                    )
+                        min_confidence = gr.Slider(
+                            minimum=0.5,
+                            maximum=1.0,
+                            value=0.7,
+                            step=0.05,
+                            label="Min Confidence",
+                        )
 
-                with gr.Column(scale=1):
-                    cultural_dropdown = gr.Dropdown(
-                        choices=cultural_options,
-                        multiselect=True,
-                        label="Cultural Significance",
-                        info="Filter by cultural importance (labels such as classic, cultural-icon, underground)",
-                        value=[],
-                    )
-
-                    genre_dropdown = gr.Dropdown(
-                        choices=genre_options,
-                        multiselect=True,
-                        label="Genre",
-                        info="Limit to specific genres",
-                        value=[],
-                    )
-
-                    result_source_group = gr.CheckboxGroup(
-                        choices=["phonetic", "cultural", "anti-llm"],
-                        value=default_sources,
-                        label="Result Sources",
-                    )
-
-                    rhyme_type_dropdown = gr.Dropdown(
-                        choices=["perfect", "near", "slant", "eye", "weak"],
-                        multiselect=True,
-                        label="Rhyme Type",
-                        info="Limit to specific rhyme categories",
-                        value=[],
-                    )
-
-                    rhythm_threshold_slider = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        value=0.0,
-                        step=0.05,
-                        label="Minimum Rhythm Match",
-                        info="Set a minimum stress-alignment score for suggested rhymes",
-                    )
-
-                    cadence_dropdown = gr.Dropdown(
-                        choices=["Any", "steady", "polysyllabic", "dense"],
-                        value="Any",
-                        label="Rhythm Focus",
-                        info="Prioritise matches with a particular cadence profile",
-                    )
-
-                    max_line_distance_dropdown = gr.Dropdown(
-                        choices=["Any", "1", "2", "3", "4", "5"],
-                        value="Any",
-                        label="Max Line Distance",
-                    )
-
-            with gr.Row():
-                with gr.Column(scale=1, min_width=200):
                     search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
-                with gr.Column(scale=3):
                     gr.Markdown(
                         "💡 Enter a word and adjust the filters, then press **Find Rhymes** to discover new lyric pairings."
                     )
 
-            output = gr.Textbox(
-                label="Rhyme Results",
-                lines=20,
-                max_lines=30,
-                show_copy_button=True
-            )
+                    with gr.Accordion("Advanced filters", open=False):
+                        with gr.Row():
+                            with gr.Column(scale=1, min_width=160):
+                                cultural_dropdown = gr.Dropdown(
+                                    choices=cultural_options,
+                                    multiselect=True,
+                                    label="Cultural Significance",
+                                    info="Filter by cultural importance (labels such as classic, cultural-icon, underground)",
+                                    value=[],
+                                )
+
+                                genre_dropdown = gr.Dropdown(
+                                    choices=genre_options,
+                                    multiselect=True,
+                                    label="Genre",
+                                    info="Limit to specific genres",
+                                    value=[],
+                                )
+
+                                max_line_distance_dropdown = gr.Dropdown(
+                                    choices=["Any", "1", "2", "3", "4", "5"],
+                                    value="Any",
+                                    label="Max Line Distance",
+                                )
+
+                            with gr.Column(scale=1, min_width=160):
+                                result_source_group = gr.CheckboxGroup(
+                                    choices=["phonetic", "cultural", "anti-llm"],
+                                    value=default_sources,
+                                    label="Result Sources",
+                                )
+
+                                rhyme_type_dropdown = gr.Dropdown(
+                                    choices=["perfect", "near", "slant", "eye", "weak"],
+                                    multiselect=True,
+                                    label="Rhyme Type",
+                                    info="Limit to specific rhyme categories",
+                                    value=[],
+                                )
+
+                                rhythm_threshold_slider = gr.Slider(
+                                    minimum=0.0,
+                                    maximum=1.0,
+                                    value=0.0,
+                                    step=0.05,
+                                    label="Minimum Rhythm Match",
+                                    info="Set a minimum stress-alignment score for suggested rhymes",
+                                )
+
+                                cadence_dropdown = gr.Dropdown(
+                                    choices=["Any", "steady", "polysyllabic", "dense"],
+                                    value="Any",
+                                    label="Rhythm Focus",
+                                    info="Prioritise matches with a particular cadence profile",
+                                )
+
+                    with gr.Accordion("About RhymeRarity", open=False):
+                        gr.Markdown(
+                            "- **1.2M+ authentic rhyme patterns** from real hip-hop lyrics\n"
+                            "- **200+ artists** including Eminem, Kendrick Lamar, Jay-Z, Nas, and more\n"
+                            "- **Cultural intelligence** with full song and artist attribution\n"
+                            "- **Anti-LLM algorithms** that find rhymes large language models miss\n"
+                            "- **Research-backed** phonetic analysis for superior rhyme detection"
+                        )
+
+                with gr.Column(scale=5, min_width=360):
+                    gr.Markdown("### Rhyme Results")
+                    output = gr.Markdown(
+                        value="Start by entering a word on the left and click **Find Rhymes**.",
+                    )
 
             search_btn.click(
                 fn=search_interface,
@@ -1925,19 +1930,8 @@ class RhymeRarityApp:
                     rhythm_threshold_slider,
                     cadence_dropdown,
                 ],
-                outputs=output
+                outputs=output,
             )
-
-            gr.Markdown("""
-            ---
-            ### About RhymeRarity
-
-            - **1.2M+ authentic rhyme patterns** from real hip-hop lyrics
-            - **200+ artists** including Eminem, Kendrick Lamar, Jay-Z, Nas, and more
-            - **Cultural intelligence** with full song and artist attribution
-            - **Anti-LLM algorithms** that find rhymes large language models miss
-            - **Research-backed** phonetic analysis for superior rhyme detection
-            """)
 
         return interface
 
