@@ -228,6 +228,9 @@ class RhymeRarityApp:
             genres: Optional[List[str]] = None,
             result_sources: Optional[List[str]] = None,
             max_line_distance: Optional[int] = None,
+            rhyme_types: Optional[List[str]] = None,
+            min_syllable_similarity: Optional[float] = None,
+            min_rhythm_strength: Optional[float] = None,
         ) -> List[Dict]:
             """Search for rhymes in the patterns.db database"""
             if not source_word or not source_word.strip():
@@ -249,6 +252,29 @@ class RhymeRarityApp:
 
             cultural_filters = {_normalize_source_name(sig) for sig in _normalize_to_list(cultural_significance)}
             genre_filters = {_normalize_source_name(genre) for genre in _normalize_to_list(genres)}
+            rhyme_type_filters = {
+                _normalize_source_name(rhyme)
+                for rhyme in _normalize_to_list(rhyme_types)
+            }
+
+            def _normalize_threshold(value: Optional[float]) -> Optional[float]:
+                if value is None:
+                    return None
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    return None
+                if numeric <= 0:
+                    return None
+                return numeric
+
+            min_syllable_similarity = _normalize_threshold(min_syllable_similarity)
+            min_rhythm_strength = _normalize_threshold(min_rhythm_strength)
+
+            syllable_threshold_active = min_syllable_similarity is not None
+            rhythm_threshold_active = min_rhythm_strength is not None
+            syllable_threshold_value = float(min_syllable_similarity) if syllable_threshold_active else 0.0
+            rhythm_threshold_value = float(min_rhythm_strength) if rhythm_threshold_active else 0.0
 
             selected_sources = {
                 _normalize_source_name(source) for source in _normalize_to_list(result_sources)
@@ -261,8 +287,51 @@ class RhymeRarityApp:
             include_anti_llm = "anti-llm" in selected_sources
 
             filters_active = bool(
-                cultural_filters or genre_filters or (max_line_distance is not None)
+                cultural_filters
+                or genre_filters
+                or (max_line_distance is not None)
+                or rhyme_type_filters
+                or syllable_threshold_active
+                or rhythm_threshold_active
             )
+
+            def _safe_float(value: Optional[float], default: float = 0.0) -> float:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            def _extract_phonetic_feature(entry: Dict, key: str) -> Optional[float]:
+                features = entry.get("phonetic_features")
+                if isinstance(features, dict):
+                    value = features.get(key)
+                    if value is not None:
+                        try:
+                            return float(value)
+                        except (TypeError, ValueError):
+                            pass
+                value = entry.get(key)
+                if value is not None:
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return None
+                return None
+
+            def _evaluate_rhythm_metrics(entry: Dict) -> Tuple[Optional[float], Optional[float]]:
+                syllable_value = _extract_phonetic_feature(entry, "syllable_similarity")
+                components = [
+                    _extract_phonetic_feature(entry, "ending_similarity"),
+                    _extract_phonetic_feature(entry, "vowel_similarity"),
+                    _extract_phonetic_feature(entry, "consonant_similarity"),
+                ]
+                available = [value for value in components if value is not None]
+                rhythm_strength_value: Optional[float]
+                if available:
+                    rhythm_strength_value = sum(available) / len(available)
+                else:
+                    rhythm_strength_value = None
+                return syllable_value, rhythm_strength_value
 
             if limit <= 0:
                 return []
@@ -737,6 +806,44 @@ class RhymeRarityApp:
                 )
                 if pair in seen_pairs:
                     continue
+
+                normalized_rhyme: Optional[str] = None
+                entry_rhyme_value = entry.get("rhyme_type")
+                if entry_rhyme_value:
+                    normalized_rhyme = _normalize_source_name(str(entry_rhyme_value))
+                elif rhyme_type_filters and analyzer is not None:
+                    classifier = getattr(analyzer, "classify_rhyme_type", None)
+                    similarity_getter = getattr(analyzer, "get_phonetic_similarity", None)
+                    if callable(classifier):
+                        try:
+                            similarity_estimate = entry.get("phonetic_sim")
+                            if similarity_estimate is None and callable(similarity_getter):
+                                similarity_estimate = similarity_getter(str(source_value), str(target_value))
+                            similarity_value = float(similarity_estimate) if similarity_estimate is not None else 0.0
+                            derived_type = classifier(str(source_value), str(target_value), similarity_value)
+                        except Exception:
+                            derived_type = None
+                        if derived_type:
+                            entry["rhyme_type"] = derived_type
+                            normalized_rhyme = _normalize_source_name(str(derived_type))
+
+                if rhyme_type_filters and (not normalized_rhyme or normalized_rhyme not in rhyme_type_filters):
+                    continue
+
+                syllable_value, rhythm_strength_value = _evaluate_rhythm_metrics(entry)
+
+                if syllable_threshold_active:
+                    if syllable_value is None or syllable_value < syllable_threshold_value:
+                        continue
+                if rhythm_threshold_active:
+                    if rhythm_strength_value is None or rhythm_strength_value < rhythm_threshold_value:
+                        continue
+
+                if syllable_value is not None and "syllable_similarity" not in entry:
+                    entry["syllable_similarity"] = syllable_value
+                if rhythm_strength_value is not None and "rhythm_strength" not in entry:
+                    entry["rhythm_strength"] = rhythm_strength_value
+
                 seen_pairs.add(pair)
                 deduped.append(entry)
 
@@ -759,6 +866,16 @@ class RhymeRarityApp:
             else:
                 filtered_entries = deduped
 
+            if syllable_threshold_active or rhythm_threshold_active or rhyme_type_filters:
+                filtered_entries.sort(
+                    key=lambda entry: (
+                        _safe_float(entry.get("combined_score", entry.get("confidence"))),
+                        _safe_float(entry.get("rhythm_strength")),
+                        _safe_float(entry.get("phonetic_sim")),
+                    ),
+                    reverse=True,
+                )
+
             for entry in filtered_entries:
                 entry.pop("source_word", None)
 
@@ -767,9 +884,36 @@ class RhymeRarityApp:
         """Format rhyme search results for display"""
         if not rhymes:
             return f"❌ No rhymes found for '{source_word}'\n\nTry words like: love, mind, flow, time, money"
-        
+
         result = f"🎯 **TARGET RHYMES for '{source_word.upper()}':**\n"
         result += "=" * 50 + "\n\n"
+
+        def _format_rhythm_details(rhyme_entry: Dict) -> str:
+            lines: List[str] = []
+
+            rhyme_type_value = rhyme_entry.get('rhyme_type')
+            if rhyme_type_value:
+                rhyme_label = str(rhyme_type_value).replace('_', ' ').title()
+                lines.append(f"   🎯 Rhyme Type: {rhyme_label}")
+
+            rhythm_strength_value = rhyme_entry.get('rhythm_strength')
+            try:
+                if rhythm_strength_value is not None:
+                    lines.append(f"   🥁 Rhythm Strength: {float(rhythm_strength_value):.2f}")
+            except (TypeError, ValueError):
+                pass
+
+            syllable_alignment_value = rhyme_entry.get('syllable_similarity')
+            try:
+                if syllable_alignment_value is not None:
+                    lines.append(f"   🔄 Syllable Alignment: {float(syllable_alignment_value):.2f}")
+            except (TypeError, ValueError):
+                pass
+
+            if not lines:
+                return ""
+
+            return "\n".join(lines) + "\n"
 
         for i, rhyme in enumerate(rhymes[:15], 1):
             result += f"**{i:2d}. {rhyme['target_word'].upper()}**\n"
@@ -787,6 +931,7 @@ class RhymeRarityApp:
                     result += f"   🎯 Combined Score: {combined_value:.2f}\n"
                 note = rhyme.get('source_context') or 'Pronunciation-based suggestion.'
                 result += f"   🗒️ Note: {note}\n\n"
+                result += _format_rhythm_details(rhyme)
             elif source_type in {"anti_llm", "anti-llm"}:
                 pattern_text = rhyme.get('pattern') or f"{source_word} / {rhyme['target_word']}"
                 result += "   🤖 Source: Anti-LLM Engine\n"
@@ -814,6 +959,7 @@ class RhymeRarityApp:
                     result += f"   🧠 Insight: {context_note}\n"
 
                 result += "\n"
+                result += _format_rhythm_details(rhyme)
             else:
                 result += f"   🎤 Source: {rhyme['artist']} - {rhyme['song']}\n"
                 result += f"   📝 Pattern: {rhyme['pattern']}\n"
@@ -859,6 +1005,7 @@ class RhymeRarityApp:
                             result += f"   🎨 Styles: {formatted_styles}\n"
 
                 result += f"   🎵 Context: \"{rhyme['source_context']}\" → \"{rhyme['target_context']}\"\n\n"
+                result += _format_rhythm_details(rhyme)
 
         return result
     
@@ -873,6 +1020,9 @@ class RhymeRarityApp:
             genre_filter,
             source_filter,
             max_line_distance_choice,
+            rhyme_type_filter,
+            min_syllable_alignment,
+            min_rhythm_strength,
         ):
             """Interface function for Gradio"""
             if not word:
@@ -887,6 +1037,15 @@ class RhymeRarityApp:
                     return [value] if value else []
                 return [value]
 
+            def ensure_threshold(value):
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    return None
+                if numeric <= 0:
+                    return None
+                return numeric
+
             max_distance: Optional[int]
             if max_line_distance_choice in (None, "", "Any"):
                 max_distance = None
@@ -896,6 +1055,9 @@ class RhymeRarityApp:
                 except (TypeError, ValueError):
                     max_distance = None
 
+            min_syllable_value = ensure_threshold(min_syllable_alignment)
+            min_rhythm_value = ensure_threshold(min_rhythm_strength)
+
             rhymes = self.search_rhymes(
                 word,
                 limit=max_results,
@@ -904,6 +1066,9 @@ class RhymeRarityApp:
                 genres=ensure_list(genre_filter),
                 result_sources=ensure_list(source_filter),
                 max_line_distance=max_distance,
+                rhyme_types=ensure_list(rhyme_type_filter),
+                min_syllable_similarity=min_syllable_value,
+                min_rhythm_strength=min_rhythm_value,
             )
             return self.format_rhyme_results(word, rhymes)
 
@@ -922,6 +1087,8 @@ class RhymeRarityApp:
             genre_options = []
 
         default_sources = ["phonetic", "cultural"]
+        rhyme_type_options = ["perfect", "near", "slant", "eye", "weak"]
+        rhyme_type_defaults = list(rhyme_type_options)
 
         # Create Gradio interface
         with gr.Blocks(title="RhymeRarity - Advanced Rhyme Generator", theme=gr.themes.Soft()) as interface:
@@ -987,6 +1154,32 @@ class RhymeRarityApp:
                         label="Max Line Distance",
                     )
 
+                with gr.Column(scale=1):
+                    rhyme_type_group = gr.CheckboxGroup(
+                        choices=rhyme_type_options,
+                        value=rhyme_type_defaults,
+                        label="Rhyme Types",
+                        info="Choose the rhyme categories to include in results",
+                    )
+
+                    min_syllable_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.0,
+                        step=0.05,
+                        label="Min Syllable Alignment",
+                        info="Set a minimum syllable alignment to focus on tighter rhythms",
+                    )
+
+                    min_rhythm_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.0,
+                        step=0.05,
+                        label="Min Rhythm Strength",
+                        info="Require a minimum average of ending, vowel, and consonant alignment",
+                    )
+
             search_btn = gr.Button("🔍 Find Rhymes", variant="primary", size="lg")
 
             output = gr.Textbox(
@@ -999,11 +1192,11 @@ class RhymeRarityApp:
             # Example inputs
             gr.Examples(
                 examples=[
-                    ["love", 15, 0.8, [], [], default_sources, "Any"],
-                    ["mind", 15, 0.8, [], [], default_sources, "Any"],
-                    ["flow", 15, 0.8, [], [], default_sources, "Any"],
-                    ["money", 15, 0.8, [], [], default_sources, "Any"],
-                    ["time", 15, 0.8, [], [], default_sources, "Any"]
+                    ["love", 15, 0.8, [], [], default_sources, "Any", list(rhyme_type_defaults), 0.0, 0.0],
+                    ["mind", 15, 0.8, [], [], default_sources, "Any", list(rhyme_type_defaults), 0.0, 0.0],
+                    ["flow", 15, 0.8, [], [], default_sources, "Any", list(rhyme_type_defaults), 0.0, 0.0],
+                    ["money", 15, 0.8, [], [], default_sources, "Any", list(rhyme_type_defaults), 0.0, 0.0],
+                    ["time", 15, 0.8, [], [], default_sources, "Any", ["perfect", "near"], 0.6, 0.55]
                 ],
                 inputs=[
                     word_input,
@@ -1013,6 +1206,9 @@ class RhymeRarityApp:
                     genre_dropdown,
                     result_source_group,
                     max_line_distance_dropdown,
+                    rhyme_type_group,
+                    min_syllable_slider,
+                    min_rhythm_slider,
                 ],
                 label="Try these examples"
             )
@@ -1027,6 +1223,9 @@ class RhymeRarityApp:
                     genre_dropdown,
                     result_source_group,
                     max_line_distance_dropdown,
+                    rhyme_type_group,
+                    min_syllable_slider,
+                    min_rhythm_slider,
                 ],
                 outputs=output
             )

@@ -237,6 +237,127 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
     assert "Styles: Multi Syllable, Storytelling" in formatted
 
 
+def test_rhyme_type_and_rhythm_filters(tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    class MockCMULoader:
+        def get_rhyme_parts(self, _word):
+            return {"sig"}
+
+        def get_rhyming_words(self, _word):
+            return []
+
+    class MockAnalyzer:
+        def __init__(self):
+            self.cmu_loader = MockCMULoader()
+
+        def get_phonetic_similarity(self, _source, target):
+            return {
+                "glove": 0.92,
+                "above": 0.83,
+                "shove": 0.72,
+            }.get(target, 0.7)
+
+        def get_rarity_score(self, _word):
+            return 0.5
+
+        def combine_similarity_and_rarity(self, similarity, rarity):
+            return (float(similarity) + float(rarity)) / 2
+
+        def update_rarity_from_database(self, _path):
+            return True
+
+        def analyze_rhyme_pattern(self, source, target):
+            similarity = self.get_phonetic_similarity(source, target)
+            feature_map = {
+                "glove": {
+                    "ending_similarity": 0.85,
+                    "vowel_similarity": 0.8,
+                    "consonant_similarity": 0.82,
+                    "syllable_similarity": 1.0,
+                },
+                "above": {
+                    "ending_similarity": 0.75,
+                    "vowel_similarity": 0.7,
+                    "consonant_similarity": 0.68,
+                    "syllable_similarity": 0.5,
+                },
+                "shove": {
+                    "ending_similarity": 0.65,
+                    "vowel_similarity": 0.6,
+                    "consonant_similarity": 0.58,
+                    "syllable_similarity": 0.4,
+                },
+            }
+            features = feature_map.get(target, feature_map["shove"])
+            rhyme_type = "perfect" if target == "glove" else "slant"
+            return types.SimpleNamespace(
+                similarity_score=similarity,
+                phonetic_features=features,
+                rhyme_type=rhyme_type,
+            )
+
+        def classify_rhyme_type(self, _source, target, similarity):
+            return "perfect" if float(similarity) >= 0.9 else "slant"
+
+    class MockCulturalEngine:
+        cultural_categories = {}
+
+        def __init__(self, analyzer):
+            self.phonetic_analyzer = analyzer
+
+        def set_phonetic_analyzer(self, analyzer):
+            self.phonetic_analyzer = analyzer
+
+        def derive_rhyme_signatures(self, _word):
+            return {"sig"}
+
+        def evaluate_rhyme_alignment(self, source_word, target_word, threshold=None, rhyme_signatures=None):
+            if threshold is not None:
+                similarity = self.phonetic_analyzer.get_phonetic_similarity(source_word, target_word)
+                if similarity < threshold:
+                    return None
+            match = self.phonetic_analyzer.analyze_rhyme_pattern(source_word, target_word)
+            return {
+                "similarity": match.similarity_score,
+                "rarity": 0.5,
+                "combined": (match.similarity_score + 0.5) / 2,
+                "rhyme_type": match.rhyme_type,
+                "signature_matches": ["sig"],
+                "target_signatures": ["sig"],
+                "features": dict(match.phonetic_features),
+            }
+
+        def get_cultural_context(self, _pattern):
+            return None
+
+        def get_cultural_rarity_score(self, _context):
+            return 0.5
+
+    mock_analyzer = MockAnalyzer()
+    app.phonetic_analyzer = mock_analyzer
+    app.cmu_loader = mock_analyzer.cmu_loader
+    app.cultural_engine = MockCulturalEngine(mock_analyzer)
+
+    results = app.search_rhymes(
+        "love",
+        limit=10,
+        min_confidence=0.0,
+        result_sources=["cultural"],
+        rhyme_types=["perfect"],
+        min_syllable_similarity=0.9,
+        min_rhythm_strength=0.75,
+    )
+
+    assert results, "Expected filtered results for rhyme type and rhythm thresholds"
+    assert all(result["rhyme_type"] == "perfect" for result in results)
+    assert all(result.get("syllable_similarity", 0) >= 0.9 for result in results)
+    assert all(result.get("rhythm_strength", 0) >= 0.75 for result in results)
+
+
 def test_anti_llm_patterns_in_formatting(tmp_path):
     db_path = tmp_path / "patterns.db"
     create_test_database(str(db_path))
