@@ -1507,11 +1507,11 @@ class SearchService:
             return mapping.get(str(value), str(value))
 
         if not rhymes:
-            return f"❌ No rhymes found for '{source_word}'\n\nTry words like: love, mind, flow, time, money"
+            return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
 
         has_entries = any(rhymes.get(key) for key, _ in category_order)
         if not has_entries:
-            return f"❌ No rhymes found for '{source_word}'\n\nTry words like: love, mind, flow, time, money"
+            return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
 
         def _resolve_rhyme_type(entry: Dict[str, Any]) -> Optional[str]:
             candidate = entry.get("rhyme_type")
