@@ -12,6 +12,7 @@ import re
 
 from module1_enhanced_core_phonetic import DEFAULT_RARITY_MAP, WordRarityMap
 from profile_utils import normalize_profile_dict
+from syllable_utils import estimate_syllable_count
 
 @dataclass
 class AntiLLMPattern:
@@ -1002,8 +1003,8 @@ class AntiLLMRhymeEngine:
     
     def _calculate_syllable_complexity(self, word: str) -> float:
         """Calculate syllable-based complexity"""
-        syllable_count = len(re.findall(r'[aeiou]+', word))
-        
+        syllable_count = estimate_syllable_count(word)
+
         complexity = syllable_count * 0.5
         
         # Bonus for compound-looking words
