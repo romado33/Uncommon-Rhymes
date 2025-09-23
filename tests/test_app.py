@@ -334,6 +334,67 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
     )
 
 
+def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path))
+
+    cmu_payload = [
+        {"word": "alpha", "similarity": 0.96, "combined": 0.96, "rarity": 1.1},
+        {"word": "beta", "similarity": 0.95, "combined": 0.95, "rarity": 0.9},
+        {"word": "gamma", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
+    ]
+
+    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
+        return [dict(candidate) for candidate in cmu_payload]
+
+    monkeypatch.setattr(app_module, "get_cmu_rhymes", stub_cmu_rhymes)
+
+    class FilteringCulturalEngine:
+        def __init__(self):
+            self.alignment_map = {
+                "alpha": {"similarity": 0.96, "combined": 0.96, "rarity": 1.1},
+                "beta": None,
+                "gamma": {"similarity": 0.94, "combined": 0.94, "rarity": 0.8},
+            }
+
+        def derive_rhyme_signatures(self, word):
+            return {f"sig-{word}"}
+
+        def evaluate_rhyme_alignment(self, source_word, target_word, **_kwargs):
+            alignment = self.alignment_map.get(target_word)
+            if alignment is None:
+                return None
+            return {
+                "similarity": alignment["similarity"],
+                "combined": alignment["combined"],
+                "rarity": alignment["rarity"],
+                "signature_matches": [],
+                "target_signatures": [],
+                "features": {},
+                "feature_profile": {},
+                "prosody_profile": {},
+            }
+
+    app.cultural_engine = FilteringCulturalEngine()
+
+    results = app.search_rhymes(
+        "love",
+        limit=2,
+        min_confidence=0.0,
+        result_sources=["phonetic"],
+    )
+
+    cmu_results = results["cmu"]
+
+    assert cmu_results, "Expected phonetic matches when candidates are available"
+    assert len(cmu_results) == 2, "Results should still be capped by the requested limit"
+    targets = [entry["target_word"] for entry in cmu_results]
+    assert "beta" not in targets
+    assert "gamma" in targets, "Candidate beyond the initial limit should be retained"
+
+
 def test_min_confidence_filters_anti_llm_candidates(tmp_path):
     db_path = tmp_path / "patterns.db"
     create_test_database(str(db_path))

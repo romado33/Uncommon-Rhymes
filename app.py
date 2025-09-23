@@ -617,7 +617,8 @@ class RhymeRarityApp:
             aggregated_seed_signatures: Set[str] = set(source_signature_set)
             delivered_words_set: Set[str] = set()
             if include_phonetic:
-                phonetic_matches = cmu_candidates[: max(limit, 1)]
+                slice_limit = reference_limit if reference_limit else max(limit, 1)
+                phonetic_matches = cmu_candidates[:slice_limit]
                 rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
                 for candidate in phonetic_matches:
                     if isinstance(candidate, dict):
@@ -1434,7 +1435,15 @@ class RhymeRarityApp:
                     reverse=True,
                 )
 
-                return processed[:limit]
+                if limit is None:
+                    return processed
+
+                try:
+                    capped_limit = max(int(limit), 0)
+                except (TypeError, ValueError):
+                    capped_limit = len(processed)
+
+                return processed[:capped_limit]
 
             return {
                 "source_profile": source_phonetic_profile,
