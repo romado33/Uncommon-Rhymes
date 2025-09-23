@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -35,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import rhyme_rarity.app.services.search_service as search_service_module
 from rhyme_rarity.app.app import RhymeRarityApp
 from anti_llm import AntiLLMPattern
+from rhyme_rarity.core.cmudict_loader import VOWEL_PHONEMES
 
 
 if os.path.exists("patterns.db"):
@@ -235,6 +237,71 @@ class LoaderStub:
         return {"EY1 L"}
 
 
+class DeterministicCMULoader:
+    """Minimal CMU loader stub with deterministic pronunciations."""
+
+    def __init__(self):
+        self._pronunciations = {
+            "desk": [["D", "EH1", "S", "K"]],
+            "grotesque": [["G", "R", "OW0", "T", "EH1", "S", "K"]],
+            "orange": [["AO1", "R", "AH0", "N", "JH"]],
+            "sporange": [["S", "P", "AO1", "R", "AH0", "N", "JH"]],
+            "door": [["D", "AO1", "R"]],
+            "hinge": [["HH", "IH1", "N", "JH"]],
+            "fire": [["F", "AY1", "ER0"]],
+            "choir": [["K", "W", "AY1", "ER0"]],
+            "liar": [["L", "AY1", "ER0"]],
+            "wild": [["W", "AY1", "L", "D"]],
+            "lamp": [["L", "AE1", "M", "P"]],
+            "camp": [["K", "AE1", "M", "P"]],
+        }
+        self._rhyme_map = {
+            "desk": ["grotesque"],
+            "orange": ["sporange", "door hinge"],
+            "fire": ["liar", "choir"],
+            "lamp": ["camp"],
+        }
+        self._rhyme_parts = {}
+        for word, pronunciations in self._pronunciations.items():
+            parts = set()
+            for phones in pronunciations:
+                rhyme_part = self._compute_rhyme_part(phones)
+                if rhyme_part:
+                    parts.add(rhyme_part)
+            if parts:
+                self._rhyme_parts[word] = parts
+
+    def _compute_rhyme_part(self, phones):
+        last_stress_index = None
+        for index, phone in enumerate(phones):
+            base = re.sub(r"\d", "", phone)
+            if base in VOWEL_PHONEMES and re.search(r"[12]", phone):
+                last_stress_index = index
+        if last_stress_index is None:
+            for index in range(len(phones) - 1, -1, -1):
+                base = re.sub(r"\d", "", phones[index])
+                if base in VOWEL_PHONEMES:
+                    last_stress_index = index
+                    break
+        if last_stress_index is None:
+            return None
+        return " ".join(phones[last_stress_index:])
+
+    def get_pronunciations(self, word):
+        return [list(phones) for phones in self._pronunciations.get(word.lower(), [])]
+
+    def get_rhyme_parts(self, word):
+        return set(self._rhyme_parts.get(word.lower(), set()))
+
+    def get_rhyming_words(self, word):
+        return list(self._rhyme_map.get(word.lower(), []))
+
+
+@pytest.fixture
+def deterministic_cmu_loader():
+    return DeterministicCMULoader()
+
+
 def test_search_rhymes_handles_multi_word_phrases(tmp_path):
     db_path = tmp_path / "patterns.db"
     create_test_database(str(db_path))
@@ -263,6 +330,107 @@ def test_search_rhymes_handles_multi_word_phrases(tmp_path):
     assert any(entry["is_multi_word"] for entry in rap_results)
     rap_multi = next(entry for entry in rap_results if entry["is_multi_word"])
     assert " // " in rap_multi["pattern"]
+
+
+@pytest.mark.parametrize(
+    "source_word, expected_syllables, expectations",
+    [
+        (
+            "desk",
+            1,
+            (
+                {
+                    "target": "grotesque",
+                    "min_similarity": 0.95,
+                    "min_confidence": 0.7,
+                    "is_multi": False,
+                    "expected_syllables": 2,
+                },
+            ),
+        ),
+        (
+            "orange",
+            2,
+            (
+                {
+                    "target": "sporange",
+                    "min_similarity": 0.95,
+                    "min_confidence": 0.7,
+                    "is_multi": False,
+                    "expected_syllables": 2,
+                },
+                {
+                    "target": "door hinge",
+                    "min_similarity": 0.4,
+                    "min_confidence": 0.35,
+                    "is_multi": True,
+                    "expected_syllables": 2,
+                },
+            ),
+        ),
+        (
+            "fire",
+            1,
+            (
+                {
+                    "target": "choir",
+                    "min_similarity": 0.95,
+                    "min_confidence": 0.7,
+                    "is_multi": False,
+                    "expected_syllables": 1,
+                },
+            ),
+        ),
+        (
+            "wild fire",
+            2,
+            (
+                {
+                    "target": "wild choir",
+                    "min_similarity": 0.95,
+                    "min_confidence": 0.7,
+                    "is_multi": True,
+                    "expected_syllables": 2,
+                },
+            ),
+        ),
+    ],
+    ids=["desk", "orange", "fire", "wild-fire"],
+)
+def test_search_rhymes_phonetic_rhyme_cases(
+    deterministic_cmu_loader, source_word, expected_syllables, expectations, tmp_path
+):
+    db_path = tmp_path / "patterns.db"
+    create_test_database(str(db_path))
+
+    app = RhymeRarityApp(db_path=str(db_path), cmu_loader=deterministic_cmu_loader)
+    app.set_cultural_engine(None)
+
+    results = app.search_rhymes(
+        source_word,
+        limit=10,
+        min_confidence=0.0,
+        result_sources=["phonetic"],
+    )
+
+    source_profile = results["source_profile"]
+    assert source_profile["phonetics"]["syllables"] == expected_syllables
+
+    cmu_results = results["cmu"]
+    assert cmu_results, f"Expected CMU results for '{source_word}'"
+
+    for expectation in expectations:
+        target = expectation["target"]
+        entry = next(
+            (candidate for candidate in cmu_results if candidate["target_word"] == target),
+            None,
+        )
+        assert entry is not None, f"Expected phonetic rhyme '{target}' for '{source_word}'"
+        assert entry["phonetic_sim"] >= expectation["min_similarity"]
+        assert entry["combined_score"] >= expectation["min_confidence"]
+        assert entry["is_multi_word"] is expectation["is_multi"]
+        if expectation.get("expected_syllables") is not None:
+            assert entry["candidate_syllables"] == expectation["expected_syllables"]
 
 
 def test_cultural_context_enrichment_in_formatting(tmp_path):
