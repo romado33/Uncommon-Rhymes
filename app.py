@@ -473,7 +473,7 @@ class RhymeRarityApp:
             module1_seed_payload: List[Dict] = []
             aggregated_seed_signatures: Set[str] = set(source_signature_set)
             delivered_words_set: Set[str] = set()
-            if include_phonetic and not filters_active:
+            if include_phonetic:
                 phonetic_matches = cmu_candidates[: max(limit, 1)]
                 rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
                 for candidate in phonetic_matches:
@@ -919,7 +919,7 @@ class RhymeRarityApp:
             )
 
             anti_llm_entries: List[Dict] = []
-            if include_anti_llm and not filters_active:
+            if include_anti_llm:
                 anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
                     source_word,
                     limit=limit,
