@@ -163,6 +163,9 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
 
     results = app.search_rhymes("glove", limit=5, min_confidence=0.0)
 
+    assert "source_profile" in results
+    assert isinstance(results["source_profile"], dict)
+
     rap_results = results["rap_db"]
     assert rap_results, "Expected at least one rhyme suggestion"
     first = rap_results[0]
@@ -187,6 +190,8 @@ def test_search_rhymes_filters_by_cultural_significance(tmp_path):
         result_sources=["cultural"],
     )
 
+    assert "source_profile" in results
+    assert isinstance(results["source_profile"], dict)
     rap_results = results["rap_db"]
 
     assert rap_results, "Expected filtered results for cultural significance"
@@ -239,10 +244,10 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
 
     formatted = app.format_rhyme_results("love", results)
 
-    assert "Era: Golden Age" in formatted
+    assert "Cultural: Era: Golden Age" in formatted
     assert "Region: Queens" in formatted
-    assert "Rarity Score: 3.50" in formatted
-    assert "Styles: Multi Syllable, Storytelling" in formatted
+    assert "Rarity: 3.50" in formatted
+    assert "• Styles: Multi Syllable, Storytelling" in formatted
 
 
 def test_anti_llm_patterns_in_formatting(tmp_path):
@@ -290,9 +295,9 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
     formatted = app.format_rhyme_results("love", results)
 
     assert "SHOVE" in formatted
-    assert "Rarity Score: 4.20" in formatted
-    assert "LLM Weakness: Rare Word Combinations" in formatted
-    assert "Cultural Depth: Sentinel Depth" in formatted
+    assert "Rarity: 4.20" in formatted
+    assert "• LLM weakness: Rare Word Combinations" in formatted
+    assert "• Cultural depth: Sentinel Depth" in formatted
 
 
 def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
@@ -494,7 +499,7 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     )
 
     formatted = app.format_rhyme_results("love", filtered_results)
-    assert "Rhyme Type: Perfect" in formatted
+    assert "Rhyme type: Perfect" in formatted
     assert "Cadence: Steady" in formatted
-    assert "Rhythm Match: 0.90" in formatted
+    assert "Stress align: 0.90" in formatted
 
