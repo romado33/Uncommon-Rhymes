@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set
 
-from profile_utils import normalize_profile_dict
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.profile import normalize_profile_dict
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 from .dataclasses import AntiLLMPattern, SeedCandidate
 from .repository import PatternRepository, SQLitePatternRepository

@@ -1,8 +1,12 @@
-"""Utility helpers for working with analyzer profile objects."""
+"""Utilities for working with analyzer profile objects."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Dict
+
+
+__all__ = ["normalize_profile_dict"]
 
 
 def normalize_profile_dict(profile_obj: Any) -> Dict[str, Any]:
@@ -10,7 +14,7 @@ def normalize_profile_dict(profile_obj: Any) -> Dict[str, Any]:
 
     Many analyzer APIs return custom profile objects that may implement an
     ``as_dict`` method, behave like a mapping, or simply expose attributes on
-    ``__dict__``.  This helper centralizes the fallbacks used across modules so
+    ``__dict__``. This helper centralizes the fallbacks used across modules so
     that we consistently produce a ``dict`` without duplicating conversion
     logic.
     """

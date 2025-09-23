@@ -1,8 +1,11 @@
-"""Utility helpers for shared syllable estimation logic."""
+"""Utilities for shared syllable estimation logic."""
 
 from __future__ import annotations
 
 import re
+
+
+__all__ = ["estimate_syllable_count"]
 
 
 def estimate_syllable_count(word: str) -> int:

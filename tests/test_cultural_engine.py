@@ -6,7 +6,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cultural.engine import CulturalIntelligenceEngine
-from syllable_utils import estimate_syllable_count
+from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 
 def test_get_cultural_context_handles_none_artist(tmp_path):
