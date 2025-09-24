@@ -22,12 +22,16 @@ def normalize_seed_candidates(
     module1_seeds: Optional[List[Any]],
     get_word_rarity: Callable[[str], float],
     value_sanitizer: Callable[[Any, float], float] = safe_float,
+    fingerprint_fn: Optional[Callable[[str], Set[str]]] = None,
+    suffix_extractor: Optional[Callable[[str], Set[str]]] = None,
 ) -> List[SeedCandidate]:
     normalized: List[SeedCandidate] = []
     if not module1_seeds:
         return normalized
 
     seen: Set[str] = set()
+    fingerprint_builder = fingerprint_fn or phonetic_fingerprint
+    suffix_builder = suffix_extractor or extract_suffixes
 
     for raw_seed in module1_seeds:
         word: Optional[str] = None
@@ -99,6 +103,11 @@ def normalize_seed_candidates(
         if rarity_value <= 0:
             rarity_value = get_word_rarity(normalized_word)
 
+        fingerprint = set(fingerprint_builder(word_str))
+        suffixes = set(suffix_builder(word_str))
+        signature_hints = set(signatures)
+        signature_hints.update(fingerprint)
+
         normalized.append(
             SeedCandidate(
                 word=word_str,
@@ -107,6 +116,9 @@ def normalize_seed_candidates(
                 signatures=set(signatures),
                 feature_profile=feature_profile,
                 prosody_profile=prosody_profile,
+                fingerprint=fingerprint,
+                suffixes=suffixes,
+                signature_hints=signature_hints,
             )
         )
 
@@ -250,16 +262,35 @@ def expand_from_seed_candidates(
         seed_word = seed.word
         normalized_seed = seed.normalized()
         combined_signatures = set(signature_hints)
-        combined_signatures.update(seed.signatures)
-        combined_signatures.update(phonetic_fingerprint(seed_word))
+        if seed.signature_hints:
+            combined_signatures.update(seed.signature_hints)
+        else:
+            combined_signatures.update(seed.signatures)
 
+        if seed.fingerprint:
+            combined_signatures.update(seed.fingerprint)
+        else:
+            generated_fingerprint = (fingerprint_fn or phonetic_fingerprint)(
+                seed_word
+            )
+            combined_signatures.update(generated_fingerprint)
+            seed.fingerprint = set(generated_fingerprint)
+
+        derived_seed_hints: Set[str] = set()
         if seed.feature_profile:
             stress_hint = seed.feature_profile.get("stress_alignment")
             if isinstance(stress_hint, (int, float)):
-                combined_signatures.add(f"stress::{round(float(stress_hint), 2)}")
+                stress_signature = f"stress::{round(float(stress_hint), 2)}"
+                combined_signatures.add(stress_signature)
+                derived_seed_hints.add(stress_signature)
             device_hint = seed.feature_profile.get("bradley_device")
             if device_hint:
-                combined_signatures.add(f"device::{str(device_hint).lower()}")
+                device_signature = f"device::{str(device_hint).lower()}"
+                combined_signatures.add(device_signature)
+                derived_seed_hints.add(device_signature)
+
+        if derived_seed_hints:
+            seed.signature_hints.update(derived_seed_hints)
 
         candidate_dicts: List[Dict[str, Any]] = []
         neighbors_fetcher = fetch_neighbors or (
@@ -274,7 +305,13 @@ def expand_from_seed_candidates(
             lambda suffix, limit: repository.fetch_suffix_matches(suffix, limit)
         )
 
-        for suffix in suffix_source(seed_word):
+        if seed.suffixes:
+            seed_suffixes = seed.suffixes
+        else:
+            seed_suffixes = set(suffix_source(seed_word))
+            seed.suffixes = set(seed_suffixes)
+
+        for suffix in seed_suffixes:
             candidate_dicts.extend(suffix_matches(suffix, per_seed_limit))
 
         if cmu_candidates_fn is not None:

@@ -6,7 +6,7 @@ import copy
 import re
 import threading
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from rhyme_rarity.core import CmuRhymeRepository, DefaultCmuRhymeRepository
 from rhyme_rarity.utils.profile import normalize_profile_dict
@@ -83,6 +83,24 @@ class AntiLLMRhymeEngine:
         ] = OrderedDict()
         self._neighbor_cache: OrderedDict[Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]] = OrderedDict()
         self._suffix_cache: OrderedDict[Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]] = OrderedDict()
+        self._rare_rows_cache: OrderedDict[
+            Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]
+        ] = OrderedDict()
+        self._phonological_rows_cache: OrderedDict[
+            Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]
+        ] = OrderedDict()
+        self._cultural_rows_cache: OrderedDict[
+            Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]
+        ] = OrderedDict()
+        self._complex_rows_cache: OrderedDict[
+            Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]
+        ] = OrderedDict()
+        self._normalized_seed_cache: OrderedDict[
+            Tuple[Any, ...], Tuple[SeedCandidate, ...]
+        ] = OrderedDict()
+        self._rarity_cache: Dict[str, float] = {}
+        self._fingerprint_cache: Dict[str, Set[str]] = {}
+        self._profile_cache: OrderedDict[Tuple[str, str], Dict[str, Any]] = OrderedDict()
 
         self._seed_resources_initialized = False
         self._seed_analyzer = None
@@ -135,6 +153,92 @@ class AntiLLMRhymeEngine:
             cache[key] = self._freeze_rows(rows)
             self._trim_cache(cache)
 
+    @staticmethod
+    def _freeze_payload(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return tuple(
+                sorted(
+                    (str(key), AntiLLMRhymeEngine._freeze_payload(value))
+                    for key, value in payload.items()
+                )
+            )
+        if isinstance(payload, (list, tuple, set)):
+            return tuple(AntiLLMRhymeEngine._freeze_payload(item) for item in payload)
+        return str(payload)
+
+    def _load_normalized_seed_cache(
+        self, key: Tuple[Any, ...]
+    ) -> Optional[List[SeedCandidate]]:
+        with self._cache_lock:
+            cached = self._normalized_seed_cache.get(key)
+            if cached is None:
+                return None
+            self._normalized_seed_cache.move_to_end(key)
+            return [copy.deepcopy(seed) for seed in cached]
+
+    def _store_normalized_seed_cache(
+        self, key: Tuple[Any, ...], seeds: List[SeedCandidate]
+    ) -> None:
+        with self._cache_lock:
+            self._normalized_seed_cache[key] = tuple(
+                copy.deepcopy(seed) for seed in seeds
+            )
+            self._trim_cache(self._normalized_seed_cache)
+
+    def _get_or_cache_rows(
+        self,
+        cache: OrderedDict,
+        key: Tuple[Any, ...],
+        loader: Callable[[], List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        cached = self._load_cached_rows(cache, key)
+        if cached is not None:
+            return cached
+        rows = loader()
+        self._store_cached_rows(cache, key, rows)
+        return rows
+
+    def _apply_cached_profile(
+        self, pattern: AntiLLMPattern, cache_entry: Dict[str, Any]
+    ) -> None:
+        if not cache_entry:
+            return
+
+        feature_profile = cache_entry.get("feature_profile")
+        if isinstance(feature_profile, dict):
+            pattern.feature_profile = copy.deepcopy(feature_profile)
+
+        prosody_profile = cache_entry.get("prosody_profile")
+        if isinstance(prosody_profile, dict):
+            pattern.prosody_profile = copy.deepcopy(prosody_profile)
+
+        bradley_device = cache_entry.get("bradley_device")
+        if isinstance(bradley_device, str) and bradley_device:
+            pattern.bradley_device = bradley_device
+
+        syllable_span = cache_entry.get("syllable_span")
+        if (
+            isinstance(syllable_span, tuple)
+            and len(syllable_span) == 2
+            and all(isinstance(item, int) for item in syllable_span)
+        ):
+            pattern.syllable_span = syllable_span
+
+        stress_alignment = cache_entry.get("stress_alignment")
+        if isinstance(stress_alignment, float):
+            pattern.stress_alignment = stress_alignment
+
+        rarity_multiplier = cache_entry.get("rarity_multiplier")
+        if isinstance(rarity_multiplier, float) and rarity_multiplier > 0:
+            pattern.rarity_score *= rarity_multiplier
+
+    def _store_profile_cache(
+        self, cache_key: Tuple[str, str], cache_entry: Dict[str, Any]
+    ) -> None:
+        with self._cache_lock:
+            self._profile_cache[cache_key] = cache_entry
+            self._trim_cache(self._profile_cache)
+
     def _load_pattern_cache(
         self, key: Tuple[str, int, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]
     ) -> Optional[List[Any]]:
@@ -159,6 +263,14 @@ class AntiLLMRhymeEngine:
             self._pattern_cache.clear()
             self._neighbor_cache.clear()
             self._suffix_cache.clear()
+            self._rare_rows_cache.clear()
+            self._phonological_rows_cache.clear()
+            self._cultural_rows_cache.clear()
+            self._complex_rows_cache.clear()
+            self._normalized_seed_cache.clear()
+            self._rarity_cache.clear()
+            self._fingerprint_cache.clear()
+            self._profile_cache.clear()
         self._logger.debug("Cleared anti-LLM caches")
 
     # ------------------------------------------------------------------
@@ -206,30 +318,56 @@ class AntiLLMRhymeEngine:
         return fallback
 
     def _get_word_rarity(self, word: str) -> float:
+        normalized = (word or "").lower().strip()
+        if not normalized:
+            return 0.0
+
+        with self._cache_lock:
+            cached = self._rarity_cache.get(normalized)
+            if cached is not None:
+                return cached
+
         rarity_map = self._get_rarity_map()
         try:
-            rarity = rarity_map.get_rarity(word)
+            rarity = rarity_map.get_rarity(normalized)
         except Exception:
             from rhyme_rarity.core import DEFAULT_RARITY_MAP
 
-            rarity = DEFAULT_RARITY_MAP.get_rarity(word)
+            rarity = DEFAULT_RARITY_MAP.get_rarity(normalized)
 
         try:
-            return float(rarity)
+            rarity_float = float(rarity)
         except (TypeError, ValueError):
             from rhyme_rarity.core import DEFAULT_RARITY_MAP
 
-            return float(DEFAULT_RARITY_MAP.get_rarity(word))
+            rarity_float = float(DEFAULT_RARITY_MAP.get_rarity(normalized))
+
+        with self._cache_lock:
+            self._rarity_cache[normalized] = rarity_float
+
+        return rarity_float
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         return safe_float(value, default)
 
     def _normalize_seed_candidates(self, module1_seeds: Optional[List[Any]]) -> List[SeedCandidate]:
-        return normalize_seed_candidates(
+        if not module1_seeds:
+            return []
+
+        cache_key = self._freeze_payload(module1_seeds)
+        cached = self._load_normalized_seed_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        normalized = normalize_seed_candidates(
             module1_seeds,
             self._get_word_rarity,
             value_sanitizer=self._safe_float,
+            fingerprint_fn=self._get_phonetic_fingerprint,
+            suffix_extractor=self._extract_suffixes,
         )
+        self._store_normalized_seed_cache(cache_key, normalized)
+        return normalized
 
     def _normalize_seed_candidate_payloads(self, candidates: Optional[List[Any]]) -> List[Dict[str, Any]]:
         return normalize_seed_candidate_payloads(candidates, value_sanitizer=self._safe_float)
@@ -274,6 +412,20 @@ class AntiLLMRhymeEngine:
         if not callable(builder):
             return
 
+        cache_key = (
+            pattern.source_word.lower().strip(),
+            pattern.target_word.lower().strip(),
+        )
+        cached_profile: Optional[Dict[str, Any]] = None
+        if cache_key[0] and cache_key[1]:
+            with self._cache_lock:
+                cached_profile = self._profile_cache.get(cache_key)
+                if cached_profile is not None:
+                    self._profile_cache.move_to_end(cache_key)
+        if cached_profile is not None:
+            self._apply_cached_profile(pattern, cached_profile)
+            return
+
         try:
             profile = builder(pattern.source_word, pattern.target_word)
         except Exception:
@@ -281,8 +433,11 @@ class AntiLLMRhymeEngine:
 
         profile_dict = normalize_profile_dict(profile)
         if not profile_dict:
+            if cache_key[0] and cache_key[1]:
+                self._store_profile_cache(cache_key, {})
             return
 
+        base_rarity = pattern.rarity_score
         pattern.feature_profile = profile_dict
 
         bradley = profile_dict.get("bradley_device")
@@ -304,8 +459,10 @@ class AntiLLMRhymeEngine:
             pattern.stress_alignment = float(stress_alignment)
 
         internal_score = profile_dict.get("internal_rhyme_score")
+        rarity_multiplier: Optional[float] = None
         if isinstance(internal_score, (int, float)):
-            pattern.rarity_score *= 1.0 + max(0.0, float(internal_score)) * 0.15
+            rarity_multiplier = 1.0 + max(0.0, float(internal_score)) * 0.15
+            pattern.rarity_score *= rarity_multiplier
 
         pattern.prosody_profile = {
             "complexity_tag": "dense"
@@ -316,8 +473,34 @@ class AntiLLMRhymeEngine:
             "consonance": profile_dict.get("consonance_score"),
         }
 
+        if cache_key[0] and cache_key[1]:
+            cache_entry: Dict[str, Any] = {
+                "feature_profile": copy.deepcopy(profile_dict),
+                "prosody_profile": copy.deepcopy(pattern.prosody_profile),
+                "bradley_device": pattern.bradley_device,
+                "syllable_span": pattern.syllable_span,
+                "stress_alignment": pattern.stress_alignment,
+            }
+            if rarity_multiplier is not None and base_rarity > 0:
+                cache_entry["rarity_multiplier"] = rarity_multiplier
+            self._store_profile_cache(cache_key, cache_entry)
+
     def _get_phonetic_fingerprint(self, word: str) -> Set[str]:
-        return phonetic_fingerprint(word)
+        normalized = (word or "").lower().strip()
+        if not normalized:
+            return set()
+
+        with self._cache_lock:
+            cached = self._fingerprint_cache.get(normalized)
+            if cached is not None:
+                return set(cached)
+
+        fingerprint = phonetic_fingerprint(normalized)
+
+        with self._cache_lock:
+            self._fingerprint_cache[normalized] = set(fingerprint)
+
+        return set(fingerprint)
 
     def _ensure_seed_resources(self) -> None:
         if self._seed_resources_initialized:
@@ -369,14 +552,10 @@ class AntiLLMRhymeEngine:
         if seed_signatures:
             signature_hints.update({str(sig).strip() for sig in seed_signatures if sig})
 
-        normalized_seeds = normalize_seed_candidates(
-            module1_seeds,
-            self._get_word_rarity,
-            value_sanitizer=self._safe_float,
-        )
+        normalized_seeds = self._normalize_seed_candidates(module1_seeds)
         normalized_seed_tokens = tuple(sorted(seed.normalized() for seed in normalized_seeds))
         for seed in normalized_seeds:
-            signature_hints.update(seed.signatures)
+            signature_hints.update(seed.signature_hints or seed.signatures)
 
         delivered_words_normalized: Set[str] = set()
         if delivered_words:
@@ -429,6 +608,33 @@ class AntiLLMRhymeEngine:
 
         per_strategy = max(1, limit // 4)
 
+        rare_rows = self._get_or_cache_rows(
+            self._rare_rows_cache,
+            (source_word, per_strategy * 2),
+            lambda: self.repository.fetch_rare_combinations(source_word, per_strategy * 2),
+        )
+        phonological_rows = self._get_or_cache_rows(
+            self._phonological_rows_cache,
+            (source_word, per_strategy * 2),
+            lambda: self.repository.fetch_phonological_challenges(
+                source_word, per_strategy * 2
+            ),
+        )
+        cultural_rows = self._get_or_cache_rows(
+            self._cultural_rows_cache,
+            (source_word, per_strategy * 2),
+            lambda: self.repository.fetch_cultural_depth_patterns(
+                source_word, per_strategy * 2
+            ),
+        )
+        complex_rows = self._get_or_cache_rows(
+            self._complex_rows_cache,
+            (source_word, per_strategy * 2),
+            lambda: self.repository.fetch_complex_syllable_patterns(
+                source_word, per_strategy * 2
+            ),
+        )
+
         strategy_batches = [
             find_rare_combinations(
                 self.repository,
@@ -439,6 +645,8 @@ class AntiLLMRhymeEngine:
                 self._attach_profile,
                 stats=self.anti_llm_stats,
                 stat_recorder=self._increment_stat,
+                rows=rare_rows,
+                rarity_lookup=self._rarity_cache,
             ),
             find_phonological_challenges(
                 self.repository,
@@ -448,6 +656,7 @@ class AntiLLMRhymeEngine:
                 self._attach_profile,
                 stats=self.anti_llm_stats,
                 stat_recorder=self._increment_stat,
+                rows=phonological_rows,
             ),
             find_cultural_depth_patterns(
                 self.repository,
@@ -457,6 +666,7 @@ class AntiLLMRhymeEngine:
                 self._attach_profile,
                 stats=self.anti_llm_stats,
                 stat_recorder=self._increment_stat,
+                rows=cultural_rows,
             ),
             find_complex_syllable_patterns(
                 self.repository,
@@ -464,6 +674,7 @@ class AntiLLMRhymeEngine:
                 per_strategy * 2,
                 self._calculate_syllable_complexity,
                 self._attach_profile,
+                rows=complex_rows,
             ),
         ]
 

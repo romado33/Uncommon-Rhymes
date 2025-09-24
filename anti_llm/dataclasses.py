@@ -33,6 +33,9 @@ class SeedCandidate:
     signatures: Set[str] = field(default_factory=set)
     feature_profile: Dict[str, Any] = field(default_factory=dict)
     prosody_profile: Dict[str, Any] = field(default_factory=dict)
+    fingerprint: Set[str] = field(default_factory=set)
+    suffixes: Set[str] = field(default_factory=set)
+    signature_hints: Set[str] = field(default_factory=set)
 
     def normalized(self) -> str:
         return self.word.lower().strip()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Mapping, Optional
+from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
 from .dataclasses import AntiLLMPattern
 from .repository import PatternRepository
@@ -67,16 +67,31 @@ def find_rare_combinations(
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
     stat_recorder: Optional[Callable[[str, int], None]] = None,
+    rows: Optional[Iterable[Dict[str, object]]] = None,
+    rarity_lookup: Optional[Mapping[str, float]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_rare_combinations(source_word, limit * 3)
+    row_source = (
+        list(rows)
+        if rows is not None
+        else repository.fetch_rare_combinations(source_word, limit * 3)
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in row_source:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
 
-        rarity_score = get_rarity(target)
+        rarity_score: Optional[float] = None
+        if rarity_lookup is not None:
+            lowered = target.lower()
+            rarity_score = rarity_lookup.get(lowered)
+            if rarity_score is None:
+                rarity_score = rarity_lookup.get(target)
+
+        if rarity_score is None:
+            rarity_score = get_rarity(target)
+
         cultural_sig = str(row.get("cultural_significance") or "")
         cultural_multiplier = cultural_weights.get(cultural_sig, 1.0)
         final_rarity = rarity_score * cultural_multiplier
@@ -114,11 +129,16 @@ def find_phonological_challenges(
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
     stat_recorder: Optional[Callable[[str, int], None]] = None,
+    rows: Optional[Iterable[Dict[str, object]]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_phonological_challenges(source_word, limit * 2)
+    row_source = (
+        list(rows)
+        if rows is not None
+        else repository.fetch_phonological_challenges(source_word, limit * 2)
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in row_source:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
@@ -157,11 +177,16 @@ def find_cultural_depth_patterns(
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
     stat_recorder: Optional[Callable[[str, int], None]] = None,
+    rows: Optional[Iterable[Dict[str, object]]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_cultural_depth_patterns(source_word, limit * 2)
+    row_source = (
+        list(rows)
+        if rows is not None
+        else repository.fetch_cultural_depth_patterns(source_word, limit * 2)
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in row_source:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
@@ -197,11 +222,16 @@ def find_complex_syllable_patterns(
     limit: int,
     calculate_syllable_complexity: Callable[[str], float],
     attach_profile: Callable[[AntiLLMPattern], None],
+    rows: Optional[Iterable[Dict[str, object]]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_complex_syllable_patterns(source_word, limit * 2)
+    row_source = (
+        list(rows)
+        if rows is not None
+        else repository.fetch_complex_syllable_patterns(source_word, limit * 2)
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in row_source:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
