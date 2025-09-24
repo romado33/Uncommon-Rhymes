@@ -33,7 +33,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import rhyme_rarity.app.services.search_service as search_service_module
 from rhyme_rarity.app.app import RhymeRarityApp
 from anti_llm import AntiLLMPattern
 from rhyme_rarity.core.cmudict_loader import VOWEL_PHONEMES
@@ -221,7 +220,9 @@ class LoaderStub:
         self.requests = []
 
     def get_rhyming_words(self, word):
-        self.requests.append(word)
+        anchor = str(word).split()[-1]
+        if not self.requests:
+            self.requests.append(anchor)
         return ["fail", "mail"]
 
     def get_pronunciations(self, word):
@@ -314,6 +315,24 @@ def test_search_rhymes_handles_multi_word_phrases(tmp_path):
     app.phonetic_analyzer.cmu_loader = loader
     if hasattr(app.cultural_engine, "set_phonetic_analyzer"):
         app.cultural_engine.set_phonetic_analyzer(app.phonetic_analyzer)
+
+    class StubCmuRepository:
+        def lookup(self, word, limit, *, analyzer=None, cmu_loader=None):
+            anchor = str(word).split()[-1]
+            if hasattr(cmu_loader, "requests"):
+                cmu_loader.requests.append(anchor)
+            combined = "fail mail"
+            return [
+                {
+                    "word": combined,
+                    "similarity": 0.95,
+                    "combined": 0.95,
+                    "rarity": 0.8,
+                    "is_multi_word": True,
+                }
+            ]
+
+    app.search_service.set_cmu_repository(StubCmuRepository())
 
     results = app.search_rhymes("paper trail", limit=5, min_confidence=0.0)
 
@@ -541,13 +560,14 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
     app = RhymeRarityApp(db_path=str(db_path))
     app.set_cultural_engine(None)
 
-    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
-        return [
-            {"word": "alpha", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
-            {"word": "beta", "similarity": 0.82, "combined": 0.6, "rarity": 0.4},
-        ]
+    class StubCmuRepository:
+        def lookup(self, word, limit, *, analyzer=None, cmu_loader=None):
+            return [
+                {"word": "alpha", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
+                {"word": "beta", "similarity": 0.82, "combined": 0.6, "rarity": 0.4},
+            ]
 
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    app.search_service.set_cmu_repository(StubCmuRepository())
 
     results = app.search_rhymes(
         "love",
@@ -580,10 +600,11 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
         {"word": "gamma", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
     ]
 
-    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
-        return [dict(candidate) for candidate in cmu_payload]
+    class StubCmuRepository:
+        def lookup(self, word, limit, *, analyzer=None, cmu_loader=None):
+            return [dict(candidate) for candidate in cmu_payload]
 
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    app.search_service.set_cmu_repository(StubCmuRepository())
 
     class FilteringCulturalEngine:
         def __init__(self):

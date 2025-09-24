@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from rhyme_rarity.core import CmuRhymeRepository, DefaultCmuRhymeRepository
 from rhyme_rarity.utils.profile import normalize_profile_dict
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
@@ -42,10 +43,14 @@ class AntiLLMRhymeEngine:
         phonetic_analyzer: Optional[Any] = None,
         rarity_map: Optional[Any] = None,
         repository: Optional[PatternRepository] = None,
+        cmu_repository: Optional[CmuRhymeRepository] = None,
     ) -> None:
         self.db_path = db_path
         self.phonetic_analyzer = phonetic_analyzer
         self.repository: PatternRepository = repository or SQLitePatternRepository(db_path)
+        self.cmu_repository: CmuRhymeRepository = (
+            cmu_repository or DefaultCmuRhymeRepository()
+        )
         self._rarity_map: Optional[Any] = None
 
         if rarity_map is not None and hasattr(rarity_map, "get_rarity"):
@@ -81,6 +86,7 @@ class AntiLLMRhymeEngine:
         self._seed_resources_initialized = False
         self._seed_analyzer = None
         self._cmu_seed_fn = None
+        self._cmu_seed_repository: Optional[CmuRhymeRepository] = None
 
     # ------------------------------------------------------------------
     # Cache management helpers
@@ -153,6 +159,8 @@ class AntiLLMRhymeEngine:
 
     def set_phonetic_analyzer(self, analyzer: Any) -> None:
         self.phonetic_analyzer = analyzer
+        self._seed_analyzer = analyzer
+        self._seed_resources_initialized = False
         rarity_map = getattr(analyzer, "rarity_map", None)
         if hasattr(rarity_map, "get_rarity"):
             self._rarity_map = rarity_map
@@ -303,16 +311,20 @@ class AntiLLMRhymeEngine:
             return
 
         self._seed_resources_initialized = True
-        try:
-            from rhyme_rarity.core import (
-                EnhancedPhoneticAnalyzer,
-                get_cmu_rhymes,
-            )
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer is None:
+            try:
+                from rhyme_rarity.core import EnhancedPhoneticAnalyzer
 
-            self._seed_analyzer = EnhancedPhoneticAnalyzer()
-            self._cmu_seed_fn = get_cmu_rhymes
-        except Exception:
-            self._seed_analyzer = None
+                analyzer = EnhancedPhoneticAnalyzer()
+            except Exception:
+                analyzer = None
+
+        self._seed_analyzer = analyzer
+        self._cmu_seed_repository = self.cmu_repository
+        if self._cmu_seed_repository is not None:
+            self._cmu_seed_fn = self._cmu_seed_repository.lookup
+        else:
             self._cmu_seed_fn = None
 
     def _increment_stat(self, key: str, amount: int = 1) -> None:
@@ -467,7 +479,16 @@ class AntiLLMRhymeEngine:
         """Fetch CMU-derived seed candidates using the configured analyzer, returning an empty list when unavailable."""
         cmu_fn = getattr(self, "_cmu_seed_fn", None)
         if callable(cmu_fn):
-            return cmu_fn(word, limit=limit, analyzer=analyzer)
+            cmu_loader = getattr(analyzer, "cmu_loader", None) if analyzer else None
+            try:
+                return cmu_fn(
+                    word,
+                    limit=limit,
+                    analyzer=analyzer,
+                    cmu_loader=cmu_loader,
+                )
+            except Exception:
+                return []
         return []
 
     def _expand_from_seed_candidates(

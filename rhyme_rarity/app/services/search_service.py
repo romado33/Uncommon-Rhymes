@@ -11,10 +11,11 @@ import types
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.core import (
+    CmuRhymeRepository,
+    DefaultCmuRhymeRepository,
     EnhancedPhoneticAnalyzer,
     PhraseComponents,
     extract_phrase_components,
-    get_cmu_rhymes,
 )
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
@@ -24,7 +25,7 @@ from ...utils.telemetry import StructuredTelemetry
 
 
 
-class SearchService:
+class RhymeQueryOrchestrator:
     """Coordinates rhyme searches across analyzers and repositories."""
 
     def __init__(
@@ -35,6 +36,7 @@ class SearchService:
         cultural_engine: Optional[CulturalIntelligenceEngine] = None,
         anti_llm_engine: Optional[AntiLLMRhymeEngine] = None,
         cmu_loader: Optional[object] = None,
+        cmu_repository: Optional[CmuRhymeRepository] = None,
         max_concurrent_searches: Optional[int] = None,
         search_timeout: Optional[float] = None,
         telemetry: Optional[StructuredTelemetry] = None,
@@ -44,6 +46,9 @@ class SearchService:
         self.cultural_engine = cultural_engine
         self.anti_llm_engine = anti_llm_engine
         self.cmu_loader = cmu_loader
+        self.cmu_repository: CmuRhymeRepository = (
+            cmu_repository or DefaultCmuRhymeRepository()
+        )
         if self.cmu_loader is None and phonetic_analyzer is not None:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
 
@@ -88,6 +93,10 @@ class SearchService:
 
     def set_anti_llm_engine(self, engine: Optional[AntiLLMRhymeEngine]) -> None:
         self.anti_llm_engine = engine
+
+    def set_cmu_repository(self, repository: Optional[CmuRhymeRepository]) -> None:
+        self.cmu_repository = repository or DefaultCmuRhymeRepository()
+        self._reset_phonetic_caches()
 
     def clear_cached_results(self) -> None:
         """Clear memoized helper caches.
@@ -213,13 +222,17 @@ class SearchService:
                 self._cmu_rhyme_cache.move_to_end(cache_key)
                 return list(cached)
 
+        repository = getattr(self, "cmu_repository", None)
         try:
-            results = get_cmu_rhymes(
-                source_word,
-                limit=limit,
-                analyzer=analyzer,
-                cmu_loader=cmu_loader,
-            )
+            if repository is None:
+                results = []
+            else:
+                results = repository.lookup(
+                    source_word,
+                    limit,
+                    analyzer=analyzer,
+                    cmu_loader=cmu_loader,
+                )
         except Exception:
             results = []
 
@@ -1950,8 +1963,8 @@ class SearchService:
                 "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
             })
 
-
-
+class RhymeResultFormatter:
+    """Format rhyme search results into a rich markdown summary."""
 
     def format_rhyme_results(self, source_word: str, rhymes: Dict[str, Any]) -> str:
         """Render grouped rhyme results with shared phonetic context."""
@@ -2279,3 +2292,130 @@ class SearchService:
             lines.append("")
 
         return "\n".join(lines).strip() + "\n"
+
+class SearchService:
+    """Thin facade that delegates to the orchestrator and formatter."""
+
+    @property
+    def cmu_loader(self) -> Optional[object]:
+        return getattr(self.orchestrator, "cmu_loader", None)
+
+    @cmu_loader.setter
+    def cmu_loader(self, loader: Optional[object]) -> None:
+        if hasattr(self.orchestrator, "cmu_loader"):
+            self.orchestrator.cmu_loader = loader
+
+    def __init__(
+        self,
+        *,
+        repository: SQLiteRhymeRepository,
+        phonetic_analyzer: Optional[EnhancedPhoneticAnalyzer] = None,
+        cultural_engine: Optional[CulturalIntelligenceEngine] = None,
+        anti_llm_engine: Optional[AntiLLMRhymeEngine] = None,
+        cmu_loader: Optional[object] = None,
+        cmu_repository: Optional[CmuRhymeRepository] = None,
+        max_concurrent_searches: Optional[int] = None,
+        search_timeout: Optional[float] = None,
+        telemetry: Optional[StructuredTelemetry] = None,
+        orchestrator: Optional[RhymeQueryOrchestrator] = None,
+        formatter: Optional[RhymeResultFormatter] = None,
+    ) -> None:
+        telemetry_obj = telemetry or StructuredTelemetry()
+        cmu_repo = cmu_repository or DefaultCmuRhymeRepository()
+
+        if orchestrator is None:
+            orchestrator = RhymeQueryOrchestrator(
+                repository=repository,
+                phonetic_analyzer=phonetic_analyzer,
+                cultural_engine=cultural_engine,
+                anti_llm_engine=anti_llm_engine,
+                cmu_loader=cmu_loader,
+                cmu_repository=cmu_repo,
+                max_concurrent_searches=max_concurrent_searches,
+                search_timeout=search_timeout,
+                telemetry=telemetry_obj,
+            )
+        else:
+            orchestrator.set_phonetic_analyzer(phonetic_analyzer)
+            orchestrator.set_cultural_engine(cultural_engine)
+            orchestrator.set_anti_llm_engine(anti_llm_engine)
+            orchestrator.set_cmu_repository(cmu_repo)
+            if cmu_loader is not None:
+                orchestrator.cmu_loader = cmu_loader
+            orchestrator.telemetry = telemetry_obj
+
+        self.orchestrator = orchestrator
+        self.formatter = formatter or RhymeResultFormatter()
+        self.repository = repository
+        self.telemetry = self.orchestrator.telemetry
+        self.phonetic_analyzer = phonetic_analyzer
+        self.cultural_engine = cultural_engine
+        self.anti_llm_engine = anti_llm_engine
+        self.cmu_loader = getattr(self.orchestrator, "cmu_loader", cmu_loader)
+        self.cmu_repository = cmu_repo
+
+    def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
+        self.phonetic_analyzer = analyzer
+        self.orchestrator.set_phonetic_analyzer(analyzer)
+        self.cmu_loader = getattr(self.orchestrator, "cmu_loader", self.cmu_loader)
+
+    def set_cultural_engine(self, engine: Optional[CulturalIntelligenceEngine]) -> None:
+        self.cultural_engine = engine
+        self.orchestrator.set_cultural_engine(engine)
+
+    def set_anti_llm_engine(self, engine: Optional[AntiLLMRhymeEngine]) -> None:
+        self.anti_llm_engine = engine
+        self.orchestrator.set_anti_llm_engine(engine)
+
+    def set_cmu_repository(self, repository: Optional[CmuRhymeRepository]) -> None:
+        self.cmu_repository = repository or DefaultCmuRhymeRepository()
+        self.orchestrator.set_cmu_repository(repository)
+
+    def clear_cached_results(self) -> None:
+        self.orchestrator.clear_cached_results()
+
+    def get_latest_telemetry(self) -> Dict[str, Any]:
+        return self.orchestrator.get_latest_telemetry()
+
+    def normalize_filter_label(self, name: Optional[str]) -> str:
+        return self.orchestrator.normalize_filter_label(name)
+
+    def search_rhymes(
+        self,
+        source_word: str,
+        limit: int = 20,
+        min_confidence: float = 0.7,
+        cultural_significance: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        result_sources: Optional[List[str]] = None,
+        max_line_distance: Optional[int] = None,
+        min_syllables: Optional[int] = None,
+        max_syllables: Optional[int] = None,
+        allowed_rhyme_types: Optional[List[str]] = None,
+        bradley_devices: Optional[List[str]] = None,
+        require_internal: bool = False,
+        min_rarity: Optional[float] = None,
+        min_stress_alignment: Optional[float] = None,
+        cadence_focus: Optional[str] = None,
+    ) -> Dict[str, List[Dict]]:
+        return self.orchestrator.search_rhymes(
+            source_word,
+            limit=limit,
+            min_confidence=min_confidence,
+            cultural_significance=cultural_significance,
+            genres=genres,
+            result_sources=result_sources,
+            max_line_distance=max_line_distance,
+            min_syllables=min_syllables,
+            max_syllables=max_syllables,
+            allowed_rhyme_types=allowed_rhyme_types,
+            bradley_devices=bradley_devices,
+            require_internal=require_internal,
+            min_rarity=min_rarity,
+            min_stress_alignment=min_stress_alignment,
+            cadence_focus=cadence_focus,
+        )
+
+    def format_rhyme_results(self, source_word: str, rhymes: Dict[str, Any]) -> str:
+        return self.formatter.format_rhyme_results(source_word, rhymes)
+

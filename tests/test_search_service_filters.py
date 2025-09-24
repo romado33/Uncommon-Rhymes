@@ -49,6 +49,20 @@ class DummyRepository:
         return ([], [])
 
 
+class DummyCmuRepository:
+    """Repository stub returning no CMU results."""
+
+    def lookup(
+        self,
+        source_word: str,
+        limit: int,
+        *,
+        analyzer: Any | None = None,
+        cmu_loader: Any | None = None,
+    ) -> list[Any]:
+        return []
+
+
 class DummyAntiEngine:
     """Anti-LLM engine stub returning predetermined patterns."""
 
@@ -78,13 +92,13 @@ def _patch_search_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(search_service_module, "extract_phrase_components", fake_extract_components)
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", lambda *args, **kwargs: [])
 
 
 def make_service(patterns: Iterable[DummyPattern]) -> SearchService:
     repo = DummyRepository()
     anti_engine = DummyAntiEngine(patterns)
-    return SearchService(repository=repo, anti_llm_engine=anti_engine)
+    cmu_repo = DummyCmuRepository()
+    return SearchService(repository=repo, anti_llm_engine=anti_engine, cmu_repository=cmu_repo)
 
 
 def _targets(result: dict[str, list[dict]]) -> list[str]:
