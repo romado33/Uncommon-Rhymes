@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
+from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
+from rhyme_rarity.utils.observability import (
+    observe_stage_latency,
+    record_rarity_refresh_failure,
+)
 
 from .data.database import SQLiteRhymeRepository
 from .services.search_service import SearchService
 from .ui.gradio import create_interface
+
+
+logger = logging.getLogger(__name__)
 
 
 class RhymeRarityApp:
@@ -30,7 +38,20 @@ class RhymeRarityApp:
     ) -> None:
         self.db_path = db_path
         self.repository = repository or SQLiteRhymeRepository(db_path)
-        self.repository.ensure_database()
+        try:
+            row_count = self.repository.ensure_database()
+            logger.info(
+                "repository.ready",
+                extra={
+                    "db_path": os.path.abspath(self.db_path),
+                    "rows": row_count,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "repository.initialization_failed", extra={"db_path": self.db_path}
+            )
+            raise
 
         self.cmu_loader = cmu_loader or CMUDictLoader()
         self.phonetic_analyzer = phonetic_analyzer or EnhancedPhoneticAnalyzer(
@@ -67,6 +88,16 @@ class RhymeRarityApp:
 
         self._refresh_rarity_map()
 
+        logger.info(
+            "app.ready",
+            extra={
+                "db_path": os.path.abspath(self.db_path),
+                "cultural_engine": bool(self.cultural_engine),
+                "anti_llm_engine": bool(self.anti_llm_engine),
+                "cmu_loader": getattr(self.cmu_loader, "dict_path", None),
+            },
+        )
+
     # Dependency management -------------------------------------------------
     def set_phonetic_analyzer(self, analyzer: EnhancedPhoneticAnalyzer) -> None:
         self.phonetic_analyzer = analyzer
@@ -97,10 +128,30 @@ class RhymeRarityApp:
             return
         updater = getattr(analyzer, "update_rarity_from_database", None)
         if callable(updater):
-            try:
-                updater(self.db_path)
-            except Exception:
-                pass
+            with observe_stage_latency(
+                "rarity_refresh",
+                span_name="rarity.refresh",
+                analyzer=type(analyzer).__name__,
+                db_path=os.path.abspath(self.db_path),
+            ):
+                try:
+                    updater(self.db_path)
+                    logger.info(
+                        "rarity.refresh_success",
+                        extra={
+                            "db_path": os.path.abspath(self.db_path),
+                            "analyzer": type(analyzer).__name__,
+                        },
+                    )
+                except Exception:
+                    record_rarity_refresh_failure(db_path=os.path.abspath(self.db_path))
+                    logger.exception(
+                        "rarity.refresh_failed",
+                        extra={
+                            "db_path": os.path.abspath(self.db_path),
+                            "analyzer": type(analyzer).__name__,
+                        },
+                    )
 
 
 def _should_share_interface() -> bool:

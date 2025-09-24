@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from typing import Generator, Iterable, List, Optional, Sequence, Set, Tuple
 
 from demo_data import DEMO_RHYME_PATTERNS, iter_demo_rhyme_rows
+from rhyme_rarity.utils.observability import record_database_initialization
+
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_parent_directory(path: str) -> None:
@@ -34,6 +39,10 @@ class SQLiteRhymeRepository:
         """Ensure the database exists and contains the expected schema."""
 
         if not os.path.exists(self.db_path):
+            logger.warning(
+                "database.missing", extra={"db_path": os.path.abspath(self.db_path)}
+            )
+            record_database_initialization("demo_rebuild", reason="missing")
             return self._create_demo_database()
 
         try:
@@ -41,8 +50,21 @@ class SQLiteRhymeRepository:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM song_rhyme_patterns")
                 (count,) = cursor.fetchone()
+                logger.info(
+                    "database.ready",
+                    extra={
+                        "db_path": os.path.abspath(self.db_path),
+                        "rows": int(count),
+                    },
+                )
+                record_database_initialization("existing", rows=int(count))
                 return int(count)
         except sqlite3.Error:
+            logger.exception(
+                "database.corrupt",
+                extra={"db_path": os.path.abspath(self.db_path)},
+            )
+            record_database_initialization("demo_rebuild", reason="sqlite_error")
             return self._create_demo_database(overwrite=True)
 
     def _initialise_schema(self, connection: sqlite3.Connection) -> None:
@@ -69,6 +91,9 @@ class SQLiteRhymeRepository:
 
     def _create_demo_database(self, overwrite: bool = False) -> int:
         if overwrite and os.path.exists(self.db_path):
+            logger.warning(
+                "database.overwrite", extra={"db_path": os.path.abspath(self.db_path)}
+            )
             os.remove(self.db_path)
 
         _ensure_parent_directory(self.db_path)
@@ -100,7 +125,16 @@ class SQLiteRhymeRepository:
             )
             conn.commit()
 
-        return len(DEMO_RHYME_PATTERNS)
+        record_count = len(DEMO_RHYME_PATTERNS)
+        logger.info(
+            "database.demo_built",
+            extra={
+                "db_path": os.path.abspath(self.db_path),
+                "rows": record_count,
+                "overwrite": overwrite,
+            },
+        )
+        return record_count
 
     def fetch_related_words(self, lookup_terms: Iterable[str]) -> Set[str]:
         terms = {str(term or "").strip().lower() for term in lookup_terms if term}
@@ -115,35 +149,42 @@ class SQLiteRhymeRepository:
                 if not term:
                     continue
 
-                cursor.execute(
-                    """
-                    SELECT target_word
-                    FROM song_rhyme_patterns
-                    WHERE source_word = ? AND target_word IS NOT NULL
-                    LIMIT 50
-                    """,
-                    (term,),
-                )
-                related.update(
-                    str(row[0]).strip().lower()
-                    for row in cursor.fetchall()
-                    if row and row[0]
-                )
+                try:
+                    cursor.execute(
+                        """
+                        SELECT target_word
+                        FROM song_rhyme_patterns
+                        WHERE source_word = ? AND target_word IS NOT NULL
+                        LIMIT 50
+                        """,
+                        (term,),
+                    )
+                    related.update(
+                        str(row[0]).strip().lower()
+                        for row in cursor.fetchall()
+                        if row and row[0]
+                    )
 
-                cursor.execute(
-                    """
-                    SELECT source_word
-                    FROM song_rhyme_patterns
-                    WHERE target_word = ? AND source_word IS NOT NULL
-                    LIMIT 50
-                    """,
-                    (term,),
-                )
-                related.update(
-                    str(row[0]).strip().lower()
-                    for row in cursor.fetchall()
-                    if row and row[0]
-                )
+                    cursor.execute(
+                        """
+                        SELECT source_word
+                        FROM song_rhyme_patterns
+                        WHERE target_word = ? AND source_word IS NOT NULL
+                        LIMIT 50
+                        """,
+                        (term,),
+                    )
+                    related.update(
+                        str(row[0]).strip().lower()
+                        for row in cursor.fetchall()
+                        if row and row[0]
+                    )
+                except sqlite3.Error:
+                    logger.exception(
+                        "database.related_lookup_failed",
+                        extra={"db_path": os.path.abspath(self.db_path), "term": term},
+                    )
+                    continue
 
         return related
 

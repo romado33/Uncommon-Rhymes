@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import math
 import re
 from collections import Counter
@@ -20,6 +21,9 @@ from .feature_profile import (
     pronouncing,
 )
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
+
+
+logger = logging.getLogger(__name__)
 
 RARITY_SIMILARITY_WEIGHT: float = 0.65
 RARITY_NOVELTY_WEIGHT: float = 0.35
@@ -42,7 +46,13 @@ class EnhancedPhoneticAnalyzer:
         self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
 
-        print("📊 Enhanced Core Phonetic Analyzer initialized")
+        logger.info(
+            "analyzer.initialized",
+            extra={
+                "cmu_dict": getattr(self.cmu_loader, "dict_path", None),
+                "rarity_map": type(self.rarity_map).__name__,
+            },
+        )
     
     def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
         """Initialize vowel sound groupings for phonetic analysis"""

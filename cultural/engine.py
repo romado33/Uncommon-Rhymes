@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Set
 
@@ -27,6 +28,9 @@ from .profiles import (
     generate_dynamic_profile,
 )
 
+
+logger = logging.getLogger(__name__)
+
 class CulturalIntelligenceEngine:
     """
     Enhanced cultural intelligence system providing authentic attribution
@@ -51,8 +55,14 @@ class CulturalIntelligenceEngine:
             'regional_patterns_identified': 0
         }
         
-        print("🎯 Enhanced Cultural Database Engine initialized")
-        print("Providing authentic cultural attribution beyond LLM capabilities")
+        logger.info(
+            "cultural_engine.initialized",
+            extra={
+                "db_path": db_path,
+                "profiles": len(self.artist_profiles),
+                "categories": len(self.cultural_categories),
+            },
+        )
  
     def set_phonetic_analyzer(self, analyzer: Any) -> None:
         """Attach or replace the phonetic analyzer for phonetic validation."""

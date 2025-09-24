@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Set
 
@@ -30,6 +31,9 @@ from .strategies import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class AntiLLMRhymeEngine:
     """Enhanced rhyme engine specifically designed to outperform LLMs."""
 
@@ -51,6 +55,11 @@ class AntiLLMRhymeEngine:
             analyzer_map = getattr(self.phonetic_analyzer, "rarity_map", None)
             if hasattr(analyzer_map, "get_rarity"):
                 self._rarity_map = analyzer_map
+            else:
+                logger.debug(
+                    "anti_llm.rarity_map_missing",
+                    extra={"db_path": db_path},
+                )
 
         self.llm_weaknesses = initialize_llm_weaknesses()
         self.rarity_multipliers = initialize_rarity_multipliers()
@@ -96,6 +105,7 @@ class AntiLLMRhymeEngine:
         from rhyme_rarity.core import WordRarityMap  # Local import to avoid cycle
 
         fallback = WordRarityMap()
+        logger.warning("anti_llm.rarity_map_fallback", extra={"db_path": self.db_path})
         self._rarity_map = fallback
         return fallback
 
@@ -106,6 +116,10 @@ class AntiLLMRhymeEngine:
         except Exception:
             from rhyme_rarity.core import DEFAULT_RARITY_MAP
 
+            logger.exception(
+                "anti_llm.rarity_lookup_failed",
+                extra={"word": word, "db_path": self.db_path},
+            )
             rarity = DEFAULT_RARITY_MAP.get_rarity(word)
 
         try:
@@ -151,6 +165,13 @@ class AntiLLMRhymeEngine:
         try:
             profile = builder(pattern.source_word, pattern.target_word)
         except Exception:
+            logger.exception(
+                "anti_llm.profile_build_failed",
+                extra={
+                    "source_word": pattern.source_word,
+                    "target_word": pattern.target_word,
+                },
+            )
             profile = None
 
         profile_dict = normalize_profile_dict(profile)
@@ -206,9 +227,11 @@ class AntiLLMRhymeEngine:
 
             self._seed_analyzer = EnhancedPhoneticAnalyzer()
             self._cmu_seed_fn = get_cmu_rhymes
+            logger.debug("anti_llm.seed_resources_initialized")
         except Exception:
             self._seed_analyzer = None
             self._cmu_seed_fn = None
+            logger.exception("anti_llm.seed_resources_failed")
 
     # ------------------------------------------------------------------
     # Public API
@@ -223,6 +246,10 @@ class AntiLLMRhymeEngine:
         delivered_words: Optional[Set[str]] = None,
     ) -> List[AntiLLMPattern]:
         if not source_word or not source_word.strip() or limit <= 0:
+            logger.warning(
+                "anti_llm.invalid_request",
+                extra={"source_word": source_word, "limit": limit},
+            )
             return []
 
         source_word = source_word.lower().strip()

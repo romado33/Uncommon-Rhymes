@@ -9,3 +9,4 @@ pronouncing>=0.2.0,<0.3
 
 # Local quality gates
 pytest>=7.0.0,<9.0
+
