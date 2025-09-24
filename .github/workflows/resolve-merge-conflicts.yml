@@ -1,0 +1,86 @@
+name: Resolve Merge Conflicts
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "Pull request number to update with the merged changes"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ inputs.pr-number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR metadata
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(core.getInput('pr-number'), 10);
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            if (!pr.data.head || !pr.data.head.ref) {
+              core.setFailed(`Unable to resolve head branch for PR #${prNumber}`);
+              return;
+            }
+            if (pr.data.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed('Automatic conflict resolution only supports PRs within the same repository.');
+              return;
+            }
+            core.setOutput('head_ref', pr.data.head.ref);
+
+      - name: Checkout PR branch
+        run: |
+          git fetch origin "${{ steps.pr.outputs.head_ref }}:${{ steps.pr.outputs.head_ref }}"
+          git checkout "${{ steps.pr.outputs.head_ref }}"
+
+      - name: Merge main into PR branch
+        run: |
+          set -e
+          git merge origin/main || true
+          if git ls-files -u | grep -q .; then
+            echo "Conflicts detected; running automated resolver."
+            python scripts/resolve_merge_conflicts.py
+            if git ls-files -u | grep -q .; then
+              echo "Conflicts remain after automated resolution." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run targeted tests
+        run: |
+          pytest tests/test_search_service_input_validation.py tests/test_anti_llm_engine.py
+
+      - name: Commit and push changes
+        run: |
+          if git status --porcelain | grep -q '.'; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Resolve merge conflicts via automation"
+            git push origin "HEAD:${{ steps.pr.outputs.head_ref }}"
+          else
+            echo "No changes detected; nothing to commit."
