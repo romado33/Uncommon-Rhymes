@@ -36,13 +36,35 @@ class SQLitePatternRepository:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._cultural_significance_labels: Optional[List[str]] = None
+        self._connection: Optional[sqlite3.Connection] = None
+
+    def _get_connection(self) -> sqlite3.Connection:
+        connection = self._connection
+        if connection is None:
+            connection = sqlite3.connect(self.db_path)
+            connection.row_factory = sqlite3.Row
+            self._connection = connection
+        return connection
+
+    def close(self) -> None:
+        connection = self._connection
+        if connection is not None:
+            connection.close()
+            self._connection = None
 
     def _execute(self, query: str, params: Sequence[Any]) -> List[sqlite3.Row]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(query, params)
+        connection = self._get_connection()
+        cursor = connection.execute(query, params)
+        try:
             return cursor.fetchall()
+        finally:
+            cursor.close()
+
+    def __del__(self) -> None:  # pragma: no cover - defensive cleanup
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Row:
