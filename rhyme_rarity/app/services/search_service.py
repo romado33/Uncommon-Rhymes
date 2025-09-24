@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple
+from contextlib import contextmanager, nullcontext
+import copy
 import re
-import types
 import threading
+import types
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
@@ -18,6 +19,7 @@ from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
 from ..data.database import SQLiteRhymeRepository
+from ...utils.telemetry import StructuredTelemetry
 
 
 
@@ -34,6 +36,7 @@ class SearchService:
         cmu_loader: Optional[object] = None,
         max_concurrent_searches: Optional[int] = None,
         search_timeout: Optional[float] = None,
+        telemetry: Optional[StructuredTelemetry] = None,
     ) -> None:
         self.repository = repository
         self.phonetic_analyzer = phonetic_analyzer
@@ -42,6 +45,9 @@ class SearchService:
         self.cmu_loader = cmu_loader
         if self.cmu_loader is None and phonetic_analyzer is not None:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
+
+        self.telemetry = telemetry or StructuredTelemetry()
+        self._latest_trace: Dict[str, Any] = {}
 
         self._cache_lock = threading.RLock()
         self._max_cache_entries = 256
@@ -93,6 +99,25 @@ class SearchService:
             self._fallback_signature_cache.clear()
             self._cmu_rhyme_cache.clear()
             self._related_words_cache.clear()
+
+        anti_engine = getattr(self, "anti_llm_engine", None)
+        if anti_engine and hasattr(anti_engine, "clear_cached_results"):
+            try:
+                anti_engine.clear_cached_results()
+            except Exception:
+                pass
+
+    def get_latest_telemetry(self) -> Dict[str, Any]:
+        """Return the most recent telemetry snapshot for the search service."""
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return {}
+
+        if not self._latest_trace:
+            return telemetry.latest_snapshot()
+
+        return copy.deepcopy(self._latest_trace)
 
     def _reset_phonetic_caches(self) -> None:
         """Drop caches derived from analyzer or CMU resources."""
@@ -232,23 +257,36 @@ class SearchService:
 
         semaphore = self._search_semaphore
         if semaphore is None:
+            telemetry = getattr(self, "telemetry", None)
+            if telemetry:
+                telemetry.increment("search.gate.bypass")
             yield
             return
 
         timeout = self._search_timeout
-        if timeout is None:
-            semaphore.acquire()
-            acquired = True
-        else:
-            acquired = semaphore.acquire(timeout=timeout)
+        telemetry = getattr(self, "telemetry", None)
+        wait_context = telemetry.timer("search.gate.wait") if telemetry else nullcontext()
+        with wait_context:
+            if timeout is None:
+                semaphore.acquire()
+                acquired = True
+            else:
+                acquired = semaphore.acquire(timeout=timeout)
 
         if not acquired:
+            if telemetry:
+                telemetry.increment("search.gate.timeout")
             raise TimeoutError("Search capacity exhausted; please retry later")
+
+        if telemetry:
+            telemetry.increment("search.gate.acquired")
 
         try:
             yield
         finally:
             semaphore.release()
+            if telemetry:
+                telemetry.increment("search.gate.released")
 
     def normalize_filter_label(self, name: Optional[str]) -> str:
         """Normalise user-supplied filter labels by trimming, lowercasing, and replacing underscores for consistent comparisons."""
@@ -276,25 +314,57 @@ class SearchService:
         cadence_focus: Optional[str] = None,
     ) -> Dict[str, List[Dict]]:
         """Search for rhymes while applying optional concurrency backpressure."""
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry:
+            telemetry.start_trace("search_rhymes")
+            telemetry.increment("search.invoked")
+            telemetry.annotate("input.raw_source_word", source_word)
+            telemetry.annotate("input.limit", limit)
+            telemetry.annotate("input.min_confidence", min_confidence)
+            telemetry.annotate("input.result_sources", result_sources)
+            telemetry.annotate("input.cultural_significance", cultural_significance)
+            telemetry.annotate("input.genres", genres)
 
-        with self._search_slot():
-            return self._search_rhymes_internal(
-                source_word,
-                limit=limit,
-                min_confidence=min_confidence,
-                cultural_significance=cultural_significance,
-                genres=genres,
-                result_sources=result_sources,
-                max_line_distance=max_line_distance,
-                min_syllables=min_syllables,
-                max_syllables=max_syllables,
-                allowed_rhyme_types=allowed_rhyme_types,
-                bradley_devices=bradley_devices,
-                require_internal=require_internal,
-                min_rarity=min_rarity,
-                min_stress_alignment=min_stress_alignment,
-                cadence_focus=cadence_focus,
-            )
+        try:
+            with self._search_slot():
+                result = self._search_rhymes_internal(
+                    source_word,
+                    limit=limit,
+                    min_confidence=min_confidence,
+                    cultural_significance=cultural_significance,
+                    genres=genres,
+                    result_sources=result_sources,
+                    max_line_distance=max_line_distance,
+                    min_syllables=min_syllables,
+                    max_syllables=max_syllables,
+                    allowed_rhyme_types=allowed_rhyme_types,
+                    bradley_devices=bradley_devices,
+                    require_internal=require_internal,
+                    min_rarity=min_rarity,
+                    min_stress_alignment=min_stress_alignment,
+                    cadence_focus=cadence_focus,
+                )
+        except Exception:
+            if telemetry:
+                telemetry.increment("search.failed")
+                self._latest_trace = telemetry.snapshot()
+            else:
+                self._latest_trace = {}
+            raise
+
+        if telemetry:
+            counts = {
+                key: len(value)
+                for key, value in result.items()
+                if isinstance(value, list)
+            }
+            telemetry.annotate("result.counts", counts)
+            telemetry.increment("search.completed")
+            self._latest_trace = telemetry.snapshot()
+        else:
+            self._latest_trace = {}
+
+        return result
 
     def _search_rhymes_internal(
             self,
@@ -320,13 +390,33 @@ class SearchService:
             format each category independently.
             """
 
+            telemetry = getattr(self, "telemetry", None)
+            start_time = telemetry.now() if telemetry else None
+
+            def timed(name: str, initial: Optional[Dict[str, Any]] = None):
+                if telemetry:
+                    return telemetry.timer(name, initial)
+                return nullcontext(initial if initial is not None else {})
+
+            def finalize(result: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
+                if telemetry and start_time is not None:
+                    telemetry.record_timing(
+                        "search.total", max(0.0, telemetry.now() - start_time)
+                    )
+                return result
+
             def _empty_response() -> Dict[str, List[Dict]]:
                 return {"cmu": [], "anti_llm": [], "rap_db": []}
 
             if not source_word or not source_word.strip():
-                return _empty_response()
+                if telemetry:
+                    telemetry.increment("search.empty_input")
+                return finalize(_empty_response())
 
             source_word = source_word.lower().strip()
+
+            if telemetry:
+                telemetry.annotate("search.normalized_source", source_word)
 
             try:
                 min_conf_threshold = float(min_confidence)
@@ -335,6 +425,9 @@ class SearchService:
             if min_conf_threshold < 0:
                 min_conf_threshold = 0.0
             min_confidence = min_conf_threshold
+
+            if telemetry:
+                telemetry.annotate("search.min_confidence", min_confidence)
 
             def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
                 """Return ``value`` coerced to a list of non-empty strings."""
@@ -438,6 +531,9 @@ class SearchService:
             include_cultural = "cultural" in selected_sources
             include_anti_llm = "anti-llm" in selected_sources
 
+            if telemetry:
+                telemetry.annotate("search.selected_sources", sorted(selected_sources))
+
             filters_active = bool(
                 cultural_filters
                 or genre_filters
@@ -452,8 +548,13 @@ class SearchService:
                 or bradley_filters
             )
 
+            if telemetry:
+                telemetry.annotate("search.filters_active", filters_active)
+
             if limit <= 0:
-                return _empty_response()
+                if telemetry:
+                    telemetry.increment("search.limit_exhausted")
+                return finalize(_empty_response())
 
             analyzer = getattr(self, "phonetic_analyzer", None)
             cultural_engine = getattr(self, "cultural_engine", None)
@@ -649,12 +750,14 @@ class SearchService:
             # filters can discard low-quality matches without leaving the
             # response empty.
             reference_limit = max(limit * 2, 10)
-            cmu_candidates = self._lookup_cmu_rhymes(
-                source_word,
-                reference_limit,
-                analyzer,
-                cmu_loader,
-            )
+            with timed("search.branch.phonetic.lookup") as lookup_meta:
+                cmu_candidates = self._lookup_cmu_rhymes(
+                    source_word,
+                    reference_limit,
+                    analyzer,
+                    cmu_loader,
+                )
+                lookup_meta["candidate_count"] = len(cmu_candidates)
 
             reference_similarity = 0.0
             for candidate in cmu_candidates:
@@ -676,7 +779,9 @@ class SearchService:
                 lookup_terms = {source_word}
                 if source_anchor_word and source_anchor_word != source_word:
                     lookup_terms.add(source_anchor_word)
-                db_candidate_words = self._fetch_related_words_cached(lookup_terms)
+                with timed("search.branch.phonetic.related_words") as related_meta:
+                    db_candidate_words = self._fetch_related_words_cached(lookup_terms)
+                    related_meta["candidate_count"] = len(db_candidate_words)
 
                 for candidate_word in db_candidate_words:
                     if not candidate_word or candidate_word == source_word:
@@ -719,6 +824,9 @@ class SearchService:
             module1_seed_payload: List[Dict] = []
             aggregated_seed_signatures: Set[str] = set(source_signature_set)
             delivered_words_set: Set[str] = set()
+            phonetic_branch_start = (
+                telemetry.now() if telemetry and include_phonetic else None
+            )
             if include_phonetic:
                 slice_limit = reference_limit if reference_limit else max(limit, 1)
                 phonetic_matches = cmu_candidates[:slice_limit]
@@ -1017,6 +1125,17 @@ class SearchService:
                         continue
                     module1_seed_payload.append(candidate)
 
+            if telemetry and phonetic_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.phonetic",
+                    max(0.0, telemetry.now() - phonetic_branch_start),
+                    {
+                        "result_count": len(phonetic_entries),
+                        "seed_payload": len(module1_seed_payload),
+                        "delivered_candidates": len(delivered_words_set),
+                    },
+                )
+
             fetch_limit = None
 
             cultural_entries: List[Dict] = []
@@ -1161,17 +1280,24 @@ class SearchService:
             source_results: List[Tuple] = []
             target_results: List[Tuple] = []
 
+            cultural_branch_start = (
+                telemetry.now() if telemetry and include_cultural else None
+            )
+
             if include_cultural and self.repository:
                 try:
-                    source_results, target_results = self.repository.fetch_cultural_matches(
-                        source_word,
-                        min_confidence=min_confidence,
-                        phonetic_threshold=phonetic_threshold,
-                        cultural_filters=sorted(cultural_filters),
-                        genre_filters=sorted(genre_filters),
-                        max_line_distance=max_line_distance,
-                        limit=fetch_limit,
-                    )
+                    with timed("search.branch.cultural.query") as query_meta:
+                        source_results, target_results = self.repository.fetch_cultural_matches(
+                            source_word,
+                            min_confidence=min_confidence,
+                            phonetic_threshold=phonetic_threshold,
+                            cultural_filters=sorted(cultural_filters),
+                            genre_filters=sorted(genre_filters),
+                            max_line_distance=max_line_distance,
+                            limit=fetch_limit,
+                        )
+                        query_meta["source_rows"] = len(source_results)
+                        query_meta["target_rows"] = len(target_results)
                 except Exception:
                     source_results, target_results = [], []
 
@@ -1248,15 +1374,31 @@ class SearchService:
                 )
             )
 
-            anti_llm_entries: List[Dict] = []
-            if include_anti_llm:
-                anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
-                    source_word,
-                    limit=limit,
-                    module1_seeds=module1_seed_payload,
-                    seed_signatures=aggregated_seed_signatures,
-                    delivered_words=delivered_words_set,
+            if telemetry and cultural_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.cultural",
+                    max(0.0, telemetry.now() - cultural_branch_start),
+                    {
+                        "result_count": len(cultural_entries),
+                        "source_rows": len(source_results),
+                        "target_rows": len(target_results),
+                    },
                 )
+
+            anti_llm_entries: List[Dict] = []
+            anti_branch_start = (
+                telemetry.now() if telemetry and include_anti_llm else None
+            )
+            if include_anti_llm:
+                with timed("search.branch.anti_llm.generate") as anti_meta:
+                    anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
+                        source_word,
+                        limit=limit,
+                        module1_seeds=module1_seed_payload,
+                        seed_signatures=aggregated_seed_signatures,
+                        delivered_words=delivered_words_set,
+                    )
+                    anti_meta["pattern_count"] = len(anti_patterns)
                 for pattern in anti_patterns:
                     feature_profile = getattr(pattern, "feature_profile", {}) or {}
                     syllable_span = getattr(pattern, "syllable_span", None)
@@ -1312,6 +1454,13 @@ class SearchService:
                     if score_for_filter < min_confidence:
                         continue
                     anti_llm_entries.append(entry_payload)
+
+            if telemetry and anti_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.anti_llm",
+                    max(0.0, telemetry.now() - anti_branch_start),
+                    {"result_count": len(anti_llm_entries)},
+                )
 
             def _passes_min_confidence(entry: Dict) -> bool:
                 score = _ensure_score_fields(entry)
@@ -1778,12 +1927,12 @@ class SearchService:
 
                 return processed[:capped_limit]
 
-            return {
+            return finalize({
                 "source_profile": source_phonetic_profile,
                 "cmu": _process_entries(phonetic_entries if include_phonetic else [], "cmu"),
                 "anti_llm": _process_entries(anti_llm_entries if include_anti_llm else [], "anti_llm"),
                 "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
-            }
+            })
 
 
 
