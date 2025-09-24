@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import rhyme_rarity.app.services.search_service as search_service_module
 from rhyme_rarity.app.app import RhymeRarityApp
 from anti_llm import AntiLLMPattern
+from rhyme_rarity.app.data.database import SQLiteRhymeRepository
 from rhyme_rarity.core.cmudict_loader import VOWEL_PHONEMES
 
 
@@ -47,28 +48,11 @@ if os.path.isdir("__pycache__"):
 
 
 def create_test_database(db_path):
+    repository = SQLiteRhymeRepository(db_path)
+    repository.ensure_database()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE song_rhyme_patterns (
-            id INTEGER PRIMARY KEY,
-            pattern TEXT,
-            source_word TEXT,
-            target_word TEXT,
-            artist TEXT,
-            song_title TEXT,
-            genre TEXT,
-            line_distance INTEGER,
-            confidence_score REAL,
-            phonetic_similarity REAL,
-            cultural_significance TEXT,
-            source_context TEXT,
-            target_context TEXT
-        )
-        """
-    )
-
+    cursor.execute("DELETE FROM song_rhyme_patterns")
     rows = [
         (
             1,
@@ -170,6 +154,8 @@ def create_test_database(db_path):
     )
     conn.commit()
     conn.close()
+
+    repository.refresh_normalized_columns()
 
 
 def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):

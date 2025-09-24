@@ -86,14 +86,24 @@ class WordRarityMap:
         try:
             with sqlite3.connect(str(canonical)) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT LOWER(target_word), COUNT(*)
-                    FROM song_rhyme_patterns
-                    WHERE target_word IS NOT NULL AND TRIM(target_word) != ''
-                    GROUP BY LOWER(target_word)
-                    """
-                )
+                try:
+                    cursor.execute(
+                        """
+                        SELECT target_word_normalized, COUNT(*)
+                        FROM song_rhyme_patterns
+                        WHERE target_word_normalized IS NOT NULL
+                        GROUP BY target_word_normalized
+                        """
+                    )
+                except sqlite3.OperationalError:
+                    cursor.execute(
+                        """
+                        SELECT LOWER(target_word), COUNT(*)
+                        FROM song_rhyme_patterns
+                        WHERE target_word IS NOT NULL AND TRIM(target_word) != ''
+                        GROUP BY LOWER(target_word)
+                        """
+                    )
                 rows = cursor.fetchall()
         except sqlite3.Error:
             return False

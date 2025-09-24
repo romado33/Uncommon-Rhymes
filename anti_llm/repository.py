@@ -5,7 +5,20 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Set
 
+from rhyme_rarity.app.data.database import SQLiteRhymeRepository
+
 Row = Dict[str, Any]
+
+
+def _normalize_text(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_cultural_value(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+    return normalized.replace("_", "-")
 
 
 class PatternRepository(Protocol):
@@ -37,6 +50,14 @@ class SQLitePatternRepository:
         self.db_path = db_path
         self._cultural_significance_labels: Optional[List[str]] = None
         self._connection: Optional[sqlite3.Connection] = None
+        self._normalizer: Optional[SQLiteRhymeRepository] = None
+
+        try:
+            normalizer = SQLiteRhymeRepository(db_path)
+            normalizer.ensure_database()
+            self._normalizer = normalizer
+        except sqlite3.Error:
+            self._normalizer = None
 
     def _get_connection(self) -> sqlite3.Connection:
         connection = self._connection
@@ -53,12 +74,22 @@ class SQLitePatternRepository:
             self._connection = None
 
     def _execute(self, query: str, params: Sequence[Any]) -> List[sqlite3.Row]:
+        self._ensure_normalized_columns()
         connection = self._get_connection()
         cursor = connection.execute(query, params)
         try:
             return cursor.fetchall()
         finally:
             cursor.close()
+
+    def _ensure_normalized_columns(self) -> None:
+        normalizer = getattr(self, "_normalizer", None)
+        if normalizer is None:
+            return
+        try:
+            normalizer.refresh_normalized_columns()
+        except sqlite3.Error:
+            pass
 
     def __del__(self) -> None:  # pragma: no cover - defensive cleanup
         try:
@@ -71,47 +102,60 @@ class SQLitePatternRepository:
         return {key: row[key] for key in row.keys()}
 
     def fetch_rare_combinations(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = _normalize_text(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score, cultural_significance
             FROM song_rhyme_patterns
-            WHERE source_word = ?
+            WHERE source_word_normalized = ?
+              AND target_word IS NOT NULL
               AND source_word != target_word
               AND length(target_word) >= 4
               AND confidence_score >= 0.7
-            ORDER BY RANDOM()
+            ORDER BY confidence_score DESC, phonetic_similarity DESC
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(query, (normalized_source, max(1, limit)))
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_phonological_challenges(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = _normalize_text(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score, phonetic_similarity
             FROM song_rhyme_patterns
-            WHERE source_word = ?
+            WHERE source_word_normalized = ?
               AND source_word != target_word
               AND confidence_score BETWEEN 0.7 AND 0.9
               AND phonetic_similarity >= 0.8
             ORDER BY phonetic_similarity DESC
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(query, (normalized_source, max(1, limit)))
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_cultural_depth_patterns(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = _normalize_text(source_word)
+        if not normalized_source:
+            return []
+
         categories = self._get_cultural_significance_labels()
         conditions = [
-            "source_word = ?",
+            "source_word_normalized = ?",
             "source_word != target_word",
         ]
-        params: List[Any] = [source_word]
+        params: List[Any] = [normalized_source]
 
         if categories:
             placeholders = ", ".join("?" for _ in categories)
-            conditions.append(f"TRIM(cultural_significance) IN ({placeholders})")
+            conditions.append(f"cultural_significance_normalized IN ({placeholders})")
             params.extend(categories)
         else:
-            conditions.append("TRIM(COALESCE(cultural_significance, '')) != ''")
+            conditions.append("cultural_significance_normalized IS NOT NULL")
 
         query = f"""
             SELECT target_word, artist, song_title, confidence_score, cultural_significance
@@ -130,10 +174,9 @@ class SQLitePatternRepository:
             return self._cultural_significance_labels
 
         query = """
-            SELECT DISTINCT TRIM(cultural_significance) AS label
+            SELECT DISTINCT cultural_significance_normalized AS label
             FROM song_rhyme_patterns
-            WHERE cultural_significance IS NOT NULL
-              AND TRIM(cultural_significance) != ''
+            WHERE cultural_significance_normalized IS NOT NULL
             ORDER BY label
         """
         rows = self._execute(query, ())
@@ -147,21 +190,26 @@ class SQLitePatternRepository:
         return labels
 
     def fetch_complex_syllable_patterns(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = _normalize_text(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score
             FROM song_rhyme_patterns
-            WHERE source_word = ?
+            WHERE source_word_normalized = ?
               AND source_word != target_word
               AND length(target_word) >= 6
               AND confidence_score >= 0.75
             ORDER BY length(target_word) DESC
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(query, (normalized_source, max(1, limit)))
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_seed_neighbors(self, seed_word: str, limit: int) -> List[Row]:
-        if not seed_word:
+        normalized_seed = _normalize_text(seed_word)
+        if not normalized_seed:
             return []
 
         results: List[Row] = []
@@ -170,15 +218,15 @@ class SQLitePatternRepository:
         query_source = """
             SELECT target_word, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
             FROM song_rhyme_patterns
-            WHERE LOWER(source_word) = ?
-              AND target_word IS NOT NULL
-              AND LOWER(target_word) != ?
+            WHERE source_word_normalized = ?
+              AND target_word_normalized IS NOT NULL
+              AND target_word_normalized != ?
             ORDER BY confidence_score DESC
             LIMIT ?
         """
-        for row in self._execute(query_source, (seed_word.lower(), seed_word.lower(), max(1, limit))):
+        for row in self._execute(query_source, (normalized_seed, normalized_seed, max(1, limit))):
             candidate = str(row["target_word"]).strip()
-            lowered = candidate.lower()
+            lowered = _normalize_text(candidate)
             if not candidate or lowered in seen:
                 continue
             seen.add(lowered)
@@ -197,15 +245,15 @@ class SQLitePatternRepository:
         query_target = """
             SELECT source_word, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
             FROM song_rhyme_patterns
-            WHERE LOWER(target_word) = ?
-              AND source_word IS NOT NULL
-              AND LOWER(source_word) != ?
+            WHERE target_word_normalized = ?
+              AND source_word_normalized IS NOT NULL
+              AND source_word_normalized != ?
             ORDER BY confidence_score DESC
             LIMIT ?
         """
-        for row in self._execute(query_target, (seed_word.lower(), seed_word.lower(), max(1, limit))):
+        for row in self._execute(query_target, (normalized_seed, normalized_seed, max(1, limit))):
             candidate = str(row["source_word"]).strip()
-            lowered = candidate.lower()
+            lowered = _normalize_text(candidate)
             if not candidate or lowered in seen:
                 continue
             seen.add(lowered)
@@ -224,24 +272,28 @@ class SQLitePatternRepository:
         return results
 
     def fetch_suffix_matches(self, suffix: str, limit: int) -> List[Row]:
-        if not suffix:
+        normalized_suffix = _normalize_text(suffix)
+        if not normalized_suffix:
             return []
 
-        like_pattern = f"%{suffix}"
+        like_pattern = f"%{normalized_suffix}"
         results: List[Row] = []
         seen: Set[str] = set()
 
-        for column in ("target_word", "source_word"):
+        for column, normalized_column in (
+            ("target_word", "target_word_normalized"),
+            ("source_word", "source_word_normalized"),
+        ):
             query = f"""
                 SELECT {column} as candidate, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
                 FROM song_rhyme_patterns
-                WHERE LOWER({column}) LIKE ?
+                WHERE {normalized_column} LIKE ?
                 ORDER BY confidence_score DESC
                 LIMIT ?
             """
             for row in self._execute(query, (like_pattern, max(1, limit))):
                 candidate = str(row["candidate"]).strip()
-                lowered = candidate.lower()
+                lowered = _normalize_text(candidate)
                 if not candidate or lowered in seen:
                     continue
                 seen.add(lowered)
