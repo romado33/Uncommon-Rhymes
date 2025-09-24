@@ -822,7 +822,9 @@ class SearchService:
 
             phonetic_entries: List[Dict] = []
             module1_seed_payload: List[Dict] = []
-            aggregated_seed_signatures: Set[str] = set(source_signature_set)
+            aggregated_seed_signatures: Set[str] = (
+                set(source_signature_set) if include_anti_llm else set()
+            )
             delivered_words_set: Set[str] = set()
             phonetic_branch_start = (
                 telemetry.now() if telemetry and include_phonetic else None
@@ -830,7 +832,7 @@ class SearchService:
             if include_phonetic:
                 slice_limit = reference_limit if reference_limit else max(limit, 1)
                 phonetic_matches = cmu_candidates[:slice_limit]
-                rarity_source = analyzer if analyzer is not None else getattr(self, "phonetic_analyzer", None)
+                rarity_source = analyzer
                 for candidate in phonetic_matches:
                     is_multi_variant = False
                     variant_candidate: Optional[str] = None
@@ -1075,55 +1077,68 @@ class SearchService:
                     if item.get("target_word")
                 }
 
-                rare_seed_candidates: List[Dict] = []
-                for entry in phonetic_entries:
-                    target_value = entry.get("target_word")
-                    if not target_value:
-                        continue
+                if include_anti_llm:
+                    rare_seed_candidates: List[Dict] = []
+                    for entry in phonetic_entries:
+                        target_value = entry.get("target_word")
+                        if not target_value:
+                            continue
 
-                    rarity_value = entry.get("rarity_score")
-                    try:
-                        rarity_float = float(rarity_value) if rarity_value is not None else 0.0
-                    except (TypeError, ValueError):
-                        rarity_float = 0.0
+                        rarity_value = entry.get("rarity_score")
+                        try:
+                            rarity_float = (
+                                float(rarity_value) if rarity_value is not None else 0.0
+                            )
+                        except (TypeError, ValueError):
+                            rarity_float = 0.0
 
-                    combined_value = entry.get("combined_score", entry.get("confidence", 0.0))
-                    try:
-                        combined_float = float(combined_value) if combined_value is not None else 0.0
-                    except (TypeError, ValueError):
-                        combined_float = 0.0
+                        combined_value = entry.get(
+                            "combined_score", entry.get("confidence", 0.0)
+                        )
+                        try:
+                            combined_float = (
+                                float(combined_value)
+                                if combined_value is not None
+                                else 0.0
+                            )
+                        except (TypeError, ValueError):
+                            combined_float = 0.0
 
-                    signature_values = entry.get("target_rhyme_signatures") or entry.get("matched_signatures")
-                    if signature_values:
-                        signature_set = {str(sig) for sig in signature_values if sig}
-                    else:
-                        signature_set = fallback_signature(str(target_value))
+                        signature_values = entry.get("target_rhyme_signatures") or entry.get(
+                            "matched_signatures"
+                        )
+                        if signature_values:
+                            signature_set = {str(sig) for sig in signature_values if sig}
+                        else:
+                            signature_set = fallback_signature(str(target_value))
 
-                    aggregated_seed_signatures.update(signature_set)
+                        aggregated_seed_signatures.update(signature_set)
 
-                    rare_seed_candidates.append(
-                        {
-                            "word": target_value,
-                            "rarity": rarity_float,
-                            "combined": combined_float,
-                            "signatures": list(signature_set),
-                            "feature_profile": entry.get("feature_profile", {}),
-                            "prosody_profile": entry.get("prosody_profile", {}),
-                        }
+                        rare_seed_candidates.append(
+                            {
+                                "word": target_value,
+                                "rarity": rarity_float,
+                                "combined": combined_float,
+                                "signatures": list(signature_set),
+                                "feature_profile": entry.get("feature_profile", {}),
+                                "prosody_profile": entry.get("prosody_profile", {}),
+                            }
+                        )
+
+                    rare_seed_candidates.sort(
+                        key=lambda payload: (
+                            payload.get("rarity", 0.0), payload.get("combined", 0.0)
+                        ),
+                        reverse=True,
                     )
 
-                rare_seed_candidates.sort(
-                    key=lambda payload: (payload.get("rarity", 0.0), payload.get("combined", 0.0)),
-                    reverse=True,
-                )
-
-                max_seed_count = max(3, min(6, limit))
-                for candidate in rare_seed_candidates:
-                    if len(module1_seed_payload) >= max_seed_count:
-                        break
-                    if candidate.get("rarity", 0.0) <= 0 and module1_seed_payload:
-                        continue
-                    module1_seed_payload.append(candidate)
+                    max_seed_count = max(3, min(6, limit))
+                    for candidate in rare_seed_candidates:
+                        if len(module1_seed_payload) >= max_seed_count:
+                            break
+                        if candidate.get("rarity", 0.0) <= 0 and module1_seed_payload:
+                            continue
+                        module1_seed_payload.append(candidate)
 
             if telemetry and phonetic_branch_start is not None:
                 telemetry.record_timing(
@@ -1467,25 +1482,10 @@ class SearchService:
                 return score >= min_confidence
 
             def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
-                """Return a mutable feature profile dictionary for ``entry``."""
+                """Return a sanitised feature profile dictionary for ``entry``."""
 
-                profile_obj = entry.get("feature_profile")
-                if isinstance(profile_obj, dict):
-                    return profile_obj
-                if profile_obj is None:
-                    profile_dict: Dict[str, Any] = {}
-                elif hasattr(profile_obj, "__dict__"):
-                    try:
-                        profile_dict = dict(vars(profile_obj))
-                    except Exception:
-                        profile_dict = {}
-                else:
-                    try:
-                        profile_dict = dict(profile_obj)
-                    except Exception:
-                        profile_dict = {}
-                entry["feature_profile"] = profile_dict
-                return profile_dict
+                profile_dict = _sanitize_feature_profile(entry)
+                return profile_dict if isinstance(profile_dict, dict) else {}
 
             def _extract_rhyme_category(entry: Dict) -> Optional[str]:
                 """Pull a rhyme category label from an entry and normalise storage."""
