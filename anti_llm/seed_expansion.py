@@ -241,15 +241,40 @@ def expand_from_seed_candidates(
 
     per_seed_limit = max(1, (limit // max(len(seeds), 1)) + 1)
 
+    fingerprint_source = fingerprint_fn or phonetic_fingerprint
+    suffix_source = suffix_extractor or extract_suffixes
+
     for seed in seeds:
         if len(results) >= limit:
             break
 
         seed_word = seed.word
         normalized_seed = seed.normalized()
+
+        seed_fingerprint = seed.cached_fingerprint()
+        if not seed_fingerprint:
+            seed_fingerprint = fingerprint_source(seed_word)
+            seed.cache_fingerprint(seed_fingerprint)
+
+        signature_hint_cache = seed.cached_signature_hints()
+        if not signature_hint_cache:
+            combined = set(seed.signatures)
+            combined.update(seed_fingerprint)
+            stress_hint = None
+            if seed.feature_profile:
+                stress_hint = seed.feature_profile.get("stress_alignment")
+                device_hint = seed.feature_profile.get("bradley_device")
+            else:
+                device_hint = None
+            if isinstance(stress_hint, (int, float)):
+                combined.add(f"stress::{round(float(stress_hint), 2)}")
+            if device_hint:
+                combined.add(f"device::{str(device_hint).lower()}")
+            seed.cache_signature_hints(combined)
+            signature_hint_cache = combined
+
         combined_signatures = set(signature_hints)
-        combined_signatures.update(seed.signatures)
-        combined_signatures.update(phonetic_fingerprint(seed_word))
+        combined_signatures.update(signature_hint_cache)
 
         if seed.feature_profile:
             stress_hint = seed.feature_profile.get("stress_alignment")
@@ -267,12 +292,16 @@ def expand_from_seed_candidates(
             neighbors_fetcher(normalized_seed, per_seed_limit * 2)
         )
 
-        suffix_source = suffix_extractor or extract_suffixes
         suffix_matches = fetch_suffix_matches or (
             lambda suffix, limit: repository.fetch_suffix_matches(suffix, limit)
         )
 
-        for suffix in suffix_source(seed_word):
+        seed_suffixes = seed.cached_suffixes()
+        if not seed_suffixes:
+            seed_suffixes = suffix_source(seed_word)
+            seed.cache_suffixes(seed_suffixes)
+
+        for suffix in seed_suffixes:
             candidate_dicts.extend(suffix_matches(suffix, per_seed_limit))
 
         if cmu_candidates_fn is not None:
@@ -310,7 +339,6 @@ def expand_from_seed_candidates(
             ):
                 continue
 
-            fingerprint_source = fingerprint_fn or phonetic_fingerprint
             fingerprint = fingerprint_source(target)
             if combined_signatures and fingerprint and not (fingerprint & combined_signatures):
                 continue

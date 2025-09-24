@@ -66,18 +66,31 @@ def find_rare_combinations(
     cultural_weights: Mapping[str, float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    rows: Optional[List[Dict[str, object]]] = None,
+    rarity_lookup: Optional[Mapping[str, float]] = None,
+    cultural_multiplier_lookup: Optional[Mapping[str, float]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_rare_combinations(source_word, limit * 3)
+    query_rows = rows if rows is not None else repository.fetch_rare_combinations(
+        source_word, limit * 3
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in query_rows:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
 
-        rarity_score = get_rarity(target)
+        normalized_target = target.lower()
+        if rarity_lookup is not None and normalized_target in rarity_lookup:
+            rarity_score = rarity_lookup[normalized_target]
+        else:
+            rarity_score = get_rarity(normalized_target)
+
         cultural_sig = str(row.get("cultural_significance") or "")
-        cultural_multiplier = cultural_weights.get(cultural_sig, 1.0)
+        if cultural_multiplier_lookup is not None and cultural_sig in cultural_multiplier_lookup:
+            cultural_multiplier = cultural_multiplier_lookup[cultural_sig]
+        else:
+            cultural_multiplier = cultural_weights.get(cultural_sig, 1.0)
         final_rarity = rarity_score * cultural_multiplier
 
         if final_rarity < 2.0:
@@ -110,11 +123,14 @@ def find_phonological_challenges(
     analyze_complexity: Callable[[str, str], float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    rows: Optional[List[Dict[str, object]]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_phonological_challenges(source_word, limit * 2)
+    query_rows = rows if rows is not None else repository.fetch_phonological_challenges(
+        source_word, limit * 2
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in query_rows:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
@@ -150,17 +166,24 @@ def find_cultural_depth_patterns(
     cultural_weights: Mapping[str, float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    rows: Optional[List[Dict[str, object]]] = None,
+    cultural_multiplier_lookup: Optional[Mapping[str, float]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_cultural_depth_patterns(source_word, limit * 2)
+    query_rows = rows if rows is not None else repository.fetch_cultural_depth_patterns(
+        source_word, limit * 2
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in query_rows:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
 
         cultural_sig = str(row.get("cultural_significance") or "")
-        cultural_weight = cultural_weights.get(cultural_sig, 1.0)
+        if cultural_multiplier_lookup is not None and cultural_sig in cultural_multiplier_lookup:
+            cultural_weight = cultural_multiplier_lookup[cultural_sig]
+        else:
+            cultural_weight = cultural_weights.get(cultural_sig, 1.0)
 
         pattern = AntiLLMPattern(
             source_word=source_word,
@@ -188,11 +211,14 @@ def find_complex_syllable_patterns(
     limit: int,
     calculate_syllable_complexity: Callable[[str], float],
     attach_profile: Callable[[AntiLLMPattern], None],
+    rows: Optional[List[Dict[str, object]]] = None,
 ) -> List[AntiLLMPattern]:
-    rows = repository.fetch_complex_syllable_patterns(source_word, limit * 2)
+    query_rows = rows if rows is not None else repository.fetch_complex_syllable_patterns(
+        source_word, limit * 2
+    )
     patterns: List[AntiLLMPattern] = []
 
-    for row in rows:
+    for row in query_rows:
         target = str(row.get("target_word") or "").strip()
         if not target:
             continue
