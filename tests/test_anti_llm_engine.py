@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from anti_llm import AntiLLMRhymeEngine, SeedCandidate
+from anti_llm import AntiLLMPattern, AntiLLMRhymeEngine, SeedCandidate
 from anti_llm.strategies import find_cultural_depth_patterns
 from rhyme_rarity.app.data.database import SQLiteRhymeRepository
 
@@ -129,3 +129,30 @@ def test_cultural_depth_strategy_returns_patterns(tmp_path):
 
     assert patterns
     assert any("[mainstream]" in pattern.cultural_depth for pattern in patterns)
+
+def test_attach_profile_populates_prosody_fields(engine_with_dummy_analyzer):
+    engine = engine_with_dummy_analyzer
+    analyzer = engine.phonetic_analyzer
+
+    pattern = AntiLLMPattern(
+        source_word="Shadow",
+        target_word="Meadow",
+        rarity_score=1.0,
+        cultural_depth="[test]",
+        llm_weakness_type="prosody",
+        confidence=0.8,
+    )
+
+    engine._attach_profile(pattern)
+
+    assert analyzer.calls == [("Shadow", "Meadow")]
+    assert pattern.bradley_device == "slant"
+    assert pattern.syllable_span == (1, 3)
+    assert pattern.stress_alignment == pytest.approx(0.75)
+    assert pattern.feature_profile["assonance_score"] == pytest.approx(0.5)
+    assert pattern.feature_profile["consonance_score"] == pytest.approx(0.25)
+
+    assert pattern.prosody_profile["complexity_tag"] == "dense"
+    assert pattern.prosody_profile["stress_alignment"] == pytest.approx(0.75)
+    assert pattern.prosody_profile["assonance"] == pytest.approx(0.5)
+    assert pattern.prosody_profile["consonance"] == pytest.approx(0.25)
