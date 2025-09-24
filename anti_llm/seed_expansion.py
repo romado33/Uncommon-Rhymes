@@ -226,6 +226,7 @@ def expand_from_seed_candidates(
     cmu_candidates_fn: Optional[Callable[[str, int, Any], List[Any]]],
     seed_analyzer: Any,
     stats: Optional[Dict[str, int]] = None,
+    stat_recorder: Optional[Callable[[str, int], None]] = None,
     value_sanitizer: Callable[[Any, float], float] = safe_float,
     fetch_neighbors: Optional[Callable[[str, int], List[Dict[str, Any]]]] = None,
     fetch_suffix_matches: Optional[Callable[[str, int], List[Dict[str, Any]]]] = None,
@@ -379,7 +380,9 @@ def expand_from_seed_candidates(
 
             results.append(pattern)
 
-            if stats is not None:
+            if stat_recorder is not None:
+                stat_recorder("seed_expansions", 1)
+            elif stats is not None:
                 stats["seed_expansions"] = stats.get("seed_expansions", 0) + 1
 
             seen_targets.add(normalized_target)

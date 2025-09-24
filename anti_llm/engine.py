@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any, Dict, List, Optional, Set
 
 from rhyme_rarity.utils.profile import normalize_profile_dict
@@ -63,6 +64,8 @@ class AntiLLMRhymeEngine:
             "frequency_inversions": 0,
             "seed_expansions": 0,
         }
+
+        self._stats_lock = threading.Lock()
 
         self._seed_resources_initialized = False
         self._seed_analyzer = None
@@ -210,6 +213,13 @@ class AntiLLMRhymeEngine:
             self._seed_analyzer = None
             self._cmu_seed_fn = None
 
+    def _increment_stat(self, key: str, amount: int = 1) -> None:
+        if amount == 0:
+            return
+
+        with self._stats_lock:
+            self.anti_llm_stats[key] = self.anti_llm_stats.get(key, 0) + amount
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -278,7 +288,8 @@ class AntiLLMRhymeEngine:
                 self._get_word_rarity,
                 self.cultural_depth_weights,
                 self._attach_profile,
-                self.anti_llm_stats,
+                stats=self.anti_llm_stats,
+                stat_recorder=self._increment_stat,
             ),
             find_phonological_challenges(
                 self.repository,
@@ -286,7 +297,8 @@ class AntiLLMRhymeEngine:
                 per_strategy * 2,
                 self._analyze_phonological_complexity,
                 self._attach_profile,
-                self.anti_llm_stats,
+                stats=self.anti_llm_stats,
+                stat_recorder=self._increment_stat,
             ),
             find_cultural_depth_patterns(
                 self.repository,
@@ -294,7 +306,8 @@ class AntiLLMRhymeEngine:
                 per_strategy * 2,
                 self.cultural_depth_weights,
                 self._attach_profile,
-                self.anti_llm_stats,
+                stats=self.anti_llm_stats,
+                stat_recorder=self._increment_stat,
             ),
             find_complex_syllable_patterns(
                 self.repository,
@@ -354,6 +367,7 @@ class AntiLLMRhymeEngine:
             cmu_candidates_fn=self._cmu_candidates,
             seed_analyzer=self._seed_analyzer,
             stats=self.anti_llm_stats,
+            stat_recorder=self._increment_stat,
             value_sanitizer=self._safe_float,
             fetch_neighbors=lambda seed, limit: self._query_seed_neighbors(None, seed, limit),
             fetch_suffix_matches=lambda suffix, limit: self._query_suffix_matches(None, suffix, limit),
@@ -396,8 +410,11 @@ class AntiLLMRhymeEngine:
         return effectiveness_score(pattern, self.llm_weaknesses)
 
     def get_performance_stats(self) -> Dict[str, Any]:
+        with self._stats_lock:
+            stats_snapshot = dict(self.anti_llm_stats)
+
         return {
-            "anti_llm_stats": self.anti_llm_stats.copy(),
+            "anti_llm_stats": stats_snapshot,
             "llm_weaknesses_targeted": len(self.llm_weaknesses),
             "rarity_levels_available": len(self.rarity_multipliers),
             "cultural_depth_categories": len(self.cultural_depth_weights),

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 import re
 import types
+import threading
 
 from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
@@ -30,6 +32,8 @@ class SearchService:
         cultural_engine: Optional[CulturalIntelligenceEngine] = None,
         anti_llm_engine: Optional[AntiLLMRhymeEngine] = None,
         cmu_loader: Optional[object] = None,
+        max_concurrent_searches: Optional[int] = None,
+        search_timeout: Optional[float] = None,
     ) -> None:
         self.repository = repository
         self.phonetic_analyzer = phonetic_analyzer
@@ -39,12 +43,32 @@ class SearchService:
         if self.cmu_loader is None and phonetic_analyzer is not None:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
 
+        self._cache_lock = threading.RLock()
         self._max_cache_entries = 256
         self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
         self._cmu_rhyme_cache: OrderedDict[
             Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]
         ] = OrderedDict()
         self._related_words_cache: OrderedDict[Tuple[str, ...], Tuple[str, ...]] = OrderedDict()
+
+        self._search_timeout = None
+        if search_timeout is not None:
+            try:
+                timeout_value = float(search_timeout)
+            except (TypeError, ValueError):
+                timeout_value = None
+            else:
+                if timeout_value >= 0:
+                    self._search_timeout = timeout_value
+
+        self._search_semaphore: Optional[threading.BoundedSemaphore] = None
+        if max_concurrent_searches is not None:
+            try:
+                max_concurrent = int(max_concurrent_searches)
+            except (TypeError, ValueError):
+                max_concurrent = 0
+            if max_concurrent > 0:
+                self._search_semaphore = threading.BoundedSemaphore(max_concurrent)
 
     def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
         self.phonetic_analyzer = analyzer
@@ -65,20 +89,23 @@ class SearchService:
         changes, e.g. when refreshing database content in long-running sessions.
         """
 
-        self._fallback_signature_cache.clear()
-        self._cmu_rhyme_cache.clear()
-        self._related_words_cache.clear()
+        with self._cache_lock:
+            self._fallback_signature_cache.clear()
+            self._cmu_rhyme_cache.clear()
+            self._related_words_cache.clear()
 
     def _reset_phonetic_caches(self) -> None:
         """Drop caches derived from analyzer or CMU resources."""
 
-        self._cmu_rhyme_cache.clear()
-        self._related_words_cache.clear()
+        with self._cache_lock:
+            self._cmu_rhyme_cache.clear()
+            self._related_words_cache.clear()
 
     def _trim_cache(self, cache: OrderedDict[Any, Tuple[Any, ...]]) -> None:
         """Ensure caches stay within the configured ``_max_cache_entries`` size."""
 
         if self._max_cache_entries <= 0:
+            cache.clear()
             return
 
         while len(cache) > self._max_cache_entries:
@@ -88,10 +115,11 @@ class SearchService:
         """Compute a light-weight fallback signature with memoization."""
 
         cache_key = (word or "").strip().lower()
-        cached = self._fallback_signature_cache.get(cache_key)
-        if cached is not None:
-            self._fallback_signature_cache.move_to_end(cache_key)
-            return set(cached)
+        with self._cache_lock:
+            cached = self._fallback_signature_cache.get(cache_key)
+            if cached is not None:
+                self._fallback_signature_cache.move_to_end(cache_key)
+                return set(cached)
 
         cleaned = re.sub(r"[^a-z]", "", cache_key)
         if not cleaned:
@@ -106,8 +134,14 @@ class SearchService:
             signature_bits.append(f"e:{ending}")
             signature_tuple = ("|".join(signature_bits),)
 
-        self._fallback_signature_cache[cache_key] = signature_tuple
-        self._trim_cache(self._fallback_signature_cache)
+        with self._cache_lock:
+            existing = self._fallback_signature_cache.get(cache_key)
+            if existing is not None:
+                self._fallback_signature_cache.move_to_end(cache_key)
+                return set(existing)
+
+            self._fallback_signature_cache[cache_key] = signature_tuple
+            self._trim_cache(self._fallback_signature_cache)
 
         return set(signature_tuple)
 
@@ -126,10 +160,11 @@ class SearchService:
             id(analyzer) if analyzer is not None else None,
             id(cmu_loader) if cmu_loader is not None else None,
         )
-        cached = self._cmu_rhyme_cache.get(cache_key)
-        if cached is not None:
-            self._cmu_rhyme_cache.move_to_end(cache_key)
-            return list(cached)
+        with self._cache_lock:
+            cached = self._cmu_rhyme_cache.get(cache_key)
+            if cached is not None:
+                self._cmu_rhyme_cache.move_to_end(cache_key)
+                return list(cached)
 
         try:
             results = get_cmu_rhymes(
@@ -141,10 +176,18 @@ class SearchService:
         except Exception:
             results = []
 
-        self._cmu_rhyme_cache[cache_key] = tuple(results)
-        self._trim_cache(self._cmu_rhyme_cache)
+        cached_results = tuple(results)
 
-        return list(results)
+        with self._cache_lock:
+            existing = self._cmu_rhyme_cache.get(cache_key)
+            if existing is not None:
+                self._cmu_rhyme_cache.move_to_end(cache_key)
+                return list(existing)
+
+            self._cmu_rhyme_cache[cache_key] = cached_results
+            self._trim_cache(self._cmu_rhyme_cache)
+
+        return list(cached_results)
 
     def _fetch_related_words_cached(self, lookup_terms: Set[str]) -> Set[str]:
         """Return repository suggestions using an LRU-style cache."""
@@ -158,10 +201,11 @@ class SearchService:
         if not normalized_terms:
             return set()
 
-        cached = self._related_words_cache.get(normalized_terms)
-        if cached is not None:
-            self._related_words_cache.move_to_end(normalized_terms)
-            return set(cached)
+        with self._cache_lock:
+            cached = self._related_words_cache.get(normalized_terms)
+            if cached is not None:
+                self._related_words_cache.move_to_end(normalized_terms)
+                return set(cached)
 
         try:
             results = self.repository.fetch_related_words(set(normalized_terms))
@@ -169,10 +213,42 @@ class SearchService:
             results = set()
 
         results_set = set(results)
-        self._related_words_cache[normalized_terms] = tuple(sorted(results_set))
-        self._trim_cache(self._related_words_cache)
+        cached_tuple = tuple(sorted(results_set))
+
+        with self._cache_lock:
+            existing = self._related_words_cache.get(normalized_terms)
+            if existing is not None:
+                self._related_words_cache.move_to_end(normalized_terms)
+                return set(existing)
+
+            self._related_words_cache[normalized_terms] = cached_tuple
+            self._trim_cache(self._related_words_cache)
 
         return results_set
+
+    @contextmanager
+    def _search_slot(self) -> Generator[None, None, None]:
+        """Bound concurrent searches when a semaphore has been configured."""
+
+        semaphore = self._search_semaphore
+        if semaphore is None:
+            yield
+            return
+
+        timeout = self._search_timeout
+        if timeout is None:
+            semaphore.acquire()
+            acquired = True
+        else:
+            acquired = semaphore.acquire(timeout=timeout)
+
+        if not acquired:
+            raise TimeoutError("Search capacity exhausted; please retry later")
+
+        try:
+            yield
+        finally:
+            semaphore.release()
 
     def normalize_source_name(self, name: Optional[str]) -> str:
         if name is None:
@@ -180,6 +256,45 @@ class SearchService:
         return str(name).strip().lower().replace("_", "-")
 
     def search_rhymes(
+        self,
+        source_word: str,
+        limit: int = 20,
+        min_confidence: float = 0.7,
+        cultural_significance: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        result_sources: Optional[List[str]] = None,
+        max_line_distance: Optional[int] = None,
+        min_syllables: Optional[int] = None,
+        max_syllables: Optional[int] = None,
+        allowed_rhyme_types: Optional[List[str]] = None,
+        bradley_devices: Optional[List[str]] = None,
+        require_internal: bool = False,
+        min_rarity: Optional[float] = None,
+        min_stress_alignment: Optional[float] = None,
+        cadence_focus: Optional[str] = None,
+    ) -> Dict[str, List[Dict]]:
+        """Search for rhymes while applying optional concurrency backpressure."""
+
+        with self._search_slot():
+            return self._search_rhymes_internal(
+                source_word,
+                limit=limit,
+                min_confidence=min_confidence,
+                cultural_significance=cultural_significance,
+                genres=genres,
+                result_sources=result_sources,
+                max_line_distance=max_line_distance,
+                min_syllables=min_syllables,
+                max_syllables=max_syllables,
+                allowed_rhyme_types=allowed_rhyme_types,
+                bradley_devices=bradley_devices,
+                require_internal=require_internal,
+                min_rarity=min_rarity,
+                min_stress_alignment=min_stress_alignment,
+                cadence_focus=cadence_focus,
+            )
+
+    def _search_rhymes_internal(
             self,
             source_word: str,
             limit: int = 20,
