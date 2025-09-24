@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import threading
-from typing import Any, Dict, List, Optional, Set
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.profile import normalize_profile_dict
 from rhyme_rarity.utils.syllables import estimate_syllable_count
@@ -67,9 +69,83 @@ class AntiLLMRhymeEngine:
 
         self._stats_lock = threading.Lock()
 
+        self._cache_lock = threading.RLock()
+        self._max_cache_entries = 256
+        self._pattern_cache: OrderedDict[
+            Tuple[str, int, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]],
+            Tuple[Any, ...],
+        ] = OrderedDict()
+        self._neighbor_cache: OrderedDict[Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]] = OrderedDict()
+        self._suffix_cache: OrderedDict[Tuple[str, int], Tuple[Tuple[Tuple[str, Any], ...], ...]] = OrderedDict()
+
         self._seed_resources_initialized = False
         self._seed_analyzer = None
         self._cmu_seed_fn = None
+
+    # ------------------------------------------------------------------
+    # Cache management helpers
+    # ------------------------------------------------------------------
+
+    def _trim_cache(self, cache: OrderedDict) -> None:
+        if self._max_cache_entries <= 0:
+            cache.clear()
+            return
+
+        while len(cache) > self._max_cache_entries:
+            cache.popitem(last=False)
+
+    @staticmethod
+    def _freeze_rows(rows: List[Dict[str, Any]]) -> Tuple[Tuple[Tuple[str, Any], ...], ...]:
+        frozen: List[Tuple[Tuple[str, Any], ...]] = []
+        for row in rows:
+            frozen.append(tuple(sorted(row.items())))
+        return tuple(frozen)
+
+    @staticmethod
+    def _thaw_rows(rows: Tuple[Tuple[Tuple[str, Any], ...], ...]) -> List[Dict[str, Any]]:
+        return [dict(items) for items in rows]
+
+    def _load_cached_rows(
+        self, cache: OrderedDict, key: Tuple[Any, ...]
+    ) -> Optional[List[Dict[str, Any]]]:
+        with self._cache_lock:
+            frozen = cache.get(key)
+            if frozen is None:
+                return None
+            cache.move_to_end(key)
+            return self._thaw_rows(frozen)
+
+    def _store_cached_rows(
+        self, cache: OrderedDict, key: Tuple[Any, ...], rows: List[Dict[str, Any]]
+    ) -> None:
+        with self._cache_lock:
+            cache[key] = self._freeze_rows(rows)
+            self._trim_cache(cache)
+
+    def _load_pattern_cache(
+        self, key: Tuple[str, int, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]
+    ) -> Optional[List[Any]]:
+        with self._cache_lock:
+            cached = self._pattern_cache.get(key)
+            if cached is None:
+                return None
+            self._pattern_cache.move_to_end(key)
+            return [copy.deepcopy(pattern) for pattern in cached]
+
+    def _store_pattern_cache(
+        self,
+        key: Tuple[str, int, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]],
+        patterns: List[Any],
+    ) -> None:
+        with self._cache_lock:
+            self._pattern_cache[key] = tuple(copy.deepcopy(pattern) for pattern in patterns)
+            self._trim_cache(self._pattern_cache)
+
+    def _clear_caches(self) -> None:
+        with self._cache_lock:
+            self._pattern_cache.clear()
+            self._neighbor_cache.clear()
+            self._suffix_cache.clear()
 
     # ------------------------------------------------------------------
     # Dependency management
@@ -80,6 +156,12 @@ class AntiLLMRhymeEngine:
         rarity_map = getattr(analyzer, "rarity_map", None)
         if hasattr(rarity_map, "get_rarity"):
             self._rarity_map = rarity_map
+        self._clear_caches()
+
+    def clear_cached_results(self) -> None:
+        """Expose cache reset for integration with orchestration layers."""
+
+        self._clear_caches()
 
     # ------------------------------------------------------------------
     # Core helpers
@@ -135,10 +217,30 @@ class AntiLLMRhymeEngine:
         return extract_suffixes(word)
 
     def _query_seed_neighbors(self, cursor: Any, seed_word: str, limit: int) -> List[Dict[str, Any]]:
-        return self.repository.fetch_seed_neighbors(seed_word, limit)
+        if not seed_word:
+            return []
+
+        cache_key = (seed_word.lower().strip(), int(limit))
+        cached = self._load_cached_rows(self._neighbor_cache, cache_key)
+        if cached is not None:
+            return cached
+
+        rows = self.repository.fetch_seed_neighbors(seed_word, limit)
+        self._store_cached_rows(self._neighbor_cache, cache_key, rows)
+        return rows
 
     def _query_suffix_matches(self, cursor: Any, suffix: str, limit: int) -> List[Dict[str, Any]]:
-        return self.repository.fetch_suffix_matches(suffix, limit)
+        if not suffix:
+            return []
+
+        cache_key = (suffix.lower().strip(), int(limit))
+        cached = self._load_cached_rows(self._suffix_cache, cache_key)
+        if cached is not None:
+            return cached
+
+        rows = self.repository.fetch_suffix_matches(suffix, limit)
+        self._store_cached_rows(self._suffix_cache, cache_key, rows)
+        return rows
 
     def _attach_profile(self, pattern: AntiLLMPattern) -> None:
         analyzer = getattr(self, "phonetic_analyzer", None)
@@ -247,12 +349,34 @@ class AntiLLMRhymeEngine:
             self._get_word_rarity,
             value_sanitizer=self._safe_float,
         )
+        normalized_seed_tokens = tuple(sorted(seed.normalized() for seed in normalized_seeds))
         for seed in normalized_seeds:
             signature_hints.update(seed.signatures)
 
-        delivered_set: Set[str] = {source_word}
+        delivered_words_normalized: Set[str] = set()
         if delivered_words:
-            delivered_set.update({str(word).lower().strip() for word in delivered_words if word})
+            delivered_words_normalized.update(
+                {
+                    str(word).lower().strip()
+                    for word in delivered_words
+                    if word and str(word).strip()
+                }
+            )
+
+        cache_key = (
+            source_word,
+            int(limit),
+            normalized_seed_tokens,
+            tuple(sorted(sig for sig in signature_hints if sig)),
+            tuple(sorted(delivered_words_normalized)),
+        )
+
+        cached_patterns = self._load_pattern_cache(cache_key)
+        if cached_patterns is not None:
+            return cached_patterns[:limit]
+
+        delivered_set: Set[str] = {source_word}
+        delivered_set.update(delivered_words_normalized)
         delivered_set.update({seed.normalized() for seed in normalized_seeds})
 
         seen_targets: Set[str] = set(delivered_set)
@@ -331,7 +455,9 @@ class AntiLLMRhymeEngine:
                 break
 
         patterns.sort(key=lambda item: item.rarity_score * item.confidence, reverse=True)
-        return patterns[:limit]
+        limited = patterns[:limit]
+        self._store_pattern_cache(cache_key, limited)
+        return limited
 
     # ------------------------------------------------------------------
     # Helper utilities reused by strategies
