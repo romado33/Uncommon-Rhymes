@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
 from time import perf_counter
+from contextlib import contextmanager, nullcontext
+import copy
 import re
+import threading
 import types
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
@@ -17,6 +20,7 @@ from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
 from ..data.database import SQLiteRhymeRepository
+from ...utils.telemetry import StructuredTelemetry
 
 
 
@@ -31,6 +35,9 @@ class SearchService:
         cultural_engine: Optional[CulturalIntelligenceEngine] = None,
         anti_llm_engine: Optional[AntiLLMRhymeEngine] = None,
         cmu_loader: Optional[object] = None,
+        max_concurrent_searches: Optional[int] = None,
+        search_timeout: Optional[float] = None,
+        telemetry: Optional[StructuredTelemetry] = None,
     ) -> None:
         self.repository = repository
         self.phonetic_analyzer = phonetic_analyzer
@@ -40,10 +47,41 @@ class SearchService:
         if self.cmu_loader is None and phonetic_analyzer is not None:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
 
+        self.telemetry = telemetry or StructuredTelemetry()
+        self._latest_trace: Dict[str, Any] = {}
+
+        self._cache_lock = threading.RLock()
+        self._max_cache_entries = 256
+        self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
+        self._cmu_rhyme_cache: OrderedDict[
+            Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]
+        ] = OrderedDict()
+        self._related_words_cache: OrderedDict[Tuple[str, ...], Tuple[str, ...]] = OrderedDict()
+
+        self._search_timeout = None
+        if search_timeout is not None:
+            try:
+                timeout_value = float(search_timeout)
+            except (TypeError, ValueError):
+                timeout_value = None
+            else:
+                if timeout_value >= 0:
+                    self._search_timeout = timeout_value
+
+        self._search_semaphore: Optional[threading.BoundedSemaphore] = None
+        if max_concurrent_searches is not None:
+            try:
+                max_concurrent = int(max_concurrent_searches)
+            except (TypeError, ValueError):
+                max_concurrent = 0
+            if max_concurrent > 0:
+                self._search_semaphore = threading.BoundedSemaphore(max_concurrent)
+
     def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
         self.phonetic_analyzer = analyzer
         if analyzer is not None and getattr(analyzer, "cmu_loader", None):
             self.cmu_loader = getattr(analyzer, "cmu_loader")
+        self._reset_phonetic_caches()
 
     def set_cultural_engine(self, engine: Optional[CulturalIntelligenceEngine]) -> None:
         self.cultural_engine = engine
@@ -51,12 +89,285 @@ class SearchService:
     def set_anti_llm_engine(self, engine: Optional[AntiLLMRhymeEngine]) -> None:
         self.anti_llm_engine = engine
 
-    def normalize_source_name(self, name: Optional[str]) -> str:
+    def clear_cached_results(self) -> None:
+        """Clear memoized helper caches.
+
+        Exposed so API consumers can explicitly reset caches if upstream data
+        changes, e.g. when refreshing database content in long-running sessions.
+        """
+
+        with self._cache_lock:
+            self._fallback_signature_cache.clear()
+            self._cmu_rhyme_cache.clear()
+            self._related_words_cache.clear()
+
+        anti_engine = getattr(self, "anti_llm_engine", None)
+        if anti_engine and hasattr(anti_engine, "clear_cached_results"):
+            try:
+                anti_engine.clear_cached_results()
+            except Exception:
+                pass
+
+    def get_latest_telemetry(self) -> Dict[str, Any]:
+        """Return the most recent telemetry snapshot for the search service."""
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return {}
+
+        if not self._latest_trace:
+            return telemetry.latest_snapshot()
+
+        return copy.deepcopy(self._latest_trace)
+
+    def _reset_phonetic_caches(self) -> None:
+        """Drop caches derived from analyzer or CMU resources."""
+
+        with self._cache_lock:
+            self._cmu_rhyme_cache.clear()
+            self._related_words_cache.clear()
+
+    def _trim_cache(self, cache: OrderedDict[Any, Tuple[Any, ...]]) -> None:
+        """Ensure caches stay within the configured ``_max_cache_entries`` size."""
+
+        if self._max_cache_entries <= 0:
+            cache.clear()
+            return
+
+        while len(cache) > self._max_cache_entries:
+            cache.popitem(last=False)
+
+    def _build_spelling_signature(self, word: Optional[str]) -> Set[str]:
+        """Build and cache a spelling-based signature (last vowel and ending) for fallback rhyme comparisons."""
+
+        cache_key = (word or "").strip().lower()
+        with self._cache_lock:
+            cached = self._fallback_signature_cache.get(cache_key)
+            if cached is not None:
+                self._fallback_signature_cache.move_to_end(cache_key)
+                return set(cached)
+
+        cleaned = re.sub(r"[^a-z]", "", cache_key)
+        if not cleaned:
+            signature_tuple: Tuple[str, ...] = tuple()
+        else:
+            vowels = re.findall(r"[aeiou]+", cleaned)
+            last_vowel = vowels[-1] if vowels else ""
+            ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+            signature_bits: List[str] = []
+            if last_vowel:
+                signature_bits.append(f"v:{last_vowel}")
+            signature_bits.append(f"e:{ending}")
+            signature_tuple = ("|".join(signature_bits),)
+
+        with self._cache_lock:
+            existing = self._fallback_signature_cache.get(cache_key)
+            if existing is not None:
+                self._fallback_signature_cache.move_to_end(cache_key)
+                return set(existing)
+
+            self._fallback_signature_cache[cache_key] = signature_tuple
+            self._trim_cache(self._fallback_signature_cache)
+
+        return set(signature_tuple)
+
+    def _lookup_cmu_rhymes(
+        self,
+        source_word: str,
+        limit: int,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        cmu_loader: Optional[object],
+    ) -> List[Any]:
+        """Return CMU rhyme candidates with caching."""
+
+        cache_key = (
+            source_word,
+            int(limit),
+            id(analyzer) if analyzer is not None else None,
+            id(cmu_loader) if cmu_loader is not None else None,
+        )
+        with self._cache_lock:
+            cached = self._cmu_rhyme_cache.get(cache_key)
+            if cached is not None:
+                self._cmu_rhyme_cache.move_to_end(cache_key)
+                return list(cached)
+
+        try:
+            results = get_cmu_rhymes(
+                source_word,
+                limit=limit,
+                analyzer=analyzer,
+                cmu_loader=cmu_loader,
+            )
+        except Exception:
+            results = []
+
+        cached_results = tuple(results)
+
+        with self._cache_lock:
+            existing = self._cmu_rhyme_cache.get(cache_key)
+            if existing is not None:
+                self._cmu_rhyme_cache.move_to_end(cache_key)
+                return list(existing)
+
+            self._cmu_rhyme_cache[cache_key] = cached_results
+            self._trim_cache(self._cmu_rhyme_cache)
+
+        return list(cached_results)
+
+    def _fetch_related_words_cached(self, lookup_terms: Set[str]) -> Set[str]:
+        """Return repository suggestions using an LRU-style cache."""
+
+        if not lookup_terms or self.repository is None:
+            return set()
+
+        normalized_terms = tuple(
+            sorted({(term or "").strip().lower() for term in lookup_terms if term})
+        )
+        if not normalized_terms:
+            return set()
+
+        with self._cache_lock:
+            cached = self._related_words_cache.get(normalized_terms)
+            if cached is not None:
+                self._related_words_cache.move_to_end(normalized_terms)
+                return set(cached)
+
+        try:
+            results = self.repository.fetch_related_words(set(normalized_terms))
+        except Exception:
+            results = set()
+
+        results_set = set(results)
+        cached_tuple = tuple(sorted(results_set))
+
+        with self._cache_lock:
+            existing = self._related_words_cache.get(normalized_terms)
+            if existing is not None:
+                self._related_words_cache.move_to_end(normalized_terms)
+                return set(existing)
+
+            self._related_words_cache[normalized_terms] = cached_tuple
+            self._trim_cache(self._related_words_cache)
+
+        return results_set
+
+    @contextmanager
+    def _search_slot(self) -> Generator[None, None, None]:
+        """Bound concurrent searches when a semaphore has been configured."""
+
+        semaphore = self._search_semaphore
+        if semaphore is None:
+            telemetry = getattr(self, "telemetry", None)
+            if telemetry:
+                telemetry.increment("search.gate.bypass")
+            yield
+            return
+
+        timeout = self._search_timeout
+        telemetry = getattr(self, "telemetry", None)
+        wait_context = telemetry.timer("search.gate.wait") if telemetry else nullcontext()
+        with wait_context:
+            if timeout is None:
+                semaphore.acquire()
+                acquired = True
+            else:
+                acquired = semaphore.acquire(timeout=timeout)
+
+        if not acquired:
+            if telemetry:
+                telemetry.increment("search.gate.timeout")
+            raise TimeoutError("Search capacity exhausted; please retry later")
+
+        if telemetry:
+            telemetry.increment("search.gate.acquired")
+
+        try:
+            yield
+        finally:
+            semaphore.release()
+            if telemetry:
+                telemetry.increment("search.gate.released")
+
+    def normalize_filter_label(self, name: Optional[str]) -> str:
+        """Normalise user-supplied filter labels by trimming, lowercasing, and replacing underscores for consistent comparisons."""
+
         if name is None:
             return ""
         return str(name).strip().lower().replace("_", "-")
 
     def search_rhymes(
+        self,
+        source_word: str,
+        limit: int = 20,
+        min_confidence: float = 0.7,
+        cultural_significance: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        result_sources: Optional[List[str]] = None,
+        max_line_distance: Optional[int] = None,
+        min_syllables: Optional[int] = None,
+        max_syllables: Optional[int] = None,
+        allowed_rhyme_types: Optional[List[str]] = None,
+        bradley_devices: Optional[List[str]] = None,
+        require_internal: bool = False,
+        min_rarity: Optional[float] = None,
+        min_stress_alignment: Optional[float] = None,
+        cadence_focus: Optional[str] = None,
+    ) -> Dict[str, List[Dict]]:
+        """Search for rhymes while applying optional concurrency backpressure."""
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry:
+            telemetry.start_trace("search_rhymes")
+            telemetry.increment("search.invoked")
+            telemetry.annotate("input.raw_source_word", source_word)
+            telemetry.annotate("input.limit", limit)
+            telemetry.annotate("input.min_confidence", min_confidence)
+            telemetry.annotate("input.result_sources", result_sources)
+            telemetry.annotate("input.cultural_significance", cultural_significance)
+            telemetry.annotate("input.genres", genres)
+
+        try:
+            with self._search_slot():
+                result = self._search_rhymes_internal(
+                    source_word,
+                    limit=limit,
+                    min_confidence=min_confidence,
+                    cultural_significance=cultural_significance,
+                    genres=genres,
+                    result_sources=result_sources,
+                    max_line_distance=max_line_distance,
+                    min_syllables=min_syllables,
+                    max_syllables=max_syllables,
+                    allowed_rhyme_types=allowed_rhyme_types,
+                    bradley_devices=bradley_devices,
+                    require_internal=require_internal,
+                    min_rarity=min_rarity,
+                    min_stress_alignment=min_stress_alignment,
+                    cadence_focus=cadence_focus,
+                )
+        except Exception:
+            if telemetry:
+                telemetry.increment("search.failed")
+                self._latest_trace = telemetry.snapshot()
+            else:
+                self._latest_trace = {}
+            raise
+
+        if telemetry:
+            counts = {
+                key: len(value)
+                for key, value in result.items()
+                if isinstance(value, list)
+            }
+            telemetry.annotate("result.counts", counts)
+            telemetry.increment("search.completed")
+            self._latest_trace = telemetry.snapshot()
+        else:
+            self._latest_trace = {}
+
+        return result
+
+    def _search_rhymes_internal(
             self,
             source_word: str,
             limit: int = 20,
@@ -80,13 +391,33 @@ class SearchService:
             format each category independently.
             """
 
+            telemetry = getattr(self, "telemetry", None)
+            start_time = telemetry.now() if telemetry else None
+
+            def timed(name: str, initial: Optional[Dict[str, Any]] = None):
+                if telemetry:
+                    return telemetry.timer(name, initial)
+                return nullcontext(initial if initial is not None else {})
+
+            def finalize(result: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
+                if telemetry and start_time is not None:
+                    telemetry.record_timing(
+                        "search.total", max(0.0, telemetry.now() - start_time)
+                    )
+                return result
+
             def _empty_response() -> Dict[str, List[Dict]]:
                 return {"cmu": [], "anti_llm": [], "rap_db": []}
 
             if not source_word or not source_word.strip():
-                return _empty_response()
+                if telemetry:
+                    telemetry.increment("search.empty_input")
+                return finalize(_empty_response())
 
             source_word = source_word.lower().strip()
+
+            if telemetry:
+                telemetry.annotate("search.normalized_source", source_word)
 
             try:
                 min_conf_threshold = float(min_confidence)
@@ -95,6 +426,9 @@ class SearchService:
             if min_conf_threshold < 0:
                 min_conf_threshold = 0.0
             min_confidence = min_conf_threshold
+
+            if telemetry:
+                telemetry.annotate("search.min_confidence", min_confidence)
 
             def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
                 """Return ``value`` coerced to a list of non-empty strings."""
@@ -107,7 +441,7 @@ class SearchService:
                     return [value] if value.strip() else []
                 return [str(value)]
 
-            normalize_name = self.normalize_source_name
+            normalize_name = self.normalize_filter_label
 
             def _normalized_set(value: Optional[List[str] | str]) -> Set[str]:
                 """Return a set of normalised filter names for user-supplied values."""
@@ -128,8 +462,17 @@ class SearchService:
                 except (TypeError, ValueError):
                     return None
 
-            def _prepare_confidence_defaults(entry: Dict) -> float:
-                """Populate common confidence fields and return the comparison score."""
+            def _ensure_score_fields(entry: Dict) -> float:
+                """Ensure an entry carries both `combined_score` and `confidence`, returning the value used for downstream filtering."""
+
+                cache = entry.get("_confidence_cache")
+                if cache is not None:
+                    cached_combined, cached_confidence, cached_score = cache
+                    if (
+                        entry.get("combined_score") == cached_combined
+                        and entry.get("confidence") == cached_confidence
+                    ):
+                        return cached_score
 
                 combined_value = _coerce_float(entry.get("combined_score"))
                 confidence_value = _coerce_float(entry.get("confidence"))
@@ -147,6 +490,12 @@ class SearchService:
                 )
                 entry["confidence"] = (
                     confidence_value if confidence_value is not None else score_for_filter
+                )
+
+                entry["_confidence_cache"] = (
+                    entry.get("combined_score"),
+                    entry.get("confidence"),
+                    score_for_filter,
                 )
 
                 return score_for_filter
@@ -183,6 +532,9 @@ class SearchService:
             include_cultural = "cultural" in selected_sources
             include_anti_llm = "anti-llm" in selected_sources
 
+            if telemetry:
+                telemetry.annotate("search.selected_sources", sorted(selected_sources))
+
             filters_active = bool(
                 cultural_filters
                 or genre_filters
@@ -197,8 +549,13 @@ class SearchService:
                 or bradley_filters
             )
 
+            if telemetry:
+                telemetry.annotate("search.filters_active", filters_active)
+
             if limit <= 0:
-                return _empty_response()
+                if telemetry:
+                    telemetry.increment("search.limit_exhausted")
+                return finalize(_empty_response())
 
             timing_data: Dict[str, float] = {"phonetic": 0.0, "cultural": 0.0, "anti_llm": 0.0}
 
@@ -297,7 +654,25 @@ class SearchService:
 
                 return defaults
 
+            def _compose_pattern(
+                source_value: Optional[str],
+                target_value: Optional[str],
+                is_multi: bool,
+            ) -> str:
+                """Return a formatted rhyme pattern using a shared connector."""
+
+                source_text = str(source_value or source_word)
+                target_text = str(target_value or "").strip()
+                if not target_text:
+                    return source_text
+                connector = " // " if is_multi and target_text else " / "
+                return f"{source_text}{connector}{target_text}"
+
             def _sanitize_feature_profile(entry: Dict[str, Any]) -> Dict[str, Any]:
+                if entry.get("_feature_profile_sanitized"):
+                    profile_obj = entry.get("feature_profile")
+                    return profile_obj if isinstance(profile_obj, dict) else {}
+
                 profile_obj = entry.get("feature_profile")
                 if profile_obj is None:
                     profile_dict: Dict[str, Any] = {}
@@ -332,31 +707,25 @@ class SearchService:
                 entry.pop("bradley_device", None)
                 entry.pop("assonance_score", None)
                 entry.pop("consonance_score", None)
+                entry["_feature_profile_sanitized"] = True
                 return profile_dict
 
             def _ensure_target_phonetics(entry: Dict[str, Any]) -> Dict[str, Any]:
+                if entry.get("_target_phonetics_ready"):
+                    target_profile = entry.get("target_phonetics")
+                    return target_profile if isinstance(target_profile, dict) else {}
+
                 target_profile = entry.get("target_phonetics")
-                if isinstance(target_profile, dict):
+                if isinstance(target_profile, dict) and target_profile:
+                    entry["_target_phonetics_ready"] = True
                     return target_profile
                 target_word = entry.get("target_word")
                 profile = _build_word_phonetics(target_word)
                 entry["target_phonetics"] = profile
+                entry["_target_phonetics_ready"] = True
                 return profile
 
-            def _fallback_signature(word: str) -> Set[str]:
-                """Lightweight rhyme signature used when no analyzer data is available."""
-
-                cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
-                if not cleaned:
-                    return set()
-                vowels = re.findall(r"[aeiou]+", cleaned)
-                last_vowel = vowels[-1] if vowels else ""
-                ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
-                signature_bits: List[str] = []
-                if last_vowel:
-                    signature_bits.append(f"v:{last_vowel}")
-                signature_bits.append(f"e:{ending}")
-                return {"|".join(signature_bits)}
+            fallback_signature = self._build_spelling_signature
 
             # Build the source word signature set using progressively simpler
             # strategies so that downstream comparisons always have at least a
@@ -376,7 +745,7 @@ class SearchService:
                 except Exception:
                     source_signature_set = set()
             if not source_signature_set:
-                source_signature_set = _fallback_signature(source_anchor_word or source_word)
+                source_signature_set = fallback_signature(source_anchor_word or source_word)
 
             source_signature_list = sorted(source_signature_set)
 
@@ -384,15 +753,14 @@ class SearchService:
             # filters can discard low-quality matches without leaving the
             # response empty.
             reference_limit = max(limit * 2, 10)
-            try:
-                cmu_candidates = get_cmu_rhymes(
+            with timed("search.branch.phonetic.lookup") as lookup_meta:
+                cmu_candidates = self._lookup_cmu_rhymes(
                     source_word,
-                    limit=reference_limit,
-                    analyzer=analyzer,
-                    cmu_loader=cmu_loader,
+                    reference_limit,
+                    analyzer,
+                    cmu_loader,
                 )
-            except Exception:
-                cmu_candidates = []
+                lookup_meta["candidate_count"] = len(cmu_candidates)
 
             reference_similarity = 0.0
             for candidate in cmu_candidates:
@@ -414,10 +782,9 @@ class SearchService:
                 lookup_terms = {source_word}
                 if source_anchor_word and source_anchor_word != source_word:
                     lookup_terms.add(source_anchor_word)
-                try:
-                    db_candidate_words = self.repository.fetch_related_words(lookup_terms)
-                except Exception:
-                    db_candidate_words = set()
+                with timed("search.branch.phonetic.related_words") as related_meta:
+                    db_candidate_words = self._fetch_related_words_cached(lookup_terms)
+                    related_meta["candidate_count"] = len(db_candidate_words)
 
                 for candidate_word in db_candidate_words:
                     if not candidate_word or candidate_word == source_word:
@@ -460,6 +827,9 @@ class SearchService:
             module1_seed_payload: List[Dict] = []
             aggregated_seed_signatures: Set[str] = set(source_signature_set)
             delivered_words_set: Set[str] = set()
+            phonetic_branch_start = (
+                telemetry.now() if telemetry and include_phonetic else None
+            )
             if include_phonetic:
                 branch_start = perf_counter()
                 try:
@@ -634,79 +1004,114 @@ class SearchService:
                             "source_anchor": source_anchor_word,
                             "anchor_display": anchor_display or source_phonetic_profile.get("anchor_display"),
                         }
-    
-                        entry["phonetic_sim"] = alignment.get("similarity", entry["phonetic_sim"])
-                        if alignment.get("rarity") is not None:
-                            entry["rarity_score"] = alignment["rarity"]
-                        if alignment.get("combined") is not None:
-                            entry["combined_score"] = alignment["combined"]
-                            try:
-                                entry["confidence"] = max(
-                                    float(entry.get("confidence", 0.0)),
-                                    float(alignment["combined"]),
-                                )
-                            except (TypeError, ValueError):
-                                entry["confidence"] = alignment["combined"]
-                        if alignment.get("rhyme_type"):
-                            entry["rhyme_type"] = alignment["rhyme_type"]
-                        entry["matched_signatures"] = alignment.get("signature_matches", [])
-                        entry["target_rhyme_signatures"] = alignment.get("target_signatures", [])
-                        features = alignment.get("features")
-                        if features:
-                            entry["phonetic_features"] = features
-    
-                        # Normalize optional feature profile information from the
-                        # alignment payload so that downstream UI components always
-                        # interact with plain dictionaries.
-                        feature_profile_obj = alignment.get("feature_profile") or {}
-                        feature_profile: Dict[str, Any] = {}
-                        if feature_profile_obj:
-                            if isinstance(feature_profile_obj, dict):
-                                feature_profile = dict(feature_profile_obj)
-                            else:
-                                try:
-                                    feature_profile = dict(feature_profile_obj)
-                                except Exception:
-                                    feature_profile = {}
-                        entry["feature_profile"] = feature_profile
-                        if feature_profile and entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
-                            feature_profile["rhyme_type"] = entry["rhyme_type"]
-                        sanitized_profile = _sanitize_feature_profile(entry)
-                        if sanitized_profile:
-                            syllable_span = sanitized_profile.get("syllable_span")
-                            if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                                entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                            stress_alignment = sanitized_profile.get("stress_alignment")
-                            if stress_alignment is not None:
-                                entry["stress_alignment"] = stress_alignment
-                            internal_score = sanitized_profile.get("internal_rhyme_score")
-                            if internal_score is not None:
-                                entry["internal_rhyme_score"] = internal_score
-    
-                        prosody_profile = alignment.get("prosody_profile")
-                        if prosody_profile:
-                            entry["prosody_profile"] = prosody_profile
-    
-                        _ensure_target_phonetics(entry)
-    
-                        score_for_filter = _prepare_confidence_defaults(entry)
-                        if score_for_filter < min_confidence:
-                            continue
-    
-                        phonetic_entries.append(entry)
-    
-                    phonetic_entries.sort(
-                        key=lambda entry: (
-                            entry.get("combined_score", entry.get("confidence", 0.0)),
-                            entry.get("phonetic_sim", 0.0),
+                    pattern_source = candidate_source_phrase or source_word
+                    entry = {
+                        "source_word": pattern_source,
+                        "target_word": target_text,
+                        "artist": "CMU Pronouncing Dictionary",
+                        "song": "Phonetic Match",
+                        "pattern": _compose_pattern(
+                            pattern_source, target_text, entry_is_multi
                         ),
-                        reverse=True,
-                    )
-    
-                    delivered_words_set = {
-                        str(item.get("target_word", "")).strip().lower()
-                        for item in phonetic_entries
-                        if item.get("target_word")
+                        "distance": None,
+                        "confidence": combined,
+                        "combined_score": combined,
+                        "phonetic_sim": similarity,
+                        "rarity_score": rarity_value,
+                        "cultural_sig": "phonetic",
+                        "genre": None,
+                        "source_context": "Phonetic match suggested by the CMU Pronouncing Dictionary.",
+                        "target_context": "",
+                        "result_source": "phonetic",
+                        "source_rhyme_signatures": source_signature_list,
+                        "source_phonetic_profile": source_phonetic_profile,
+                        "phonetic_threshold": phonetic_threshold,
+                        "is_multi_word": entry_is_multi,
+                        "result_variant": "multi_word" if entry_is_multi else "single_word",
+                        "candidate_word": variant_candidate,
+                        "phrase_prefix": entry_prefix,
+                        "phrase_suffix": entry_suffix,
+                        "prefix_display": prefix_display or entry_prefix,
+                        "suffix_display": suffix_display or entry_suffix,
+                        "target_tokens": candidate_tokens,
+                        "candidate_syllables": candidate_syllables,
+                        "source_phrase": pattern_source,
+                        "source_anchor": source_anchor_word,
+                        "anchor_display": anchor_display or source_phonetic_profile.get("anchor_display"),
+                    }
+
+                    entry["phonetic_sim"] = alignment.get("similarity", entry["phonetic_sim"])
+                    if alignment.get("rarity") is not None:
+                        entry["rarity_score"] = alignment["rarity"]
+                    if alignment.get("combined") is not None:
+                        entry["combined_score"] = alignment["combined"]
+                        try:
+                            entry["confidence"] = max(
+                                float(entry.get("confidence", 0.0)),
+                                float(alignment["combined"]),
+                            )
+                        except (TypeError, ValueError):
+                            entry["confidence"] = alignment["combined"]
+                    if alignment.get("rhyme_type"):
+                        entry["rhyme_type"] = alignment["rhyme_type"]
+                    entry["matched_signatures"] = alignment.get("signature_matches", [])
+                    entry["target_rhyme_signatures"] = alignment.get("target_signatures", [])
+                    features = alignment.get("features")
+                    if features:
+                        entry["phonetic_features"] = features
+
+                    # Normalize optional feature profile information
+                    feature_profile_obj = alignment.get("feature_profile") or {}
+                    feature_profile: Dict[str, Any] = {}
+                    if feature_profile_obj:
+                        if isinstance(feature_profile_obj, dict):
+                            feature_profile = dict(feature_profile_obj)
+                        else:
+                            try:
+                                feature_profile = dict(feature_profile_obj)
+                            except Exception:
+                                feature_profile = {}
+                    entry["feature_profile"] = feature_profile
+                    if feature_profile and entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
+                        feature_profile["rhyme_type"] = entry["rhyme_type"]
+                    sanitized_profile = _sanitize_feature_profile(entry)
+                    if sanitized_profile:
+                        syllable_span = sanitized_profile.get("syllable_span")
+                        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
+                            entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
+                        stress_alignment = sanitized_profile.get("stress_alignment")
+                        if stress_alignment is not None:
+                            entry["stress_alignment"] = stress_alignment
+                        internal_score = sanitized_profile.get("internal_rhyme_score")
+                        if internal_score is not None:
+                            entry["internal_rhyme_score"] = internal_score
+
+                    prosody_profile = alignment.get("prosody_profile")
+                    if prosody_profile:
+                        entry["prosody_profile"] = prosody_profile
+
+                    _ensure_target_phonetics(entry)
+
+                    score_for_filter = _prepare_confidence_defaults(entry)
+                    if score_for_filter < min_confidence:
+                        continue
+
+                    phonetic_entries.append(entry)
+
+                phonetic_entries.sort(
+                    key=lambda entry: (
+                        entry.get("combined_score", entry.get("confidence", 0.0)),
+                        entry.get("phonetic_sim", 0.0),
+                    ),
+                    reverse=True,
+                )
+
+                delivered_words_set = {
+                    str(item.get("target_word", "")).strip().lower()
+                    for item in phonetic_entries
+                    if item.get("target_word")
+                }
+
                     }
     
                     rare_seed_candidates: List[Dict] = []
@@ -731,24 +1136,65 @@ class SearchService:
                         if signature_values:
                             signature_set = {str(sig) for sig in signature_values if sig}
                         else:
-                            signature_set = _fallback_signature(str(target_value))
-    
-                        aggregated_seed_signatures.update(signature_set)
-    
-                        rare_seed_candidates.append(
-                            {
-                                "word": target_value,
-                                "rarity": rarity_float,
-                                "combined": combined_float,
-                                "signatures": list(signature_set),
-                                "feature_profile": entry.get("feature_profile", {}),
-                                "prosody_profile": entry.get("prosody_profile", {}),
-                            }
-                        )
-    
-                    rare_seed_candidates.sort(
-                        key=lambda payload: (payload.get("rarity", 0.0), payload.get("combined", 0.0)),
-                        reverse=True,
+                    try:
+                        feature_profile = dict(feature_profile_obj)
+                    except Exception:
+                        feature_profile = {}
+            entry["feature_profile"] = feature_profile
+            if feature_profile and entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
+                feature_profile["rhyme_type"] = entry["rhyme_type"]
+            sanitized_profile = _sanitize_feature_profile(entry)
+            if sanitized_profile:
+                syllable_span = sanitized_profile.get("syllable_span")
+                if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
+                    entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
+                stress_alignment = sanitized_profile.get("stress_alignment")
+                if stress_alignment is not None:
+                    entry["stress_alignment"] = stress_alignment
+                internal_score = sanitized_profile.get("internal_rhyme_score")
+                if internal_score is not None:
+                    entry["internal_rhyme_score"] = internal_score
+
+            prosody_profile = alignment.get("prosody_profile")
+            if prosody_profile:
+                entry["prosody_profile"] = prosody_profile
+
+            _ensure_target_phonetics(entry)
+
+            score_for_filter = _ensure_score_fields(entry)
+            if score_for_filter < min_confidence:
+                continue
+
+            phonetic_entries.append(entry)
+
+        phonetic_entries.sort(
+            key=lambda entry: (
+                entry.get("combined_score", entry.get("confidence", 0.0)),
+                entry.get("phonetic_sim", 0.0),
+            ),
+            reverse=True,
+        )
+
+        delivered_words_set = {
+            str(item.get("target_word", "")).strip().lower()
+            for item in phonetic_entries
+            if item.get("target_word")
+        }
+
+        rare_seed_candidates: List[Dict] = []
+        for entry in phonetic_entries:
+            target_value = entry.get("target_word")
+            if not target_value:
+                continue
+
+            rarity_value = entry.get("rarity_score")
+            try:
+                rarity_float = float(rarity_value) if rarity_value is not None else 0.0
+            except (TypeError, ValueError):
+                rarity_float = 0.0
+
+            combined_value = entry.get("combined_score", entry.get("confidence", 0.0
+
                     )
     
                     max_seed_count = max(3, min(6, limit))
@@ -760,6 +1206,17 @@ class SearchService:
                         module1_seed_payload.append(candidate)
                 finally:
                     timing_data["phonetic"] += perf_counter() - branch_start
+
+            if telemetry and phonetic_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.phonetic",
+                    max(0.0, telemetry.now() - phonetic_branch_start),
+                    {
+                        "result_count": len(phonetic_entries),
+                        "seed_payload": len(module1_seed_payload),
+                        "delivered_candidates": len(delivered_words_set),
+                    },
+                )
 
             fetch_limit = None
 
@@ -897,49 +1354,47 @@ class SearchService:
                     pass
 
                 _sanitize_feature_profile(entry)
+                entry.pop("_feature_profile_sanitized", None)
                 _ensure_target_phonetics(entry)
+                entry.pop("_target_phonetics_ready", None)
                 return entry
 
-            if include_cultural:
-                branch_start = perf_counter()
+            source_results: List[Tuple] = []
+            target_results: List[Tuple] = []
+
+            cultural_branch_start = (
+                telemetry.now() if telemetry and include_cultural else None
+            )
+
+            if include_cultural and self.repository:
                 try:
-                    source_results: List[Tuple] = []
-                    target_results: List[Tuple] = []
+                    with timed("search.branch.cultural.query") as query_meta:
+                        source_results, target_results = self.repository.fetch_cultural_matches(
+                            source_word,
+                            min_confidence=min_confidence,
+                            phonetic_threshold=phonetic_threshold,
+                            cultural_filters=sorted(cultural_filters),
+                            genre_filters=sorted(genre_filters),
+                            max_line_distance=max_line_distance,
+                            limit=fetch_limit,
+                        )
+                        query_meta["source_rows"] = len(source_results)
+                        query_meta["target_rows"] = len(target_results)
+                except Exception:
+                    source_results, target_results = [], []
 
-                    if self.repository:
-                        try:
-                            source_results, target_results = self.repository.fetch_cultural_matches(
-                                source_word,
-                                min_confidence=min_confidence,
-                                phonetic_threshold=phonetic_threshold,
-                                cultural_filters=sorted(cultural_filters),
-                                genre_filters=sorted(genre_filters),
-                                max_line_distance=max_line_distance,
-                                limit=fetch_limit,
-                            )
-                        except Exception:
-                            source_results, target_results = [], []
+            def build_entry(row: Tuple, swap: bool = False) -> Optional[Dict]:
+                entry = {
+                    "source_word": row[0],
+                    "target_word": row[1],
+                    "artist": row[2],
+                    "song": row[3],
+                    "pattern": row[4],
+                    "genre": row[5],
+                    "distance": row[6],
+                    "confidence": row[7],
+                    "phonetic_sim": row[8],
 
-                    def build_entry(row: Tuple, swap: bool = False) -> Optional[Dict]:
-                        entry = {
-                            "source_word": row[0],
-                            "target_word": row[1],
-                            "artist": row[2],
-                            "song": row[3],
-                            "pattern": row[4],
-                            "genre": row[5],
-                            "distance": row[6],
-                            "confidence": row[7],
-                            "phonetic_sim": row[8],
-                            "cultural_sig": row[9],
-                            "source_context": row[10],
-                            "target_context": row[11],
-                            "result_source": "cultural",
-                            "combined_score": row[7],
-                            "source_phonetic_profile": source_phonetic_profile,
-                            "source_rhyme_signatures": source_signature_list,
-                            "phonetic_threshold": phonetic_threshold,
-                        }
 
                         if swap:
                             swapped_source = row[1]
@@ -989,10 +1444,28 @@ class SearchService:
                 )
             )
 
+            if telemetry and cultural_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.cultural",
+                    max(0.0, telemetry.now() - cultural_branch_start),
+                    {
+                        "result_count": len(cultural_entries),
+                        "source_rows": len(source_results),
+                        "target_rows": len(target_results),
+                    },
+                )
+
             anti_llm_entries: List[Dict] = []
+            anti_branch_start = (
+                telemetry.now() if telemetry and include_anti_llm else None
+            )
             if include_anti_llm:
-                branch_start = perf_counter()
-                try:
+            anti_llm_entries: List[Dict] = []
+            anti_branch_start = (
+                telemetry.now() if telemetry and include_anti_llm else None
+            )
+            if include_anti_llm:
+                with timed("search.branch.anti_llm.generate") as anti_meta:
                     anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
                         source_word,
                         limit=limit,
@@ -1000,66 +1473,48 @@ class SearchService:
                         seed_signatures=aggregated_seed_signatures,
                         delivered_words=delivered_words_set,
                     )
-                    for pattern in anti_patterns:
-                        feature_profile = getattr(pattern, "feature_profile", {}) or {}
-                        syllable_span = getattr(pattern, "syllable_span", None)
-                        stress_alignment = getattr(pattern, "stress_alignment", None)
-                        internal_rhyme = None
-                        if isinstance(feature_profile, dict):
-                            internal_rhyme = feature_profile.get("internal_rhyme_score")
-                        confidence_float = _coerce_float(getattr(pattern, "confidence", None))
-                        if confidence_float is None:
-                            confidence_float = 0.0
-                        combined_metric = getattr(pattern, "combined", None)
-                        if combined_metric is None:
-                            combined_metric = getattr(pattern, "combined_score", None)
-                        combined_float = _coerce_float(combined_metric)
-                        entry_payload = {
-                            "source_word": source_word,
-                            "target_word": pattern.target_word,
-                            "pattern": f"{source_word} / {pattern.target_word}",
-                            "confidence": confidence_float,
-                            "rarity_score": pattern.rarity_score,
-                            "llm_weakness_type": pattern.llm_weakness_type,
-                            "cultural_depth": pattern.cultural_depth,
-                            "result_source": "anti_llm",
-                            "source_rhyme_signatures": source_signature_list,
-                            "source_phonetic_profile": source_phonetic_profile,
-                            "phonetic_threshold": phonetic_threshold,
-                            "feature_profile": feature_profile,
-                            "bradley_device": getattr(pattern, "bradley_device", None),
-                            "stress_alignment": stress_alignment,
-                            "internal_rhyme_score": internal_rhyme,
-                        }
-                        is_multi = " " in str(pattern.target_word or "").strip()
-                        entry_payload["is_multi_word"] = is_multi
-                        entry_payload["result_variant"] = "multi_word" if is_multi else "single_word"
-                        if is_multi and pattern.target_word:
-                            entry_payload["pattern"] = f"{source_word} // {pattern.target_word}"
-                        entry_payload.setdefault("source_phrase", source_word)
-                        entry_payload.setdefault("source_anchor", source_anchor_word)
-                        entry_payload.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
-                        entry_payload.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
-                        entry_payload.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
-                        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                            entry_payload["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                        prosody_payload = getattr(pattern, "prosody_profile", None)
-                        if isinstance(prosody_payload, dict):
-                            entry_payload["prosody_profile"] = prosody_payload
-                        entry_payload["combined_score"] = (
-                            combined_float if combined_float is not None else confidence_float
-                        )
-                        _sanitize_feature_profile(entry_payload)
-                        _ensure_target_phonetics(entry_payload)
-                        score_for_filter = _prepare_confidence_defaults(entry_payload)
-                        if score_for_filter < min_confidence:
-                            continue
-                        anti_llm_entries.append(entry_payload)
-                finally:
-                    timing_data["anti_llm"] += perf_counter() - branch_start
+                    anti_meta["pattern_count"] = len(anti_patterns)
+                for pattern in anti_patterns:
+                    feature_profile = getattr(pattern, "feature_profile", {}) or {}
+                    syllable_span = getattr(pattern, "syllable_span", None)
+                    stress_alignment = getattr(pat_
+
+                    anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
+                        source_word,
+                        limit=limit,
+                        module1_seeds=module1_seed_payload,
+                        seed_signatures=aggregated_seed_signatures,
+                        delivered_words=delivered_words_set,
+                    anti_meta["pattern_count"] = len(anti_patterns)
+                for pattern in anti_patterns:
+                    feature_profile = getattr(pattern, "feature_profile", {}) or {}
+                    syllable_span = getattr(pattern, "syllable_span", None)
+                    stress_alignment = getattr(pattern, "stress_alignment", None)
+                    internal_rhyme = None
+                    if isinstance(feature_profile, dict):
+                        internal_rhyme = feature_profile.get("internal_rhyme_score")
+                    confidence_float = _coerce_float(getattr(pattern, "confidence", None))
+                    if confidence_float is None:
+                        confidence_float = 0.0
+                    combined_metric = getattr(pattern, "combined", None)
+                    if combined_metric is None:
+                        combined_metric = getattr(pattern, "combined_score", None)
+                    combined_float = _coerce_float(combined_metric)
+                    entry_payload = {
+                        "source_word": source_word,
+                        "target_word": pattern.target_word,
+                        "confidence": confidence_float,
+
+
+            if telemetry and anti_branch_start is not None:
+                telemetry.record_timing(
+                    "search.branch.anti_llm",
+                    max(0.0, telemetry.now() - anti_branch_start),
+                    {"result_count": len(anti_llm_entries)},
+                )
 
             def _passes_min_confidence(entry: Dict) -> bool:
-                score = _prepare_confidence_defaults(entry)
+                score = _ensure_score_fields(entry)
                 return score >= min_confidence
 
             def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
@@ -1285,13 +1740,12 @@ class SearchService:
                 if not entry.get("result_variant"):
                     entry["result_variant"] = "multi_word" if is_multi else "single_word"
 
-                if entry.get("pattern") and target_text:
-                    connector = " // " if is_multi else " / "
+                if target_text:
                     source_value = str(entry.get("source_word", source_word))
-                    entry["pattern"] = f"{source_value}{connector}{target_text}"
-                elif not entry.get("pattern") and target_text:
-                    connector = " // " if is_multi else " / "
-                    entry["pattern"] = f"{source_word}{connector}{target_text}"
+                    if entry.get("pattern"):
+                        entry["pattern"] = _compose_pattern(source_value, target_text, is_multi)
+                    else:
+                        entry["pattern"] = _compose_pattern(source_word, target_text, is_multi)
                 if entry.get("combined_score") is None and entry.get("confidence") is not None:
                     entry["combined_score"] = entry["confidence"]
                 if entry.get("confidence") is None and entry.get("combined_score") is not None:
@@ -1306,6 +1760,7 @@ class SearchService:
                     except Exception:
                         entry["feature_profile"] = {}
                 _sanitize_feature_profile(entry)
+                entry.pop("_feature_profile_sanitized", None)
 
                 prosody_profile = entry.get("prosody_profile")
                 if prosody_profile is None:
@@ -1330,6 +1785,7 @@ class SearchService:
                 entry.setdefault("target_context", None)
                 entry.setdefault("distance", None)
                 _ensure_target_phonetics(entry)
+                entry.pop("_target_phonetics_ready", None)
 
                 bradley_value = entry.pop("_bradley_device", None)
                 if bradley_value is not None:
@@ -1347,6 +1803,8 @@ class SearchService:
                         normalized_entry = _normalize_entry(entry, category_key)
                         if not _filter_entry(normalized_entry):
                             continue
+
+                        normalized_entry.pop("_confidence_cache", None)
 
                         artist_key = str(normalized_entry.get("artist") or "").strip().lower()
                         song_key = str(normalized_entry.get("song") or "").strip().lower()
@@ -1497,6 +1955,8 @@ class SearchService:
                     if not _filter_entry(normalized_entry):
                         continue
 
+                    normalized_entry.pop("_confidence_cache", None)
+
                     normalized_entry.pop("source_word", None)
                     processed.append(normalized_entry)
 
@@ -1518,13 +1978,19 @@ class SearchService:
 
                 return processed[:capped_limit]
 
-            result_payload = {
+            return finalize({
                 "source_profile": source_phonetic_profile,
                 "cmu": _process_entries(phonetic_entries if include_phonetic else [], "cmu"),
                 "anti_llm": _process_entries(anti_llm_entries if include_anti_llm else [], "anti_llm"),
                 "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
-                "timing": timing_data,
-            }
+            })
+
+                "source_profile": source_phonetic_profile,
+                "cmu": _process_entries(phonetic_entries if include_phonetic else [], "cmu"),
+                "anti_llm": _process_entries(anti_llm_entries if include_anti_llm else [], "anti_llm"),
+                "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
+            })
+
 
             self._last_timing = dict(timing_data)
 

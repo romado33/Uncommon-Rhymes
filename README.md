@@ -48,14 +48,19 @@ The codebase targets **Python 3.10+** so it can use modern typing syntax such as
 `Sequence[str] | None`. Verify your interpreter with `python --version` before
 creating a virtual environment.
 
-`requirements.txt` lists the third-party packages exercised by the modules and
-tests:
+`requirements.txt` lists the runtime dependencies exercised by the modules and
+Gradio UI:
 
 | Package | Why it is included |
 | --- | --- |
 | `gradio` | Powers the Blocks UI defined in `rhyme_rarity/app/ui/gradio.py`. |
 | `pronouncing` | Provides a fallback pronunciation search when a word is missing from `cmudict.7b`. |
-| `pandas` | Handy for exporting rhyme searches or performing quick exploratory analysis on `patterns.db`. |
+
+Development and QA tools live in `requirements-dev.txt`, which extends the
+runtime set with Pytest so the regression suite stays runnable:
+
+| Package | Why it is included |
+| --- | --- |
 | `pytest` | Runs the regression suite under `tests/` to keep the phonetic, cultural, and anti-LLM engines aligned. |
 
 All packages are pinned to the major versions that have been exercised in the
@@ -72,15 +77,17 @@ source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 
 ### 2. Install dependencies
 
-Install all runtime and development dependencies with:
+Install the runtime stack with:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If you do not need the optional helpers (`pandas`, `pytest`) in production you
-can install just the UI stack via `pip install gradio pronouncing`, but keeping
-the full requirements file ensures the local test suite stays runnable.
+For local testing add the development tooling:
+
+```bash
+pip install -r requirements-dev.txt
+```
 
 ### 3. Launch the Gradio app
 
@@ -108,5 +115,13 @@ Running the tests ensures the fallback database creation and rhyme search behave
 - If you maintain your own rhyme database, replace `patterns.db` with your dataset. The application will automatically derive rarity scores and cultural filters from the supplied data.
 - Cultural significance filters blend values stored in your database with curated category descriptions (e.g., `classic`, `cultural-icon`, `underground`) so the dropdown always reflects available metadata. The anti-LLM cultural-depth queries automatically detect whichever `cultural_significance` labels exist in the database, allowing you to introduce custom taxonomies without code changes.
 - `app.py` contains helper methods such as `format_rhyme_results` and `search_rhymes` that you can import into other projects or wrap with alternative front-ends.
+
+## Competitive research playbook
+
+Use the materials under `docs/competitor_analysis/` when auditing competitor
+sites such as RhymeZone or B-Rhymes. The playbook explains how to capture UI
+behaviour, network payloads, and parity notes, while the templates and
+`scripts/feature_probe.py` helper make it easy to mirror competitor filters
+against the existing search service.
 
 Happy rhyming!

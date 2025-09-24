@@ -114,10 +114,11 @@ def normalize_seed_candidates(
     return normalized[:8]
 
 
-def normalize_module1_candidates(
+def normalize_seed_candidate_payloads(
     candidates: Optional[List[Any]],
     value_sanitizer: Callable[[Any, float], float] = safe_float,
 ) -> List[Dict[str, Any]]:
+    """Normalise raw seed candidate payloads into a consistent structure of word, similarity, combined, and rarity scores."""
     normalized: List[Dict[str, Any]] = []
     if not candidates:
         return normalized
@@ -226,6 +227,7 @@ def expand_from_seed_candidates(
     cmu_candidates_fn: Optional[Callable[[str, int, Any], List[Any]]],
     seed_analyzer: Any,
     stats: Optional[Dict[str, int]] = None,
+    stat_recorder: Optional[Callable[[str, int], None]] = None,
     value_sanitizer: Callable[[Any, float], float] = safe_float,
     fetch_neighbors: Optional[Callable[[str, int], List[Dict[str, Any]]]] = None,
     fetch_suffix_matches: Optional[Callable[[str, int], List[Dict[str, Any]]]] = None,
@@ -286,7 +288,10 @@ def expand_from_seed_candidates(
                 raw_candidates = []
 
             candidate_dicts.extend(
-                (module1_normalizer or (lambda candidates: normalize_module1_candidates(candidates, value_sanitizer)))(
+                (
+                    module1_normalizer
+                    or (lambda candidates: normalize_seed_candidate_payloads(candidates, value_sanitizer))
+                )(
                     raw_candidates
                 )
             )
@@ -379,7 +384,9 @@ def expand_from_seed_candidates(
 
             results.append(pattern)
 
-            if stats is not None:
+            if stat_recorder is not None:
+                stat_recorder("seed_expansions", 1)
+            elif stats is not None:
                 stats["seed_expansions"] = stats.get("seed_expansions", 0) + 1
 
             seen_targets.add(normalized_target)
@@ -391,7 +398,7 @@ def expand_from_seed_candidates(
 __all__ = [
     "safe_float",
     "normalize_seed_candidates",
-    "normalize_module1_candidates",
+    "normalize_seed_candidate_payloads",
     "extract_suffixes",
     "phonetic_fingerprint",
     "expand_from_seed_candidates",

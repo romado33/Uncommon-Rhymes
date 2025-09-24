@@ -66,6 +66,7 @@ def find_rare_combinations(
     cultural_weights: Mapping[str, float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    stat_recorder: Optional[Callable[[str, int], None]] = None,
 ) -> List[AntiLLMPattern]:
     rows = repository.fetch_rare_combinations(source_word, limit * 3)
     patterns: List[AntiLLMPattern] = []
@@ -94,7 +95,9 @@ def find_rare_combinations(
         attach_profile(pattern)
         patterns.append(pattern)
 
-        if stats is not None:
+        if stat_recorder is not None:
+            stat_recorder("rare_patterns_generated", 1)
+        elif stats is not None:
             stats["rare_patterns_generated"] = stats.get("rare_patterns_generated", 0) + 1
 
         if len(patterns) >= limit:
@@ -110,6 +113,7 @@ def find_phonological_challenges(
     analyze_complexity: Callable[[str, str], float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    stat_recorder: Optional[Callable[[str, int], None]] = None,
 ) -> List[AntiLLMPattern]:
     rows = repository.fetch_phonological_challenges(source_word, limit * 2)
     patterns: List[AntiLLMPattern] = []
@@ -134,7 +138,9 @@ def find_phonological_challenges(
         attach_profile(pattern)
         patterns.append(pattern)
 
-        if stats is not None:
+        if stat_recorder is not None:
+            stat_recorder("phonological_challenges", 1)
+        elif stats is not None:
             stats["phonological_challenges"] = stats.get("phonological_challenges", 0) + 1
 
         if len(patterns) >= limit:
@@ -150,6 +156,7 @@ def find_cultural_depth_patterns(
     cultural_weights: Mapping[str, float],
     attach_profile: Callable[[AntiLLMPattern], None],
     stats: Optional[Dict[str, int]] = None,
+    stat_recorder: Optional[Callable[[str, int], None]] = None,
 ) -> List[AntiLLMPattern]:
     rows = repository.fetch_cultural_depth_patterns(source_word, limit * 2)
     patterns: List[AntiLLMPattern] = []
@@ -173,7 +180,9 @@ def find_cultural_depth_patterns(
         attach_profile(pattern)
         patterns.append(pattern)
 
-        if stats is not None:
+        if stat_recorder is not None:
+            stat_recorder("cultural_patterns_found", 1)
+        elif stats is not None:
             stats["cultural_patterns_found"] = stats.get("cultural_patterns_found", 0) + 1
 
         if len(patterns) >= limit:
