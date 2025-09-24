@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
+from rhyme_rarity.utils.observability import get_logger
 
 from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER, VOWEL_PHONEMES
 from .feature_profile import (
@@ -53,8 +54,14 @@ class EnhancedPhoneticAnalyzer:
         self._phrase_component_cache: OrderedDict[
             Tuple[str, Optional[int]], PhraseComponents
         ] = OrderedDict()
-
-        print("📊 Enhanced Core Phonetic Analyzer initialized")
+        self._logger = get_logger(__name__).bind(component="phonetic_analyzer")
+        self._logger.info(
+            "Enhanced phonetic analyzer initialised",
+            context={
+                "cmu_loader": type(self.cmu_loader).__name__,
+                "rarity_map": type(self.rarity_map).__name__,
+            },
+        )
     
     def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
         """Initialize vowel sound groupings for phonetic analysis"""
@@ -141,6 +148,8 @@ class EnhancedPhoneticAnalyzer:
         phonetic computations when upstream resources (e.g. CMU dictionaries)
         change within long-running processes.
         """
+
+        self._logger.info("Clearing phonetic analyzer caches")
 
         with self._cache_lock:
             self._pronunciation_cache.clear()

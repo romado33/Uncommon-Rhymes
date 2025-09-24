@@ -21,6 +21,14 @@ from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
 from ..data.database import SQLiteRhymeRepository
+from ...utils.observability import (
+    add_span_attributes,
+    create_counter,
+    create_histogram,
+    get_logger,
+    record_exception,
+    start_span,
+)
 from ...utils.telemetry import StructuredTelemetry
 
 
@@ -55,6 +63,40 @@ class RhymeQueryOrchestrator:
         self.telemetry = telemetry or StructuredTelemetry()
         self._latest_trace: Dict[str, Any] = {}
 
+        repository_name = type(repository).__name__
+        self._logger = get_logger(__name__).bind(
+            component="rhyme_query_orchestrator",
+            repository=repository_name,
+        )
+
+        self._metric_request_total = create_counter(
+            "rhyme_search_requests_total",
+            "Total rhyme search requests received.",
+        )
+        self._metric_request_failures = create_counter(
+            "rhyme_search_request_failures_total",
+            "Total rhyme search requests that raised an exception.",
+        )
+        self._metric_request_duration = create_histogram(
+            "rhyme_search_request_seconds",
+            "Latency of rhyme search requests.",
+        )
+        self._metric_cache_hits = create_counter(
+            "rhyme_search_cache_hits_total",
+            "Cache hits recorded by the rhyme search orchestrator.",
+            label_names=("cache",),
+        )
+        self._metric_cache_misses = create_counter(
+            "rhyme_search_cache_misses_total",
+            "Cache misses recorded by the rhyme search orchestrator.",
+            label_names=("cache",),
+        )
+        self._metric_fallback_events = create_counter(
+            "rhyme_search_fallback_events_total",
+            "Fallback events triggered within the rhyme search pipeline.",
+            label_names=("stage",),
+        )
+
         self._cache_lock = threading.RLock()
         self._max_cache_entries = 256
         self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
@@ -82,6 +124,16 @@ class RhymeQueryOrchestrator:
             if max_concurrent > 0:
                 self._search_semaphore = threading.BoundedSemaphore(max_concurrent)
 
+        self._logger.info(
+            "Rhyme query orchestrator initialised",
+            context={
+                "db_path": getattr(repository, "db_path", None),
+                "max_cache_entries": self._max_cache_entries,
+                "max_concurrent_searches": max_concurrent_searches,
+                "search_timeout": self._search_timeout,
+            },
+        )
+
     def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
         self.phonetic_analyzer = analyzer
         if analyzer is not None and getattr(analyzer, "cmu_loader", None):
@@ -104,6 +156,11 @@ class RhymeQueryOrchestrator:
         Exposed so API consumers can explicitly reset caches if upstream data
         changes, e.g. when refreshing database content in long-running sessions.
         """
+
+        self._logger.info(
+            "Clearing search caches",
+            context={"caches": ["fallback_signature", "cmu_rhyme", "related_words"]},
+        )
 
         with self._cache_lock:
             self._fallback_signature_cache.clear()
@@ -167,39 +224,106 @@ class RhymeQueryOrchestrator:
         while len(cache) > self._max_cache_entries:
             cache.popitem(last=False)
 
+    def _record_cache_event(
+        self,
+        cache_name: str,
+        *,
+        hit: bool,
+        span: Optional[Any] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        metric = self._metric_cache_hits if hit else self._metric_cache_misses
+        metric.labels(cache=cache_name).inc()
+        context = {"cache": cache_name, "hit": hit}
+        if details:
+            context.update({key: value for key, value in details.items() if value is not None})
+        log = self._logger.debug if hit else self._logger.info
+        log(
+            "Cache lookup %s",
+            "hit" if hit else "miss",
+            context=context,
+        )
+        if span is not None:
+            span_attributes = {f"cache.{cache_name}.hit": hit}
+            if details and "size" in details:
+                span_attributes[f"cache.{cache_name}.size"] = details["size"]
+            add_span_attributes(span, span_attributes)
+
+    def _record_fallback(
+        self,
+        stage: str,
+        *,
+        reason: str,
+        span: Optional[Any] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._metric_fallback_events.labels(stage=stage).inc()
+        context = {"stage": stage, "reason": reason}
+        if details:
+            context.update({key: value for key, value in details.items() if value is not None})
+        self._logger.info("Fallback engaged", context=context)
+        if span is not None:
+            span_attributes = {f"fallback.{stage}": True, f"fallback.{stage}.reason": reason}
+            if details and "word" in details:
+                span_attributes[f"fallback.{stage}.word"] = details["word"]
+            add_span_attributes(span, span_attributes)
+
     def _build_spelling_signature(self, word: Optional[str]) -> Set[str]:
         """Build and cache a spelling-based signature (last vowel and ending) for fallback rhyme comparisons."""
 
         cache_key = (word or "").strip().lower()
-        with self._cache_lock:
-            cached = self._fallback_signature_cache.get(cache_key)
-            if cached is not None:
-                self._fallback_signature_cache.move_to_end(cache_key)
-                return set(cached)
+        with start_span(
+            "search.cache.fallback_signature",
+            {"word": cache_key or ""},
+        ) as span:
+            with self._cache_lock:
+                cached = self._fallback_signature_cache.get(cache_key)
+                if cached is not None:
+                    self._fallback_signature_cache.move_to_end(cache_key)
+                    self._record_cache_event(
+                        "fallback_signature",
+                        hit=True,
+                        span=span,
+                        details={"word": cache_key, "size": len(cached)},
+                    )
+                    return set(cached)
 
-        cleaned = re.sub(r"[^a-z]", "", cache_key)
-        if not cleaned:
-            signature_tuple: Tuple[str, ...] = tuple()
-        else:
-            vowels = re.findall(r"[aeiou]+", cleaned)
-            last_vowel = vowels[-1] if vowels else ""
-            ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
-            signature_bits: List[str] = []
-            if last_vowel:
-                signature_bits.append(f"v:{last_vowel}")
-            signature_bits.append(f"e:{ending}")
-            signature_tuple = ("|".join(signature_bits),)
+            cleaned = re.sub(r"[^a-z]", "", cache_key)
+            if not cleaned:
+                signature_tuple: Tuple[str, ...] = tuple()
+            else:
+                vowels = re.findall(r"[aeiou]+", cleaned)
+                last_vowel = vowels[-1] if vowels else ""
+                ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+                signature_bits: List[str] = []
+                if last_vowel:
+                    signature_bits.append(f"v:{last_vowel}")
+                signature_bits.append(f"e:{ending}")
+                signature_tuple = ("|".join(signature_bits),)
 
-        with self._cache_lock:
-            existing = self._fallback_signature_cache.get(cache_key)
-            if existing is not None:
-                self._fallback_signature_cache.move_to_end(cache_key)
-                return set(existing)
+            with self._cache_lock:
+                existing = self._fallback_signature_cache.get(cache_key)
+                if existing is not None:
+                    self._fallback_signature_cache.move_to_end(cache_key)
+                    self._record_cache_event(
+                        "fallback_signature",
+                        hit=True,
+                        span=span,
+                        details={"word": cache_key, "size": len(existing)},
+                    )
+                    return set(existing)
 
-            self._fallback_signature_cache[cache_key] = signature_tuple
-            self._trim_cache(self._fallback_signature_cache)
+                self._fallback_signature_cache[cache_key] = signature_tuple
+                self._trim_cache(self._fallback_signature_cache)
 
-        return set(signature_tuple)
+            self._record_cache_event(
+                "fallback_signature",
+                hit=False,
+                span=span,
+                details={"word": cache_key, "size": len(signature_tuple)},
+            )
+
+            return set(signature_tuple)
 
     def _lookup_cmu_rhymes(
         self,
@@ -216,38 +340,66 @@ class RhymeQueryOrchestrator:
             id(analyzer) if analyzer is not None else None,
             id(cmu_loader) if cmu_loader is not None else None,
         )
-        with self._cache_lock:
-            cached = self._cmu_rhyme_cache.get(cache_key)
-            if cached is not None:
-                self._cmu_rhyme_cache.move_to_end(cache_key)
-                return list(cached)
+        with start_span(
+            "search.cache.cmu_lookup",
+            {"source_word": source_word, "limit": int(limit)},
+        ) as span:
+            with self._cache_lock:
+                cached = self._cmu_rhyme_cache.get(cache_key)
+                if cached is not None:
+                    self._cmu_rhyme_cache.move_to_end(cache_key)
+                    self._record_cache_event(
+                        "cmu_rhyme",
+                        hit=True,
+                        span=span,
+                        details={"word": source_word, "limit": limit, "size": len(cached)},
+                    )
+                    return list(cached)
 
-        repository = getattr(self, "cmu_repository", None)
-        try:
-            if repository is None:
-                results = []
-            else:
-                results = repository.lookup(
-                    source_word,
-                    limit,
-                    analyzer=analyzer,
-                    cmu_loader=cmu_loader,
+            repository = getattr(self, "cmu_repository", None)
+            try:
+                if repository is None:
+                    results: List[Any] = []
+                else:
+                    results = repository.lookup(
+                        source_word,
+                        limit,
+                        analyzer=analyzer,
+                        cmu_loader=cmu_loader,
+                    )
+            except Exception as exc:
+                self._logger.warning(
+                    "CMU repository lookup failed",
+                    context={"source_word": source_word, "limit": limit, "error": str(exc)},
                 )
-        except Exception:
-            results = []
+                record_exception(span, exc)
+                results = []
 
-        cached_results = tuple(results)
+            cached_results = tuple(results)
 
-        with self._cache_lock:
-            existing = self._cmu_rhyme_cache.get(cache_key)
-            if existing is not None:
-                self._cmu_rhyme_cache.move_to_end(cache_key)
-                return list(existing)
+            with self._cache_lock:
+                existing = self._cmu_rhyme_cache.get(cache_key)
+                if existing is not None:
+                    self._cmu_rhyme_cache.move_to_end(cache_key)
+                    self._record_cache_event(
+                        "cmu_rhyme",
+                        hit=True,
+                        span=span,
+                        details={"word": source_word, "limit": limit, "size": len(existing)},
+                    )
+                    return list(existing)
 
-            self._cmu_rhyme_cache[cache_key] = cached_results
-            self._trim_cache(self._cmu_rhyme_cache)
+                self._cmu_rhyme_cache[cache_key] = cached_results
+                self._trim_cache(self._cmu_rhyme_cache)
 
-        return list(cached_results)
+            self._record_cache_event(
+                "cmu_rhyme",
+                hit=False,
+                span=span,
+                details={"word": source_word, "limit": limit, "size": len(cached_results)},
+            )
+
+            return list(cached_results)
 
     def _fetch_related_words_cached(self, lookup_terms: Set[str]) -> Set[str]:
         """Return repository suggestions using an LRU-style cache."""
@@ -261,30 +413,58 @@ class RhymeQueryOrchestrator:
         if not normalized_terms:
             return set()
 
-        with self._cache_lock:
-            cached = self._related_words_cache.get(normalized_terms)
-            if cached is not None:
-                self._related_words_cache.move_to_end(normalized_terms)
-                return set(cached)
+        with start_span(
+            "search.cache.related_words",
+            {"terms": ",".join(normalized_terms)},
+        ) as span:
+            with self._cache_lock:
+                cached = self._related_words_cache.get(normalized_terms)
+                if cached is not None:
+                    self._related_words_cache.move_to_end(normalized_terms)
+                    self._record_cache_event(
+                        "related_words",
+                        hit=True,
+                        span=span,
+                        details={"terms": len(normalized_terms), "size": len(cached)},
+                    )
+                    return set(cached)
 
-        try:
-            results = self.repository.fetch_related_words(set(normalized_terms))
-        except Exception:
-            results = set()
+            try:
+                results = self.repository.fetch_related_words(set(normalized_terms))
+            except Exception as exc:
+                self._logger.warning(
+                    "Related words lookup failed",
+                    context={"terms": list(normalized_terms), "error": str(exc)},
+                )
+                record_exception(span, exc)
+                results = set()
 
-        results_set = set(results)
-        cached_tuple = tuple(sorted(results_set))
+            results_set = set(results)
+            cached_tuple = tuple(sorted(results_set))
 
-        with self._cache_lock:
-            existing = self._related_words_cache.get(normalized_terms)
-            if existing is not None:
-                self._related_words_cache.move_to_end(normalized_terms)
-                return set(existing)
+            with self._cache_lock:
+                existing = self._related_words_cache.get(normalized_terms)
+                if existing is not None:
+                    self._related_words_cache.move_to_end(normalized_terms)
+                    self._record_cache_event(
+                        "related_words",
+                        hit=True,
+                        span=span,
+                        details={"terms": len(normalized_terms), "size": len(existing)},
+                    )
+                    return set(existing)
 
-            self._related_words_cache[normalized_terms] = cached_tuple
-            self._trim_cache(self._related_words_cache)
+                self._related_words_cache[normalized_terms] = cached_tuple
+                self._trim_cache(self._related_words_cache)
 
-        return results_set
+            self._record_cache_event(
+                "related_words",
+                hit=False,
+                span=span,
+                details={"terms": len(normalized_terms), "size": len(cached_tuple)},
+            )
+
+            return results_set
 
     def _get_phrase_components_cached(
         self,
@@ -366,6 +546,18 @@ class RhymeQueryOrchestrator:
     ) -> Dict[str, List[Dict]]:
         """Search for rhymes while applying optional concurrency backpressure."""
         telemetry = getattr(self, "telemetry", None)
+        request_context: Dict[str, Any] = {
+            "source_word": source_word,
+            "limit": limit,
+            "min_confidence": min_confidence,
+        }
+        if result_sources:
+            request_context["result_sources"] = list(result_sources)
+        if cultural_significance:
+            request_context["cultural_significance"] = list(cultural_significance)
+        if genres:
+            request_context["genres"] = list(genres)
+
         if telemetry:
             telemetry.start_trace("search_rhymes")
             telemetry.increment("search.invoked")
@@ -376,46 +568,70 @@ class RhymeQueryOrchestrator:
             telemetry.annotate("input.cultural_significance", cultural_significance)
             telemetry.annotate("input.genres", genres)
 
-        try:
-            with self._search_slot():
-                result = self._search_rhymes_internal(
-                    source_word,
-                    limit=limit,
-                    min_confidence=min_confidence,
-                    cultural_significance=cultural_significance,
-                    genres=genres,
-                    result_sources=result_sources,
-                    max_line_distance=max_line_distance,
-                    min_syllables=min_syllables,
-                    max_syllables=max_syllables,
-                    allowed_rhyme_types=allowed_rhyme_types,
-                    bradley_devices=bradley_devices,
-                    require_internal=require_internal,
-                    min_rarity=min_rarity,
-                    min_stress_alignment=min_stress_alignment,
-                    cadence_focus=cadence_focus,
-                )
-        except Exception:
-            if telemetry:
-                telemetry.increment("search.failed")
-                self._latest_trace = telemetry.snapshot()
-            else:
-                self._latest_trace = {}
-            raise
+        self._metric_request_total.inc()
+        self._logger.info("Search request received", context=request_context)
 
-        if telemetry:
+        with start_span("search.request", request_context) as request_span:
+            try:
+                with self._metric_request_duration.time():
+                    with self._search_slot():
+                        result = self._search_rhymes_internal(
+                            source_word,
+                            limit=limit,
+                            min_confidence=min_confidence,
+                            cultural_significance=cultural_significance,
+                            genres=genres,
+                            result_sources=result_sources,
+                            max_line_distance=max_line_distance,
+                            min_syllables=min_syllables,
+                            max_syllables=max_syllables,
+                            allowed_rhyme_types=allowed_rhyme_types,
+                            bradley_devices=bradley_devices,
+                            require_internal=require_internal,
+                            min_rarity=min_rarity,
+                            min_stress_alignment=min_stress_alignment,
+                            cadence_focus=cadence_focus,
+                        )
+            except Exception as exc:
+                failure_context = dict(request_context)
+                failure_context["error"] = str(exc)
+                self._metric_request_failures.inc()
+                self._logger.error("Search request failed", context=failure_context)
+                record_exception(request_span, exc)
+                if telemetry:
+                    telemetry.increment("search.failed")
+                    self._latest_trace = telemetry.snapshot()
+                else:
+                    self._latest_trace = {}
+                raise
+
             counts = {
                 key: len(value)
                 for key, value in result.items()
                 if isinstance(value, list)
             }
-            telemetry.annotate("result.counts", counts)
-            telemetry.increment("search.completed")
-            self._latest_trace = telemetry.snapshot()
-        else:
-            self._latest_trace = {}
+            self._logger.info(
+                "Search request completed",
+                context={"result_counts": counts, "source_word": source_word},
+            )
 
-        return result
+            if telemetry:
+                telemetry.annotate("result.counts", counts)
+                telemetry.increment("search.completed")
+                self._latest_trace = telemetry.snapshot()
+            else:
+                self._latest_trace = {}
+
+            add_span_attributes(
+                request_span,
+                {
+                    "search.success": True,
+                    "result.total": sum(counts.values()),
+                    "result.sources": ",".join(sorted(counts)),
+                },
+            )
+
+            return result
 
     def _search_rhymes_internal(
             self,
@@ -802,21 +1018,75 @@ class RhymeQueryOrchestrator:
             # strategies so that downstream comparisons always have at least a
             # minimal representation to work with.
             source_signature_set: Set[str] = set()
-            if cultural_engine and hasattr(cultural_engine, "derive_rhyme_signatures"):
-                try:
-                    derived_signatures = cultural_engine.derive_rhyme_signatures(source_word)
-                    source_signature_set = {sig for sig in derived_signatures if sig}
-                except Exception:
-                    source_signature_set = set()
-            if not source_signature_set and cmu_loader is not None and source_anchor_word:
-                try:
-                    source_signature_set = {
-                        sig for sig in cmu_loader.get_rhyme_parts(source_anchor_word) if sig
-                    }
-                except Exception:
-                    source_signature_set = set()
-            if not source_signature_set:
-                source_signature_set = fallback_signature(source_anchor_word or source_word)
+            signature_source = None
+            with start_span(
+                "search.signature_resolution",
+                {"source_word": source_word, "anchor": source_anchor_word or ""},
+            ) as signature_span:
+                fallback_reason: Optional[str] = None
+                if cultural_engine and hasattr(cultural_engine, "derive_rhyme_signatures"):
+                    try:
+                        derived_signatures = cultural_engine.derive_rhyme_signatures(source_word)
+                        source_signature_set = {sig for sig in derived_signatures if sig}
+                        if source_signature_set:
+                            signature_source = "cultural"
+                    except Exception as exc:
+                        self._logger.warning(
+                            "Cultural signature derivation failed",
+                            context={"source_word": source_word, "error": str(exc)},
+                        )
+                        record_exception(signature_span, exc)
+                        source_signature_set = set()
+                        fallback_reason = "cultural-error"
+
+                if not source_signature_set and cmu_loader is not None and source_anchor_word:
+                    try:
+                        source_signature_set = {
+                            sig for sig in cmu_loader.get_rhyme_parts(source_anchor_word) if sig
+                        }
+                        if source_signature_set:
+                            signature_source = "cmu"
+                    except Exception as exc:
+                        self._logger.warning(
+                            "CMU signature derivation failed",
+                            context={"source_word": source_anchor_word, "error": str(exc)},
+                        )
+                        record_exception(signature_span, exc)
+                        source_signature_set = set()
+                        fallback_reason = fallback_reason or "cmu-error"
+
+                if not source_signature_set:
+                    fallback_reason = fallback_reason or "spelling"
+                    fallback_word = source_anchor_word or source_word
+                    source_signature_set = fallback_signature(fallback_word)
+                    self._record_fallback(
+                        "signature_resolution",
+                        reason=fallback_reason,
+                        span=signature_span,
+                        details={
+                            "word": fallback_word,
+                            "signature_count": len(source_signature_set),
+                        },
+                    )
+                    signature_source = "fallback"
+
+                add_span_attributes(
+                    signature_span,
+                    {
+                        "signature.source": signature_source or "unknown",
+                        "signature.count": len(source_signature_set),
+                    },
+                )
+
+            self._logger.info(
+                "Resolved source signatures",
+                context={
+                    "source_word": source_word,
+                    "anchor": source_anchor_word,
+                    "count": len(source_signature_set),
+                    "strategy": signature_source or "unknown",
+                },
+            )
 
             source_signature_list = sorted(source_signature_set)
 

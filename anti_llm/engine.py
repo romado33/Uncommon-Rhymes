@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from rhyme_rarity.core import CmuRhymeRepository, DefaultCmuRhymeRepository
 from rhyme_rarity.utils.profile import normalize_profile_dict
 from rhyme_rarity.utils.syllables import estimate_syllable_count
+from rhyme_rarity.utils.observability import get_logger
 
 from .dataclasses import AntiLLMPattern, SeedCandidate
 from .repository import PatternRepository, SQLitePatternRepository
@@ -88,6 +89,12 @@ class AntiLLMRhymeEngine:
         self._cmu_seed_fn = None
         self._cmu_seed_repository: Optional[CmuRhymeRepository] = None
 
+        self._logger = get_logger(__name__).bind(component="anti_llm_engine")
+        self._logger.info(
+            "Anti-LLM engine initialised",
+            context={"db_path": db_path},
+        )
+
     # ------------------------------------------------------------------
     # Cache management helpers
     # ------------------------------------------------------------------
@@ -152,6 +159,7 @@ class AntiLLMRhymeEngine:
             self._pattern_cache.clear()
             self._neighbor_cache.clear()
             self._suffix_cache.clear()
+        self._logger.debug("Cleared anti-LLM caches")
 
     # ------------------------------------------------------------------
     # Dependency management
@@ -165,11 +173,16 @@ class AntiLLMRhymeEngine:
         if hasattr(rarity_map, "get_rarity"):
             self._rarity_map = rarity_map
         self._clear_caches()
+        self._logger.info(
+            "Updated anti-LLM phonetic analyzer",
+            context={"analyzer_present": analyzer is not None},
+        )
 
     def clear_cached_results(self) -> None:
         """Expose cache reset for integration with orchestration layers."""
 
         self._clear_caches()
+        self._logger.info("Anti-LLM caches cleared on request")
 
     # ------------------------------------------------------------------
     # Core helpers

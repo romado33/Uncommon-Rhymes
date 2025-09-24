@@ -11,6 +11,7 @@ from rhyme_rarity.core import (
     DefaultCmuRhymeRepository,
     EnhancedPhoneticAnalyzer,
 )
+from rhyme_rarity.utils.observability import get_logger
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
@@ -35,8 +36,23 @@ class RhymeRarityApp:
         cmu_repository: Optional[CmuRhymeRepository] = None,
     ) -> None:
         self.db_path = db_path
+        self._logger = get_logger(__name__).bind(component="app_facade")
+        self._logger.info("Initialising application facade", context={"db_path": db_path})
+
         self.repository = repository or SQLiteRhymeRepository(db_path)
-        self.repository.ensure_database()
+        try:
+            row_count = self.repository.ensure_database()
+        except Exception as exc:
+            self._logger.error(
+                "Database initialisation failed",
+                context={"db_path": db_path, "error": str(exc)},
+            )
+            raise
+        else:
+            self._logger.info(
+                "Database ready",
+                context={"db_path": db_path, "row_count": row_count},
+            )
 
         self.cmu_loader = cmu_loader or CMUDictLoader()
         self.cmu_repository = cmu_repository or DefaultCmuRhymeRepository()
@@ -75,6 +91,14 @@ class RhymeRarityApp:
             self.search_service.set_anti_llm_engine(self.anti_llm_engine)
             self.search_service.set_cmu_repository(self.cmu_repository)
 
+        self._logger.info(
+            "Application dependencies wired",
+            context={
+                "has_cultural_engine": self.cultural_engine is not None,
+                "has_anti_llm_engine": self.anti_llm_engine is not None,
+            },
+        )
+
         self._refresh_rarity_map()
 
     # Dependency management -------------------------------------------------
@@ -109,8 +133,15 @@ class RhymeRarityApp:
         if callable(updater):
             try:
                 updater(self.db_path)
-            except Exception:
-                pass
+                self._logger.info(
+                    "Phonetic rarity map refreshed",
+                    context={"db_path": self.db_path},
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "Phonetic rarity refresh failed",
+                    context={"db_path": self.db_path, "error": str(exc)},
+                )
 
 
 def _should_share_interface() -> bool:
