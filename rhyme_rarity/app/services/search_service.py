@@ -39,16 +39,140 @@ class SearchService:
         if self.cmu_loader is None and phonetic_analyzer is not None:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
 
+        self._max_cache_entries = 256
+        self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
+        self._cmu_rhyme_cache: OrderedDict[
+            Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]
+        ] = OrderedDict()
+        self._related_words_cache: OrderedDict[Tuple[str, ...], Tuple[str, ...]] = OrderedDict()
+
     def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
         self.phonetic_analyzer = analyzer
         if analyzer is not None and getattr(analyzer, "cmu_loader", None):
             self.cmu_loader = getattr(analyzer, "cmu_loader")
+        self._reset_phonetic_caches()
 
     def set_cultural_engine(self, engine: Optional[CulturalIntelligenceEngine]) -> None:
         self.cultural_engine = engine
 
     def set_anti_llm_engine(self, engine: Optional[AntiLLMRhymeEngine]) -> None:
         self.anti_llm_engine = engine
+
+    def clear_cached_results(self) -> None:
+        """Clear memoized helper caches.
+
+        Exposed so API consumers can explicitly reset caches if upstream data
+        changes, e.g. when refreshing database content in long-running sessions.
+        """
+
+        self._fallback_signature_cache.clear()
+        self._cmu_rhyme_cache.clear()
+        self._related_words_cache.clear()
+
+    def _reset_phonetic_caches(self) -> None:
+        """Drop caches derived from analyzer or CMU resources."""
+
+        self._cmu_rhyme_cache.clear()
+        self._related_words_cache.clear()
+
+    def _trim_cache(self, cache: OrderedDict[Any, Tuple[Any, ...]]) -> None:
+        """Ensure caches stay within the configured ``_max_cache_entries`` size."""
+
+        if self._max_cache_entries <= 0:
+            return
+
+        while len(cache) > self._max_cache_entries:
+            cache.popitem(last=False)
+
+    def _fallback_signature(self, word: Optional[str]) -> Set[str]:
+        """Compute a light-weight fallback signature with memoization."""
+
+        cache_key = (word or "").strip().lower()
+        cached = self._fallback_signature_cache.get(cache_key)
+        if cached is not None:
+            self._fallback_signature_cache.move_to_end(cache_key)
+            return set(cached)
+
+        cleaned = re.sub(r"[^a-z]", "", cache_key)
+        if not cleaned:
+            signature_tuple: Tuple[str, ...] = tuple()
+        else:
+            vowels = re.findall(r"[aeiou]+", cleaned)
+            last_vowel = vowels[-1] if vowels else ""
+            ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
+            signature_bits: List[str] = []
+            if last_vowel:
+                signature_bits.append(f"v:{last_vowel}")
+            signature_bits.append(f"e:{ending}")
+            signature_tuple = ("|".join(signature_bits),)
+
+        self._fallback_signature_cache[cache_key] = signature_tuple
+        self._trim_cache(self._fallback_signature_cache)
+
+        return set(signature_tuple)
+
+    def _lookup_cmu_rhymes(
+        self,
+        source_word: str,
+        limit: int,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        cmu_loader: Optional[object],
+    ) -> List[Any]:
+        """Return CMU rhyme candidates with caching."""
+
+        cache_key = (
+            source_word,
+            int(limit),
+            id(analyzer) if analyzer is not None else None,
+            id(cmu_loader) if cmu_loader is not None else None,
+        )
+        cached = self._cmu_rhyme_cache.get(cache_key)
+        if cached is not None:
+            self._cmu_rhyme_cache.move_to_end(cache_key)
+            return list(cached)
+
+        try:
+            results = get_cmu_rhymes(
+                source_word,
+                limit=limit,
+                analyzer=analyzer,
+                cmu_loader=cmu_loader,
+            )
+        except Exception:
+            results = []
+
+        self._cmu_rhyme_cache[cache_key] = tuple(results)
+        self._trim_cache(self._cmu_rhyme_cache)
+
+        return list(results)
+
+    def _fetch_related_words_cached(self, lookup_terms: Set[str]) -> Set[str]:
+        """Return repository suggestions using an LRU-style cache."""
+
+        if not lookup_terms or self.repository is None:
+            return set()
+
+        normalized_terms = tuple(
+            sorted({(term or "").strip().lower() for term in lookup_terms if term})
+        )
+        if not normalized_terms:
+            return set()
+
+        cached = self._related_words_cache.get(normalized_terms)
+        if cached is not None:
+            self._related_words_cache.move_to_end(normalized_terms)
+            return set(cached)
+
+        try:
+            results = self.repository.fetch_related_words(set(normalized_terms))
+        except Exception:
+            results = set()
+
+        results_set = set(results)
+        self._related_words_cache[normalized_terms] = tuple(sorted(results_set))
+        self._trim_cache(self._related_words_cache)
+
+        return results_set
 
     def normalize_source_name(self, name: Optional[str]) -> str:
         if name is None:
@@ -340,20 +464,7 @@ class SearchService:
                 entry["target_phonetics"] = profile
                 return profile
 
-            def _fallback_signature(word: str) -> Set[str]:
-                """Lightweight rhyme signature used when no analyzer data is available."""
-
-                cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
-                if not cleaned:
-                    return set()
-                vowels = re.findall(r"[aeiou]+", cleaned)
-                last_vowel = vowels[-1] if vowels else ""
-                ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
-                signature_bits: List[str] = []
-                if last_vowel:
-                    signature_bits.append(f"v:{last_vowel}")
-                signature_bits.append(f"e:{ending}")
-                return {"|".join(signature_bits)}
+            fallback_signature = self._fallback_signature
 
             # Build the source word signature set using progressively simpler
             # strategies so that downstream comparisons always have at least a
@@ -373,7 +484,7 @@ class SearchService:
                 except Exception:
                     source_signature_set = set()
             if not source_signature_set:
-                source_signature_set = _fallback_signature(source_anchor_word or source_word)
+                source_signature_set = fallback_signature(source_anchor_word or source_word)
 
             source_signature_list = sorted(source_signature_set)
 
@@ -381,15 +492,12 @@ class SearchService:
             # filters can discard low-quality matches without leaving the
             # response empty.
             reference_limit = max(limit * 2, 10)
-            try:
-                cmu_candidates = get_cmu_rhymes(
-                    source_word,
-                    limit=reference_limit,
-                    analyzer=analyzer,
-                    cmu_loader=cmu_loader,
-                )
-            except Exception:
-                cmu_candidates = []
+            cmu_candidates = self._lookup_cmu_rhymes(
+                source_word,
+                reference_limit,
+                analyzer,
+                cmu_loader,
+            )
 
             reference_similarity = 0.0
             for candidate in cmu_candidates:
@@ -411,10 +519,7 @@ class SearchService:
                 lookup_terms = {source_word}
                 if source_anchor_word and source_anchor_word != source_word:
                     lookup_terms.add(source_anchor_word)
-                try:
-                    db_candidate_words = self.repository.fetch_related_words(lookup_terms)
-                except Exception:
-                    db_candidate_words = set()
+                db_candidate_words = self._fetch_related_words_cached(lookup_terms)
 
                 for candidate_word in db_candidate_words:
                     if not candidate_word or candidate_word == source_word:
@@ -726,7 +831,7 @@ class SearchService:
                     if signature_values:
                         signature_set = {str(sig) for sig in signature_values if sig}
                     else:
-                        signature_set = _fallback_signature(str(target_value))
+                        signature_set = fallback_signature(str(target_value))
 
                     aggregated_seed_signatures.update(signature_set)
 
