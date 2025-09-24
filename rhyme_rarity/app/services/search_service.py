@@ -461,8 +461,8 @@ class SearchService:
                 except (TypeError, ValueError):
                     return None
 
-            def _ensure_score_fields(entry: Dict) -> float:
-                """Ensure an entry carries both `combined_score` and `confidence`, returning the value used for downstream filtering."""
+            def _confidence_score(entry: Dict) -> float:
+                """Return a coerced numeric confidence value for ``entry``."""
 
                 cache = entry.get("_confidence_cache")
                 if cache is not None:
@@ -476,20 +476,39 @@ class SearchService:
                 combined_value = _coerce_float(entry.get("combined_score"))
                 confidence_value = _coerce_float(entry.get("confidence"))
 
-                score_for_filter = (
-                    combined_value
-                    if combined_value is not None
-                    else confidence_value
-                )
-                if score_for_filter is None:
+                score_for_filter: float
+                if combined_value is not None:
+                    score_for_filter = combined_value
+                elif confidence_value is not None:
+                    score_for_filter = confidence_value
+                else:
                     score_for_filter = 0.0
 
-                entry["combined_score"] = (
-                    combined_value if combined_value is not None else score_for_filter
+                entry["_confidence_cache"] = (
+                    entry.get("combined_score"),
+                    entry.get("confidence"),
+                    score_for_filter,
                 )
-                entry["confidence"] = (
-                    confidence_value if confidence_value is not None else score_for_filter
-                )
+
+                return score_for_filter
+
+            def _prepare_confidence_defaults(entry: Dict) -> float:
+                """Normalise confidence fields on ``entry`` and return the score."""
+
+                score_for_filter = _confidence_score(entry)
+
+                combined_value = _coerce_float(entry.get("combined_score"))
+                confidence_value = _coerce_float(entry.get("confidence"))
+
+                if combined_value is None:
+                    entry["combined_score"] = score_for_filter
+                else:
+                    entry["combined_score"] = combined_value
+
+                if confidence_value is None:
+                    entry["confidence"] = score_for_filter
+                else:
+                    entry["confidence"] = confidence_value
 
                 entry["_confidence_cache"] = (
                     entry.get("combined_score"),
@@ -1023,41 +1042,15 @@ class SearchService:
                     if features:
                         entry["phonetic_features"] = features
 
-                    # Normalize optional feature profile information from the
-                    # alignment payload so that downstream UI components always
-                    # interact with plain dictionaries.
-                    feature_profile_obj = alignment.get("feature_profile") or {}
-                    feature_profile: Dict[str, Any] = {}
-                    if feature_profile_obj:
-                        if isinstance(feature_profile_obj, dict):
-                            feature_profile = dict(feature_profile_obj)
-                        else:
-                            try:
-                                feature_profile = dict(feature_profile_obj)
-                            except Exception:
-                                feature_profile = {}
-                    entry["feature_profile"] = feature_profile
-                    if feature_profile and entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
-                        feature_profile["rhyme_type"] = entry["rhyme_type"]
-                    sanitized_profile = _sanitize_feature_profile(entry)
-                    if sanitized_profile:
-                        syllable_span = sanitized_profile.get("syllable_span")
-                        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                            entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                        stress_alignment = sanitized_profile.get("stress_alignment")
-                        if stress_alignment is not None:
-                            entry["stress_alignment"] = stress_alignment
-                        internal_score = sanitized_profile.get("internal_rhyme_score")
-                        if internal_score is not None:
-                            entry["internal_rhyme_score"] = internal_score
+                    feature_profile_obj = alignment.get("feature_profile")
+                    if feature_profile_obj is not None:
+                        entry["feature_profile"] = feature_profile_obj
 
                     prosody_profile = alignment.get("prosody_profile")
                     if prosody_profile:
                         entry["prosody_profile"] = prosody_profile
 
-                    _ensure_target_phonetics(entry)
-
-                    score_for_filter = _ensure_score_fields(entry)
+                    score_for_filter = _confidence_score(entry)
                     if score_for_filter < min_confidence:
                         continue
 
@@ -1258,38 +1251,14 @@ class SearchService:
                         if features:
                             entry["phonetic_features"] = features
                         feature_profile_obj = alignment.get("feature_profile")
-                        feature_profile: Dict[str, Any] = {}
-                        if feature_profile_obj:
-                            if isinstance(feature_profile_obj, dict):
-                                feature_profile = dict(feature_profile_obj)
-                            else:
-                                try:
-                                    feature_profile = dict(feature_profile_obj)
-                                except Exception:
-                                    feature_profile = {}
-                        if feature_profile:
-                            if entry.get("rhyme_type") and "rhyme_type" not in feature_profile:
-                                feature_profile["rhyme_type"] = entry["rhyme_type"]
-                            entry["feature_profile"] = feature_profile
-                            syllable_span = feature_profile.get("syllable_span")
-                            if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                                entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                            stress_alignment = feature_profile.get("stress_alignment")
-                            if stress_alignment is not None:
-                                entry["stress_alignment"] = stress_alignment
-                            internal_score = feature_profile.get("internal_rhyme_score")
-                            if internal_score is not None:
-                                entry["internal_rhyme_score"] = internal_score
+                        if feature_profile_obj is not None:
+                            entry["feature_profile"] = feature_profile_obj
                         prosody_profile = alignment.get("prosody_profile")
                         if prosody_profile:
                             entry["prosody_profile"] = prosody_profile
                 except Exception:
                     pass
 
-                _sanitize_feature_profile(entry)
-                entry.pop("_feature_profile_sanitized", None)
-                _ensure_target_phonetics(entry)
-                entry.pop("_target_phonetics_ready", None)
                 return entry
 
             source_results: List[Tuple] = []
@@ -1463,9 +1432,7 @@ class SearchService:
                     entry_payload["combined_score"] = (
                         combined_float if combined_float is not None else confidence_float
                     )
-                    _sanitize_feature_profile(entry_payload)
-                    _ensure_target_phonetics(entry_payload)
-                    score_for_filter = _ensure_score_fields(entry_payload)
+                    score_for_filter = _confidence_score(entry_payload)
                     if score_for_filter < min_confidence:
                         continue
                     anti_llm_entries.append(entry_payload)
@@ -1478,7 +1445,7 @@ class SearchService:
                 )
 
             def _passes_min_confidence(entry: Dict) -> bool:
-                score = _ensure_score_fields(entry)
+                score = _confidence_score(entry)
                 return score >= min_confidence
 
             def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
@@ -1664,13 +1631,7 @@ class SearchService:
                     return 0.0
 
             def _confidence_value(entry: Dict) -> float:
-                metric = entry.get("combined_score")
-                if metric is None:
-                    metric = entry.get("confidence")
-                try:
-                    return float(metric)
-                except (TypeError, ValueError):
-                    return 0.0
+                return _confidence_score(entry)
 
             def _normalize_entry(entry: Dict, category_key: str) -> Dict:
                 entry["result_source"] = category_key
@@ -1695,10 +1656,7 @@ class SearchService:
                         entry["pattern"] = _compose_pattern(source_value, target_text, is_multi)
                     else:
                         entry["pattern"] = _compose_pattern(source_word, target_text, is_multi)
-                if entry.get("combined_score") is None and entry.get("confidence") is not None:
-                    entry["combined_score"] = entry["confidence"]
-                if entry.get("confidence") is None and entry.get("combined_score") is not None:
-                    entry["confidence"] = entry["combined_score"]
+                _prepare_confidence_defaults(entry)
 
                 feature_profile = entry.get("feature_profile")
                 if feature_profile is None:
@@ -1708,7 +1666,23 @@ class SearchService:
                         entry["feature_profile"] = dict(feature_profile)
                     except Exception:
                         entry["feature_profile"] = {}
-                _sanitize_feature_profile(entry)
+                profile_dict = _sanitize_feature_profile(entry)
+                if isinstance(profile_dict, dict) and profile_dict:
+                    if not entry.get("rhyme_type") and profile_dict.get("rhyme_type"):
+                        entry["rhyme_type"] = profile_dict.get("rhyme_type")
+                    syllable_span = profile_dict.get("syllable_span")
+                    if (
+                        entry.get("syllable_span") is None
+                        and isinstance(syllable_span, (list, tuple))
+                        and len(syllable_span) == 2
+                    ):
+                        entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
+                    stress_alignment = profile_dict.get("stress_alignment")
+                    if entry.get("stress_alignment") is None and stress_alignment is not None:
+                        entry["stress_alignment"] = stress_alignment
+                    internal_score = profile_dict.get("internal_rhyme_score")
+                    if entry.get("internal_rhyme_score") is None and internal_score is not None:
+                        entry["internal_rhyme_score"] = internal_score
                 entry.pop("_feature_profile_sanitized", None)
 
                 prosody_profile = entry.get("prosody_profile")
