@@ -48,14 +48,19 @@ The codebase targets **Python 3.10+** so it can use modern typing syntax such as
 `Sequence[str] | None`. Verify your interpreter with `python --version` before
 creating a virtual environment.
 
-`requirements.txt` lists the third-party packages exercised by the modules and
-tests:
+`requirements.txt` lists the runtime dependencies exercised by the modules and
+Gradio UI:
 
 | Package | Why it is included |
 | --- | --- |
 | `gradio` | Powers the Blocks UI defined in `rhyme_rarity/app/ui/gradio.py`. |
 | `pronouncing` | Provides a fallback pronunciation search when a word is missing from `cmudict.7b`. |
-| `pandas` | Handy for exporting rhyme searches or performing quick exploratory analysis on `patterns.db`. |
+
+Development and QA tools live in `requirements-dev.txt`, which extends the
+runtime set with Pytest so the regression suite stays runnable:
+
+| Package | Why it is included |
+| --- | --- |
 | `pytest` | Runs the regression suite under `tests/` to keep the phonetic, cultural, and anti-LLM engines aligned. |
 
 All packages are pinned to the major versions that have been exercised in the
@@ -72,15 +77,17 @@ source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 
 ### 2. Install dependencies
 
-Install all runtime and development dependencies with:
+Install the runtime stack with:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If you do not need the optional helpers (`pandas`, `pytest`) in production you
-can install just the UI stack via `pip install gradio pronouncing`, but keeping
-the full requirements file ensures the local test suite stays runnable.
+For local testing add the development tooling:
+
+```bash
+pip install -r requirements-dev.txt
+```
 
 ### 3. Launch the Gradio app
 
