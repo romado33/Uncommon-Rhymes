@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
+from rhyme_rarity.core import (
+    CMUDictLoader,
+    CmuRhymeRepository,
+    DefaultCmuRhymeRepository,
+    EnhancedPhoneticAnalyzer,
+)
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
@@ -27,12 +32,14 @@ class RhymeRarityApp:
         anti_llm_engine: Optional[AntiLLMRhymeEngine] = None,
         search_service: Optional[SearchService] = None,
         cmu_loader: Optional[CMUDictLoader] = None,
+        cmu_repository: Optional[CmuRhymeRepository] = None,
     ) -> None:
         self.db_path = db_path
         self.repository = repository or SQLiteRhymeRepository(db_path)
         self.repository.ensure_database()
 
         self.cmu_loader = cmu_loader or CMUDictLoader()
+        self.cmu_repository = cmu_repository or DefaultCmuRhymeRepository()
         self.phonetic_analyzer = phonetic_analyzer or EnhancedPhoneticAnalyzer(
             cmu_loader=self.cmu_loader
         )
@@ -44,6 +51,7 @@ class RhymeRarityApp:
         self.anti_llm_engine = anti_llm_engine or AntiLLMRhymeEngine(
             db_path=db_path,
             phonetic_analyzer=self.phonetic_analyzer,
+            cmu_repository=self.cmu_repository,
         )
 
         if hasattr(self.anti_llm_engine, "set_phonetic_analyzer"):
@@ -59,11 +67,13 @@ class RhymeRarityApp:
             cultural_engine=self.cultural_engine,
             anti_llm_engine=self.anti_llm_engine,
             cmu_loader=getattr(self.phonetic_analyzer, "cmu_loader", self.cmu_loader),
+            cmu_repository=self.cmu_repository,
         )
         if search_service is not None:
             self.search_service.set_phonetic_analyzer(self.phonetic_analyzer)
             self.search_service.set_cultural_engine(self.cultural_engine)
             self.search_service.set_anti_llm_engine(self.anti_llm_engine)
+            self.search_service.set_cmu_repository(self.cmu_repository)
 
         self._refresh_rarity_map()
 

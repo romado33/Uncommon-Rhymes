@@ -93,6 +93,21 @@ class DummyAntiEngine:
         return list(self._patterns)
 
 
+class DummyCmuRepository:
+    def __init__(self, results: Iterable[Any] | None = None) -> None:
+        self._results = list(results or [])
+
+    def lookup(
+        self,
+        source_word: str,
+        limit: int,
+        *,
+        analyzer: Any | None = None,
+        cmu_loader: Any | None = None,
+    ) -> list[Any]:
+        return list(self._results)
+
+
 @pytest.fixture(autouse=True)
 def patch_core_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_extract_components(phrase: str, *_: Any, **__: Any) -> types.SimpleNamespace:
@@ -113,10 +128,6 @@ def patch_core_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
         "rhyme_rarity.app.services.search_service.extract_phrase_components",
         fake_extract_components,
     )
-    monkeypatch.setattr(
-        "rhyme_rarity.app.services.search_service.get_cmu_rhymes",
-        lambda *_, **__: [("echo", 0.9, 0.8, 0.9)],
-    )
 
 
 def test_search_service_records_branch_timings() -> None:
@@ -124,6 +135,7 @@ def test_search_service_records_branch_timings() -> None:
     repo = DummyRepository()
     analyzer = DummyAnalyzer()
     anti_engine = DummyAntiEngine([DummyPattern("rhythm", confidence=0.9, rarity_score=0.8)])
+    cmu_repo = DummyCmuRepository([("echo", 0.9, 0.8, 0.9)])
 
     service = SearchService(
         repository=repo,
@@ -131,6 +143,7 @@ def test_search_service_records_branch_timings() -> None:
         cultural_engine=None,
         anti_llm_engine=anti_engine,
         telemetry=telemetry,
+        cmu_repository=cmu_repo,
     )
 
     result = service.search_rhymes("Echo", limit=5, result_sources=["phonetic", "cultural", "anti_llm"])

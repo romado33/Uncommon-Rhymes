@@ -6,6 +6,7 @@ from .analyzer import (
     RARITY_SIMILARITY_WEIGHT,
     get_cmu_rhymes,
 )
+from .cmu_repository import CmuRhymeRepository, DefaultCmuRhymeRepository
 from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER
 from .feature_profile import (
     PhoneticMatch,
@@ -26,6 +27,8 @@ __all__ = [
     "PhoneticMatch",
     "extract_phrase_components",
     "get_cmu_rhymes",
+    "CmuRhymeRepository",
+    "DefaultCmuRhymeRepository",
     "RARITY_SIMILARITY_WEIGHT",
     "RARITY_NOVELTY_WEIGHT",
 ]
