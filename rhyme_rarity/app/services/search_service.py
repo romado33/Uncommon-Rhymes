@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re
@@ -9,6 +10,7 @@ import types
 
 from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
+    clear_phrase_component_cache,
     extract_phrase_components,
     get_cmu_rhymes,
 )
@@ -42,9 +44,11 @@ class SearchService:
         self._max_cache_entries = 256
         self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
         self._cmu_rhyme_cache: OrderedDict[
-            Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]
+            Tuple[str, Optional[Any], Optional[Any]], Tuple[int, Tuple[Any, ...]]
         ] = OrderedDict()
-        self._related_words_cache: OrderedDict[Tuple[str, ...], Tuple[str, ...]] = OrderedDict()
+        self._related_words_cache: OrderedDict[
+            Tuple[Any, Tuple[str, ...]], Tuple[str, ...]
+        ] = OrderedDict()
 
     def set_phonetic_analyzer(self, analyzer: Optional[EnhancedPhoneticAnalyzer]) -> None:
         self.phonetic_analyzer = analyzer
@@ -66,16 +70,22 @@ class SearchService:
         """
 
         self._fallback_signature_cache.clear()
-        self._cmu_rhyme_cache.clear()
-        self._related_words_cache.clear()
+        self._reset_phonetic_caches()
 
     def _reset_phonetic_caches(self) -> None:
         """Drop caches derived from analyzer or CMU resources."""
 
         self._cmu_rhyme_cache.clear()
         self._related_words_cache.clear()
+        clear_phrase_component_cache()
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer and hasattr(analyzer, "clear_runtime_caches"):
+            try:
+                analyzer.clear_runtime_caches()
+            except Exception:
+                pass
 
-    def _trim_cache(self, cache: OrderedDict[Any, Tuple[Any, ...]]) -> None:
+    def _trim_cache(self, cache: OrderedDict[Any, Any]) -> None:
         """Ensure caches stay within the configured ``_max_cache_entries`` size."""
 
         if self._max_cache_entries <= 0:
@@ -83,6 +93,19 @@ class SearchService:
 
         while len(cache) > self._max_cache_entries:
             cache.popitem(last=False)
+
+    def _object_identity(self, obj: Any) -> Any:
+        """Return a stable cache identity for ``obj`` when available."""
+
+        if obj is None:
+            return None
+
+        for attr in ("db_path", "cache_key", "cache_identity", "identity"):
+            value = getattr(obj, attr, None)
+            if value not in (None, ""):
+                return value
+
+        return id(obj)
 
     def _fallback_signature(self, word: Optional[str]) -> Set[str]:
         """Compute a light-weight fallback signature with memoization."""
@@ -120,16 +143,16 @@ class SearchService:
     ) -> List[Any]:
         """Return CMU rhyme candidates with caching."""
 
-        cache_key = (
-            source_word,
-            int(limit),
-            id(analyzer) if analyzer is not None else None,
-            id(cmu_loader) if cmu_loader is not None else None,
-        )
+        analyzer_identity = self._object_identity(analyzer)
+        loader_identity = self._object_identity(cmu_loader)
+        cache_key = (source_word, analyzer_identity, loader_identity)
+
         cached = self._cmu_rhyme_cache.get(cache_key)
         if cached is not None:
+            cached_limit, cached_results = cached
             self._cmu_rhyme_cache.move_to_end(cache_key)
-            return list(cached)
+            if cached_limit >= limit:
+                return list(cached_results[:limit])
 
         try:
             results = get_cmu_rhymes(
@@ -141,7 +164,10 @@ class SearchService:
         except Exception:
             results = []
 
-        self._cmu_rhyme_cache[cache_key] = tuple(results)
+        stored_results = tuple(results)
+        requested_limit = max(limit, cached[0]) if cached is not None else limit
+        requested_limit = max(requested_limit, len(stored_results))
+        self._cmu_rhyme_cache[cache_key] = (requested_limit, stored_results)
         self._trim_cache(self._cmu_rhyme_cache)
 
         return list(results)
@@ -158,9 +184,13 @@ class SearchService:
         if not normalized_terms:
             return set()
 
-        cached = self._related_words_cache.get(normalized_terms)
+        repository = self.repository
+        repo_identity = self._object_identity(repository)
+        cache_key = (repo_identity, normalized_terms)
+
+        cached = self._related_words_cache.get(cache_key)
         if cached is not None:
-            self._related_words_cache.move_to_end(normalized_terms)
+            self._related_words_cache.move_to_end(cache_key)
             return set(cached)
 
         try:
@@ -169,7 +199,7 @@ class SearchService:
             results = set()
 
         results_set = set(results)
-        self._related_words_cache[normalized_terms] = tuple(sorted(results_set))
+        self._related_words_cache[cache_key] = tuple(sorted(results_set))
         self._trim_cache(self._related_words_cache)
 
         return results_set
@@ -334,8 +364,17 @@ class SearchService:
             source_components = extract_phrase_components(source_word, cmu_loader)
             source_anchor_word = source_components.anchor or source_word
 
+            local_phonetic_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+
             def _build_word_phonetics(word: Optional[str]) -> Dict[str, Any]:
                 base_word = "" if word is None else str(word)
+                cache_key = base_word.lower().strip()
+                if cache_key:
+                    cached_profile = local_phonetic_cache.get(cache_key)
+                    if cached_profile is not None:
+                        local_phonetic_cache.move_to_end(cache_key)
+                        return copy.deepcopy(cached_profile)
+
                 defaults: Dict[str, Any] = {
                     "word": base_word,
                     "normalized": base_word.lower().strip(),
@@ -415,6 +454,14 @@ class SearchService:
                             if stripped:
                                 pronunciations.append(stripped)
                     defaults["pronunciations"] = pronunciations
+
+                for key_option in {cache_key, defaults.get("normalized", "")}:
+                    key_str = str(key_option or "").strip().lower()
+                    if not key_str:
+                        continue
+                    local_phonetic_cache[key_str] = copy.deepcopy(defaults)
+                    while len(local_phonetic_cache) > 128:
+                        local_phonetic_cache.popitem(last=False)
 
                 return defaults
 

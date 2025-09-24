@@ -11,6 +11,7 @@ from .feature_profile import (
     PhoneticMatch,
     PhraseComponents,
     RhymeFeatureProfile,
+    clear_phrase_component_cache,
     extract_phrase_components,
 )
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
@@ -25,6 +26,7 @@ __all__ = [
     "PhraseComponents",
     "PhoneticMatch",
     "extract_phrase_components",
+    "clear_phrase_component_cache",
     "get_cmu_rhymes",
     "RARITY_SIMILARITY_WEIGHT",
     "RARITY_NOVELTY_WEIGHT",

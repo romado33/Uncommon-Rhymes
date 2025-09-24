@@ -5,9 +5,9 @@ from __future__ import annotations
 import difflib
 import math
 import re
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Hashable, Iterable, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
@@ -42,8 +42,51 @@ class EnhancedPhoneticAnalyzer:
         self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
 
+        self._cache_size = 512
+        self._phrase_component_cache: OrderedDict[
+            Tuple[str, Optional[Hashable]], PhraseComponents
+        ] = OrderedDict()
+        self._clean_word_cache: OrderedDict[
+            Tuple[str, Optional[Hashable]], str
+        ] = OrderedDict()
+        self._pronunciation_cache: OrderedDict[
+            Tuple[str, Optional[Hashable]], Tuple[Tuple[str, ...], ...]
+        ] = OrderedDict()
+        self._rhyme_tail_cache: OrderedDict[
+            Tuple[str, Optional[Hashable], Tuple[Tuple[str, ...], ...]],
+            Tuple[Tuple[str, ...], ...],
+        ] = OrderedDict()
+        self._syllable_cache: OrderedDict[Tuple[str, Optional[Hashable]], int] = OrderedDict()
+
         print("📊 Enhanced Core Phonetic Analyzer initialized")
-    
+
+    def _loader_identity(self) -> Optional[Hashable]:
+        loader = getattr(self, "cmu_loader", None)
+        if loader is None:
+            return None
+        identity = getattr(loader, "cache_key", None)
+        if identity is None:
+            identity = getattr(loader, "cache_identity", None)
+        if identity is None:
+            identity = id(loader)
+        return identity
+
+    def _cache_key(self, word: str) -> Tuple[str, Optional[Hashable]]:
+        return ((word or "").strip().lower(), self._loader_identity())
+
+    def _trim_cache(self, cache: OrderedDict[Any, Any]) -> None:
+        while len(cache) > self._cache_size:
+            cache.popitem(last=False)
+
+    def clear_runtime_caches(self) -> None:
+        """Clear memoized analyzer state."""
+
+        self._phrase_component_cache.clear()
+        self._clean_word_cache.clear()
+        self._pronunciation_cache.clear()
+        self._rhyme_tail_cache.clear()
+        self._syllable_cache.clear()
+
     def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
         """Initialize vowel sound groupings for phonetic analysis"""
         return {
@@ -130,13 +173,30 @@ class EnhancedPhoneticAnalyzer:
     
     def _phrase_components(self, word: str) -> PhraseComponents:
         loader = getattr(self, "cmu_loader", None)
-        return extract_phrase_components(word or "", loader)
+        cache_key = self._cache_key(word)
+        cached = self._phrase_component_cache.get(cache_key)
+        if cached is not None:
+            self._phrase_component_cache.move_to_end(cache_key)
+            return cached
+        components = extract_phrase_components(word or "", loader)
+        self._phrase_component_cache[cache_key] = components
+        self._trim_cache(self._phrase_component_cache)
+        return components
 
     def _clean_word(self, word: str) -> str:
         """Clean and normalize word or phrase for phonetic analysis."""
 
+        cache_key = self._cache_key(word)
+        cached = self._clean_word_cache.get(cache_key)
+        if cached is not None:
+            self._clean_word_cache.move_to_end(cache_key)
+            return cached
+
         components = self._phrase_components(word)
-        return components.normalized_phrase.strip()
+        normalized = components.normalized_phrase.strip()
+        self._clean_word_cache[cache_key] = normalized
+        self._trim_cache(self._clean_word_cache)
+        return normalized
     
     def _calculate_ending_similarity(self, word1: str, word2: str) -> float:
         """Calculate similarity of word endings (most important for rhymes)"""
@@ -220,8 +280,17 @@ class EnhancedPhoneticAnalyzer:
     def _count_syllables(self, word: str) -> int:
         """Estimate syllable count in a word"""
 
+        cache_key = self._cache_key(word)
+        cached = self._syllable_cache.get(cache_key)
+        if cached is not None:
+            self._syllable_cache.move_to_end(cache_key)
+            return cached
+
         components = self._phrase_components(word)
-        return max(1, components.total_syllables)
+        syllables = max(1, components.total_syllables)
+        self._syllable_cache[cache_key] = syllables
+        self._trim_cache(self._syllable_cache)
+        return syllables
 
     # ------------------------------------------------------------------
     # Research-driven feature extraction
@@ -231,10 +300,21 @@ class EnhancedPhoneticAnalyzer:
         loader = getattr(self, "cmu_loader", None)
         if loader is None:
             return []
+
+        cache_key = self._cache_key(word)
+        cached = self._pronunciation_cache.get(cache_key)
+        if cached is not None:
+            self._pronunciation_cache.move_to_end(cache_key)
+            return [list(phones) for phones in cached]
+
         components = self._phrase_components(word)
 
         if components.anchor_pronunciations:
-            return [list(phones) for phones in components.anchor_pronunciations]
+            pronunciations = [list(phones) for phones in components.anchor_pronunciations]
+            normalized = tuple(tuple(phones) for phones in pronunciations)
+            self._pronunciation_cache[cache_key] = normalized
+            self._trim_cache(self._pronunciation_cache)
+            return [list(phones) for phones in normalized]
 
         lookup_word = components.anchor
         if not lookup_word:
@@ -257,7 +337,11 @@ class EnhancedPhoneticAnalyzer:
             except Exception:
                 pronunciations = []
 
-        return pronunciations
+        normalized = tuple(tuple(phones) for phones in pronunciations)
+        self._pronunciation_cache[cache_key] = normalized
+        self._trim_cache(self._pronunciation_cache)
+
+        return [list(phones) for phones in normalized]
 
     @staticmethod
     def _stress_signature_from_phones(phones: List[str]) -> str:
@@ -304,6 +388,17 @@ class EnhancedPhoneticAnalyzer:
         loader = getattr(self, "cmu_loader", None)
         tails: List[List[str]] = []
 
+        pron_signature = tuple(tuple(phone for phone in phones) for phones in pronunciations)
+        cache_key = (
+            (word or "").strip().lower(),
+            self._loader_identity(),
+            pron_signature,
+        )
+        cached = self._rhyme_tail_cache.get(cache_key)
+        if cached is not None:
+            self._rhyme_tail_cache.move_to_end(cache_key)
+            return [list(tail) for tail in cached]
+
         if loader is not None:
             try:
                 rhyme_parts = loader.get_rhyme_parts(word)
@@ -331,7 +426,11 @@ class EnhancedPhoneticAnalyzer:
             seen.add(key)
             unique_tails.append(list(tail))
 
-        return unique_tails
+        normalized_tails = tuple(tuple(phone for phone in tail) for tail in unique_tails)
+        self._rhyme_tail_cache[cache_key] = normalized_tails
+        self._trim_cache(self._rhyme_tail_cache)
+
+        return [list(tail) for tail in normalized_tails]
 
     @classmethod
     def _phoneme_tail_similarity(cls, tail1: Iterable[str], tail2: Iterable[str]) -> float:

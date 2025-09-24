@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from threading import RLock
+from typing import Any, Dict, Hashable, Iterable, List, Optional, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
@@ -30,12 +32,31 @@ class PhraseComponents:
     anchor_pronunciations: List[List[str]]
 
 
-def extract_phrase_components(
-    phrase: str,
-    cmu_loader: Optional["CMUDictLoader"] = None,
-) -> PhraseComponents:
-    """Return the final stressed token and syllable summary for ``phrase``."""
+_COMPONENT_CACHE: OrderedDict[Tuple[str, Optional[Hashable]], PhraseComponents] = OrderedDict()
+_CACHE_LOCK = RLock()
+_CACHE_MAX_ENTRIES = 512
 
+
+def _loader_identity(loader: Optional["CMUDictLoader"]) -> Optional[Hashable]:
+    if loader is None:
+        return None
+    identity = getattr(loader, "cache_key", None)
+    if identity is None:
+        identity = getattr(loader, "cache_identity", None)
+    if identity is None:
+        identity = id(loader)
+    return identity
+
+
+def _trim_cache() -> None:
+    while len(_COMPONENT_CACHE) > _CACHE_MAX_ENTRIES:
+        _COMPONENT_CACHE.popitem(last=False)
+
+
+def _compute_phrase_components(
+    phrase: str,
+    cmu_loader: Optional["CMUDictLoader"],
+) -> PhraseComponents:
     original = phrase or ""
     token_pattern = re.compile(r"[A-Za-z']+")
     tokens = [match.group(0) for match in token_pattern.finditer(original)]
@@ -106,6 +127,35 @@ def extract_phrase_components(
         total_syllables=total_syllables,
         anchor_pronunciations=anchor_pronunciations,
     )
+
+
+def extract_phrase_components(
+    phrase: str,
+    cmu_loader: Optional["CMUDictLoader"] = None,
+) -> PhraseComponents:
+    """Return the final stressed token and syllable summary for ``phrase``."""
+
+    cache_key = ((phrase or "").strip().lower(), _loader_identity(cmu_loader))
+    with _CACHE_LOCK:
+        cached = _COMPONENT_CACHE.get(cache_key)
+        if cached is not None:
+            _COMPONENT_CACHE.move_to_end(cache_key)
+            return cached
+
+    components = _compute_phrase_components(phrase, cmu_loader)
+
+    with _CACHE_LOCK:
+        _COMPONENT_CACHE[cache_key] = components
+        _trim_cache()
+
+    return components
+
+
+def clear_phrase_component_cache() -> None:
+    """Clear memoized phrase component results."""
+
+    with _CACHE_LOCK:
+        _COMPONENT_CACHE.clear()
 
 
 @dataclass

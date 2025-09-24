@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Optional, Set
+from collections import OrderedDict
+from typing import Any, Dict, Hashable, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.profile import normalize_profile_dict
 
@@ -36,7 +37,7 @@ class CulturalIntelligenceEngine:
     def __init__(self, db_path: str = "patterns.db", phonetic_analyzer: Optional[Any] = None):
         self.db_path = db_path
         self.phonetic_analyzer = phonetic_analyzer
-        
+
         # Initialize cultural intelligence components
         self.artist_profiles = build_artist_profiles()
         self.cultural_categories = build_cultural_categories()
@@ -50,13 +51,34 @@ class CulturalIntelligenceEngine:
             'cultural_contexts_generated': 0,
             'regional_patterns_identified': 0
         }
-        
+
         print("🎯 Enhanced Cultural Database Engine initialized")
         print("Providing authentic cultural attribution beyond LLM capabilities")
- 
+
+        self._signature_cache_limit = 256
+        self._signature_cache: OrderedDict[
+            Tuple[str, Optional[Hashable]], Tuple[str, ...]
+        ] = OrderedDict()
+
     def set_phonetic_analyzer(self, analyzer: Any) -> None:
         """Attach or replace the phonetic analyzer for phonetic validation."""
         self.phonetic_analyzer = analyzer
+        self._signature_cache.clear()
+
+    def _analyzer_identity(self) -> Optional[Hashable]:
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer is None:
+            return None
+        identity = getattr(analyzer, "cache_key", None)
+        if identity is None:
+            identity = getattr(analyzer, "cache_identity", None)
+        if identity is None:
+            identity = id(analyzer)
+        return identity
+
+    def _trim_signature_cache(self) -> None:
+        while len(self._signature_cache) > self._signature_cache_limit:
+            self._signature_cache.popitem(last=False)
 
     def _estimate_syllables(self, word: str) -> int:
         if not word:
@@ -72,12 +94,22 @@ class CulturalIntelligenceEngine:
         normalized = (word or "").strip().lower()
         if not normalized:
             return set()
+        cache_key = (normalized, self._analyzer_identity())
+        cached = self._signature_cache.get(cache_key)
+        if cached is not None:
+            self._signature_cache.move_to_end(cache_key)
+            return set(cached)
+
         analyzer = getattr(self, "phonetic_analyzer", None)
-        return derive_rhyme_signatures(
+        signatures = derive_rhyme_signatures(
             word,
             analyzer,
             lambda w: approximate_rhyme_signature(w, self._estimate_syllables),
         )
+        signature_set = {sig for sig in signatures if sig}
+        self._signature_cache[cache_key] = tuple(sorted(signature_set))
+        self._trim_signature_cache()
+        return signature_set
 
     def _classify_era(self, start_year: int) -> str:
         for era_name, info in self.era_classifications.items():
