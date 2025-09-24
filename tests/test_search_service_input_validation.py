@@ -75,7 +75,11 @@ def _patch_search_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(search_service_module, "extract_phrase_components", fake_extract_components)
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        search_service_module.CmuRhymeRepository,
+        "fetch_rhymes",
+        lambda self, *args, **kwargs: [],
+    )
 
 
 def make_service(patterns: Iterable[DummyPattern]) -> SearchService:

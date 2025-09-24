@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from rhyme_rarity.core import CMUDictLoader, EnhancedPhoneticAnalyzer
+from rhyme_rarity.core import CmuRhymeRepository, CMUDictLoader, EnhancedPhoneticAnalyzer
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
@@ -46,12 +46,14 @@ class RhymeRarityApp:
             phonetic_analyzer=self.phonetic_analyzer,
         )
 
-        if hasattr(self.anti_llm_engine, "set_phonetic_analyzer"):
-            self.anti_llm_engine.set_phonetic_analyzer(self.phonetic_analyzer)
-        if hasattr(self.cultural_engine, "set_phonetic_analyzer"):
-            self.cultural_engine.set_phonetic_analyzer(self.phonetic_analyzer)
-        if hasattr(self.cultural_engine, "set_prosody_analyzer"):
-            self.cultural_engine.set_prosody_analyzer(self.phonetic_analyzer)
+        self.cmu_repository = CmuRhymeRepository(
+            loader=self.cmu_loader,
+            analyzer=self.phonetic_analyzer,
+        )
+
+        self._wire_component(self.anti_llm_engine, "set_phonetic_analyzer", self.phonetic_analyzer)
+        self._wire_component(self.cultural_engine, "set_phonetic_analyzer", self.phonetic_analyzer)
+        self._wire_component(self.cultural_engine, "set_prosody_analyzer", self.phonetic_analyzer)
 
         self.search_service = search_service or SearchService(
             repository=self.repository,
@@ -59,6 +61,7 @@ class RhymeRarityApp:
             cultural_engine=self.cultural_engine,
             anti_llm_engine=self.anti_llm_engine,
             cmu_loader=getattr(self.phonetic_analyzer, "cmu_loader", self.cmu_loader),
+            cmu_repository=self.cmu_repository,
         )
         if search_service is not None:
             self.search_service.set_phonetic_analyzer(self.phonetic_analyzer)
@@ -70,14 +73,21 @@ class RhymeRarityApp:
     # Dependency management -------------------------------------------------
     def set_phonetic_analyzer(self, analyzer: EnhancedPhoneticAnalyzer) -> None:
         self.phonetic_analyzer = analyzer
+        self.cmu_repository.set_analyzer(analyzer)
+        self._wire_component(self.anti_llm_engine, "set_phonetic_analyzer", analyzer)
+        self._wire_component(self.cultural_engine, "set_phonetic_analyzer", analyzer)
+        self._wire_component(self.cultural_engine, "set_prosody_analyzer", analyzer)
         self.search_service.set_phonetic_analyzer(analyzer)
 
     def set_cultural_engine(self, engine: Optional[CulturalIntelligenceEngine]) -> None:
         self.cultural_engine = engine
+        self._wire_component(engine, "set_phonetic_analyzer", self.phonetic_analyzer)
+        self._wire_component(engine, "set_prosody_analyzer", self.phonetic_analyzer)
         self.search_service.set_cultural_engine(engine)
 
     def set_anti_llm_engine(self, engine: Optional[AntiLLMRhymeEngine]) -> None:
         self.anti_llm_engine = engine
+        self._wire_component(engine, "set_phonetic_analyzer", self.phonetic_analyzer)
         self.search_service.set_anti_llm_engine(engine)
 
     # Public API ------------------------------------------------------------
@@ -99,6 +109,17 @@ class RhymeRarityApp:
         if callable(updater):
             try:
                 updater(self.db_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _wire_component(component: Optional[Any], method: str, *args: Any) -> None:
+        if component is None:
+            return
+        candidate = getattr(component, method, None)
+        if callable(candidate):
+            try:
+                candidate(*args)
             except Exception:
                 pass
 

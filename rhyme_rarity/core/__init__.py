@@ -4,7 +4,6 @@ from .analyzer import (
     EnhancedPhoneticAnalyzer,
     RARITY_NOVELTY_WEIGHT,
     RARITY_SIMILARITY_WEIGHT,
-    get_cmu_rhymes,
 )
 from .cmudict_loader import CMUDictLoader, DEFAULT_CMU_LOADER
 from .feature_profile import (
@@ -14,6 +13,7 @@ from .feature_profile import (
     extract_phrase_components,
 )
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
+from .cmu_repository import CmuRhymeRepository, get_cmu_rhymes
 
 __all__ = [
     "CMUDictLoader",
@@ -21,6 +21,7 @@ __all__ = [
     "WordRarityMap",
     "DEFAULT_RARITY_MAP",
     "EnhancedPhoneticAnalyzer",
+    "CmuRhymeRepository",
     "RhymeFeatureProfile",
     "PhraseComponents",
     "PhoneticMatch",

@@ -66,7 +66,7 @@ class AntiLLMRhymeEngine:
 
         self._seed_resources_initialized = False
         self._seed_analyzer = None
-        self._cmu_seed_fn = None
+        self._cmu_repository = None
 
     # ------------------------------------------------------------------
     # Dependency management
@@ -199,16 +199,15 @@ class AntiLLMRhymeEngine:
 
         self._seed_resources_initialized = True
         try:
-            from rhyme_rarity.core import (
-                EnhancedPhoneticAnalyzer,
-                get_cmu_rhymes,
-            )
+            from rhyme_rarity.core import CmuRhymeRepository, EnhancedPhoneticAnalyzer
 
-            self._seed_analyzer = EnhancedPhoneticAnalyzer()
-            self._cmu_seed_fn = get_cmu_rhymes
+            analyzer = EnhancedPhoneticAnalyzer()
+            repository = CmuRhymeRepository(analyzer=analyzer)
+            self._seed_analyzer = analyzer
+            self._cmu_repository = repository
         except Exception:
             self._seed_analyzer = None
-            self._cmu_seed_fn = None
+            self._cmu_repository = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -325,10 +324,10 @@ class AntiLLMRhymeEngine:
     # ------------------------------------------------------------------
 
     def _cmu_candidates(self, word: str, limit: int, analyzer: Any) -> List[Any]:
-        cmu_fn = getattr(self, "_cmu_seed_fn", None)
-        if callable(cmu_fn):
-            return cmu_fn(word, limit=limit, analyzer=analyzer)
-        return []
+        repository = getattr(self, "_cmu_repository", None)
+        if repository is None:
+            return []
+        return repository.fetch_rhymes(word, limit=limit, analyzer=analyzer)
 
     def _expand_from_seed_candidates(
         self,

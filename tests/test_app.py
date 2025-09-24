@@ -541,13 +541,17 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
     app = RhymeRarityApp(db_path=str(db_path))
     app.set_cultural_engine(None)
 
-    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
+    def stub_cmu_rhymes(self, word, limit=20, analyzer=None, cmu_loader=None):
         return [
             {"word": "alpha", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
             {"word": "beta", "similarity": 0.82, "combined": 0.6, "rarity": 0.4},
         ]
 
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    monkeypatch.setattr(
+        search_service_module.CmuRhymeRepository,
+        "fetch_rhymes",
+        stub_cmu_rhymes,
+    )
 
     results = app.search_rhymes(
         "love",
@@ -580,10 +584,14 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
         {"word": "gamma", "similarity": 0.94, "combined": 0.94, "rarity": 0.8},
     ]
 
-    def stub_cmu_rhymes(word, limit=20, analyzer=None, cmu_loader=None):
+    def stub_cmu_rhymes(self, word, limit=20, analyzer=None, cmu_loader=None):
         return [dict(candidate) for candidate in cmu_payload]
 
-    monkeypatch.setattr(search_service_module, "get_cmu_rhymes", stub_cmu_rhymes)
+    monkeypatch.setattr(
+        search_service_module.CmuRhymeRepository,
+        "fetch_rhymes",
+        stub_cmu_rhymes,
+    )
 
     class FilteringCulturalEngine:
         def __init__(self):
