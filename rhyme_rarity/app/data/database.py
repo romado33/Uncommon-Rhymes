@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import queue
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Generator, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -19,16 +21,60 @@ def _ensure_parent_directory(path: str) -> None:
 class SQLiteRhymeRepository:
     """Repository encapsulating all SQLite access for rhyme searches."""
 
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        pool_size: int = 4,
+        pool_timeout: float = 5.0,
+    ) -> None:
         self.db_path = db_path
+        self._pool_size = max(1, int(pool_size))
+        self._pool_timeout = max(0.0, float(pool_timeout))
+        self._pool: queue.Queue = queue.Queue(maxsize=self._pool_size)
+        self._pool_semaphore = threading.BoundedSemaphore(self._pool_size)
+
+    def _create_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            # WAL mode is best-effort – ignore if unsupported.
+            pass
+        return connection
+
+    def _acquire_connection(self) -> sqlite3.Connection:
+        if not self._pool_semaphore.acquire(timeout=self._pool_timeout or None):
+            raise TimeoutError("Database connection pool exhausted")
+
+        try:
+            connection = self._pool.get_nowait()
+        except queue.Empty:
+            connection = self._create_connection()
+
+        return connection
+
+    def _release_connection(self, connection: sqlite3.Connection) -> None:
+        try:
+            self._pool.put_nowait(connection)
+        except queue.Full:
+            connection.close()
+        finally:
+            self._pool_semaphore.release()
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
-        connection = sqlite3.connect(self.db_path)
+        connection = self._acquire_connection()
         try:
             yield connection
+            if connection.in_transaction:
+                connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
         finally:
-            connection.close()
+            self._release_connection(connection)
 
     def ensure_database(self) -> int:
         """Ensure the database exists and contains the expected schema."""
@@ -107,43 +153,48 @@ class SQLiteRhymeRepository:
         if not terms:
             return set()
 
+        normalized_terms = sorted(term for term in terms if term)
+        if not normalized_terms:
+            return set()
+
         related: Set[str] = set()
+        placeholders = ",".join("?" for _ in normalized_terms)
+        limit_hint = 50 * len(normalized_terms)
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            for term in sorted(terms):
-                if not term:
-                    continue
 
-                cursor.execute(
-                    """
-                    SELECT target_word
-                    FROM song_rhyme_patterns
-                    WHERE source_word = ? AND target_word IS NOT NULL
-                    LIMIT 50
-                    """,
-                    (term,),
-                )
-                related.update(
-                    str(row[0]).strip().lower()
-                    for row in cursor.fetchall()
-                    if row and row[0]
-                )
+            cursor.execute(
+                f"""
+                SELECT target_word
+                FROM song_rhyme_patterns
+                WHERE source_word IN ({placeholders})
+                  AND target_word IS NOT NULL
+                LIMIT ?
+                """,
+                (*normalized_terms, limit_hint),
+            )
+            related.update(
+                str(row[0]).strip().lower()
+                for row in cursor.fetchall()
+                if row and row[0]
+            )
 
-                cursor.execute(
-                    """
-                    SELECT source_word
-                    FROM song_rhyme_patterns
-                    WHERE target_word = ? AND source_word IS NOT NULL
-                    LIMIT 50
-                    """,
-                    (term,),
-                )
-                related.update(
-                    str(row[0]).strip().lower()
-                    for row in cursor.fetchall()
-                    if row and row[0]
-                )
+            cursor.execute(
+                f"""
+                SELECT source_word
+                FROM song_rhyme_patterns
+                WHERE target_word IN ({placeholders})
+                  AND source_word IS NOT NULL
+                LIMIT ?
+                """,
+                (*normalized_terms, limit_hint),
+            )
+            related.update(
+                str(row[0]).strip().lower()
+                for row in cursor.fetchall()
+                if row and row[0]
+            )
 
         return related
 
