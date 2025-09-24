@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from collections import OrderedDict
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Set
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.profile import normalize_profile_dict
 
@@ -38,6 +40,12 @@ class CulturalIntelligenceEngine:
         self.db_path = db_path
         self.phonetic_analyzer = phonetic_analyzer
         self._connection: Optional[sqlite3.Connection] = None
+
+        self._cache_lock = threading.RLock()
+        self._max_cache_entries = 512
+        self._signature_cache: OrderedDict[
+            Tuple[str, Optional[int]], Tuple[str, ...]
+        ] = OrderedDict()
         
         # Initialize cultural intelligence components
         self.artist_profiles = build_artist_profiles()
@@ -86,6 +94,7 @@ class CulturalIntelligenceEngine:
     def set_phonetic_analyzer(self, analyzer: Any) -> None:
         """Attach or replace the phonetic analyzer for phonetic validation."""
         self.phonetic_analyzer = analyzer
+        self._clear_signature_cache()
 
     def _estimate_syllables(self, word: str) -> int:
         if not word:
@@ -102,11 +111,49 @@ class CulturalIntelligenceEngine:
         if not normalized:
             return set()
         analyzer = getattr(self, "phonetic_analyzer", None)
-        return derive_rhyme_signatures(
+        cache_key = (normalized, id(analyzer) if analyzer is not None else None)
+
+        with self._cache_lock:
+            cached = self._signature_cache.get(cache_key)
+            if cached is not None:
+                self._signature_cache.move_to_end(cache_key)
+                return set(cached)
+
+        signatures = derive_rhyme_signatures(
             word,
             analyzer,
             lambda w: approximate_rhyme_signature(w, self._estimate_syllables),
         )
+
+        cached_tuple = tuple(sorted(signatures))
+
+        with self._cache_lock:
+            existing = self._signature_cache.get(cache_key)
+            if existing is not None:
+                self._signature_cache.move_to_end(cache_key)
+                return set(existing)
+
+            self._signature_cache[cache_key] = cached_tuple
+            self._trim_cache(self._signature_cache)
+
+        return set(cached_tuple)
+
+    def clear_cached_results(self) -> None:
+        """Expose a hook so API consumers can reset derived signature caches."""
+
+        self._clear_signature_cache()
+
+    def _clear_signature_cache(self) -> None:
+        with self._cache_lock:
+            self._signature_cache.clear()
+
+    def _trim_cache(self, cache: OrderedDict) -> None:
+        if self._max_cache_entries <= 0:
+            cache.clear()
+            return
+
+        while len(cache) > self._max_cache_entries:
+            cache.popitem(last=False)
 
     def _classify_era(self, start_year: int) -> str:
         for era_name, info in self.era_classifications.items():

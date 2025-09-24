@@ -12,6 +12,7 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
+    PhraseComponents,
     extract_phrase_components,
     get_cmu_rhymes,
 )
@@ -100,6 +101,20 @@ class SearchService:
             self._cmu_rhyme_cache.clear()
             self._related_words_cache.clear()
 
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer and hasattr(analyzer, "clear_cached_results"):
+            try:
+                analyzer.clear_cached_results()
+            except Exception:
+                pass
+
+        cultural_engine = getattr(self, "cultural_engine", None)
+        if cultural_engine and hasattr(cultural_engine, "clear_cached_results"):
+            try:
+                cultural_engine.clear_cached_results()
+            except Exception:
+                pass
+
         anti_engine = getattr(self, "anti_llm_engine", None)
         if anti_engine and hasattr(anti_engine, "clear_cached_results"):
             try:
@@ -125,6 +140,13 @@ class SearchService:
         with self._cache_lock:
             self._cmu_rhyme_cache.clear()
             self._related_words_cache.clear()
+
+        analyzer = getattr(self, "phonetic_analyzer", None)
+        if analyzer and hasattr(analyzer, "clear_cached_results"):
+            try:
+                analyzer.clear_cached_results()
+            except Exception:
+                pass
 
     def _trim_cache(self, cache: OrderedDict[Any, Tuple[Any, ...]]) -> None:
         """Ensure caches stay within the configured ``_max_cache_entries`` size."""
@@ -250,6 +272,22 @@ class SearchService:
             self._trim_cache(self._related_words_cache)
 
         return results_set
+
+    def _get_phrase_components_cached(
+        self,
+        phrase: str,
+        cmu_loader: Optional[object],
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+    ) -> PhraseComponents:
+        """Return phrase components using analyzer caching when available."""
+
+        if analyzer and hasattr(analyzer, "get_phrase_components"):
+            try:
+                return analyzer.get_phrase_components(phrase, cmu_loader)
+            except Exception:
+                pass
+
+        return extract_phrase_components(phrase, cmu_loader)
 
     @contextmanager
     def _search_slot(self) -> Generator[None, None, None]:
@@ -583,7 +621,11 @@ class SearchService:
             if cmu_loader is None:
                 cmu_loader = getattr(self, "cmu_loader", None)
 
-            source_components = extract_phrase_components(source_word, cmu_loader)
+            source_components = self._get_phrase_components_cached(
+                source_word,
+                cmu_loader,
+                analyzer,
+            )
             source_anchor_word = source_components.anchor or source_word
 
             def _build_word_phonetics(word: Optional[str]) -> Dict[str, Any]:
