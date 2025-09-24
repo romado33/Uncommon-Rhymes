@@ -182,6 +182,7 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
 
     assert "source_profile" in results
     assert isinstance(results["source_profile"], dict)
+    assert "telemetry" in results
 
     rap_results = results["rap_db"]
     assert rap_results, "Expected at least one rhyme suggestion"
@@ -209,6 +210,7 @@ def test_search_rhymes_filters_by_cultural_significance(tmp_path):
 
     assert "source_profile" in results
     assert isinstance(results["source_profile"], dict)
+    assert "telemetry" in results
     rap_results = results["rap_db"]
 
     assert rap_results, "Expected filtered results for cultural significance"
@@ -796,5 +798,5 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     formatted = app.format_rhyme_results("love", filtered_results)
     assert "Rhyme type: Perfect" in formatted
     assert "Cadence: Steady" in formatted
-    assert "Stress align" not in formatted
+    assert "Stress align" in formatted
 
