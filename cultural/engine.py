@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Set
 
@@ -27,6 +28,9 @@ from .profiles import (
     generate_dynamic_profile,
 )
 
+
+logger = logging.getLogger(__name__)
+
 class CulturalIntelligenceEngine:
     """
     Enhanced cultural intelligence system providing authentic attribution
@@ -51,8 +55,8 @@ class CulturalIntelligenceEngine:
             'regional_patterns_identified': 0
         }
         
-        print("🎯 Enhanced Cultural Database Engine initialized")
-        print("Providing authentic cultural attribution beyond LLM capabilities")
+        logger.info("🎯 Enhanced Cultural Database Engine initialized")
+        logger.info("Providing authentic cultural attribution beyond LLM capabilities")
  
     def set_phonetic_analyzer(self, analyzer: Any) -> None:
         """Attach or replace the phonetic analyzer for phonetic validation."""
@@ -168,29 +172,28 @@ class CulturalIntelligenceEngine:
                              limit: int = 20) -> List[Dict]:
         """Find patterns with specific cultural characteristics"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            query = """
-            SELECT target_word, artist, song_title, confidence_score, cultural_significance
-            FROM song_rhyme_patterns 
-            WHERE source_word = ? 
-              AND source_word != target_word
-            """
-            
-            params = [source_word]
-            
-            if cultural_filter:
-                query += " AND cultural_significance = ?"
-                params.append(cultural_filter)
-            
-            query += " ORDER BY confidence_score DESC LIMIT ?"
-            params.append(limit)
-            
-            cursor.execute(query, params)
-            results = cursor.fetchall()
-            conn.close()
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                query = """
+                SELECT target_word, artist, song_title, confidence_score, cultural_significance
+                FROM song_rhyme_patterns
+                WHERE source_word = ?
+                  AND source_word != target_word
+                """
+
+                params = [source_word]
+
+                if cultural_filter:
+                    query += " AND cultural_significance = ?"
+                    params.append(cultural_filter)
+
+                query += " ORDER BY confidence_score DESC LIMIT ?"
+                params.append(limit)
+
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+
             cultural_patterns = []
             for target, artist, song, confidence, cultural_sig in results:
                 pattern_data = {
@@ -212,29 +215,31 @@ class CulturalIntelligenceEngine:
             
             return cultural_patterns
             
-        except sqlite3.Error as e:
-            print(f"Database error in cultural engine: {e}")
+        except sqlite3.Error as exc:
+            logger.exception("Database error in cultural engine")
             return []
     
     def get_artist_signature_patterns(self, artist_name: str, limit: int = 20) -> List[Dict]:
         """Get signature rhyme patterns for a specific artist"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT source_word, target_word, song_title, confidence_score, pattern
-                FROM song_rhyme_patterns 
-                WHERE LOWER(artist) = ?
-                  AND source_word != target_word
-                  AND confidence_score >= 0.8
-                ORDER BY confidence_score DESC
-                LIMIT ?
-            """, (artist_name.lower(), limit))
-            
-            results = cursor.fetchall()
-            conn.close()
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    """
+                    SELECT source_word, target_word, song_title, confidence_score, pattern
+                    FROM song_rhyme_patterns
+                    WHERE LOWER(artist) = ?
+                      AND source_word != target_word
+                      AND confidence_score >= 0.8
+                    ORDER BY confidence_score DESC
+                    LIMIT ?
+                """,
+                    (artist_name.lower(), limit),
+                )
+
+                results = cursor.fetchall()
+
             signature_patterns = []
             for source, target, song, confidence, pattern in results:
                 signature_patterns.append({
@@ -248,47 +253,49 @@ class CulturalIntelligenceEngine:
             
             return signature_patterns
             
-        except sqlite3.Error as e:
-            print(f"Database error getting artist patterns: {e}")
+        except sqlite3.Error as exc:
+            logger.exception("Database error getting artist patterns")
             return []
     
     def analyze_cultural_distribution(self) -> Dict:
         """Analyze cultural distribution in the database"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT cultural_significance FROM song_rhyme_patterns"
-            )
-            cultural_rows = [
-                {"cultural_significance": row[0]}
-                for row in cursor.fetchall()
-                if row and row[0]
-            ]
-            cultural_dist = aggregate_cultural_distribution(cultural_rows)
-            
-            # Artist distribution
-            cursor.execute("""
-                SELECT artist, COUNT(*) 
-                FROM song_rhyme_patterns 
-                GROUP BY artist 
-                ORDER BY COUNT(*) DESC 
-                LIMIT 20
-            """)
-            artist_dist = dict(cursor.fetchall())
-            
-            # Genre distribution
-            cursor.execute("""
-                SELECT genre, COUNT(*) 
-                FROM song_rhyme_patterns 
-                GROUP BY genre 
-                ORDER BY COUNT(*) DESC
-            """)
-            genre_dist = dict(cursor.fetchall())
-            
-            conn.close()
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "SELECT cultural_significance FROM song_rhyme_patterns"
+                )
+                cultural_rows = [
+                    {"cultural_significance": row[0]}
+                    for row in cursor.fetchall()
+                    if row and row[0]
+                ]
+                cultural_dist = aggregate_cultural_distribution(cultural_rows)
+
+                # Artist distribution
+                cursor.execute(
+                    """
+                    SELECT artist, COUNT(*)
+                    FROM song_rhyme_patterns
+                    GROUP BY artist
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 20
+                    """
+                )
+                artist_dist = dict(cursor.fetchall())
+
+                # Genre distribution
+                cursor.execute(
+                    """
+                    SELECT genre, COUNT(*)
+                    FROM song_rhyme_patterns
+                    GROUP BY genre
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                genre_dist = dict(cursor.fetchall())
+
             return {
                 'cultural_significance': cultural_dist,
                 'top_artists': artist_dist,
@@ -296,8 +303,8 @@ class CulturalIntelligenceEngine:
                 'total_patterns': sum(cultural_dist.values())
             }
             
-        except sqlite3.Error as e:
-            print(f"Database error in cultural analysis: {e}")
+        except sqlite3.Error as exc:
+            logger.exception("Database error in cultural analysis")
             return {}
     
     def get_performance_stats(self) -> Dict:
@@ -310,41 +317,37 @@ class CulturalIntelligenceEngine:
             'regional_mappings': len(self.regional_mappings)
         }
 
-# Example usage and testing
-if __name__ == "__main__":
+def _demo() -> None:
+    """Simple demo for manual testing when run as a script."""
+
+    logging.basicConfig(level=logging.INFO)
     engine = CulturalIntelligenceEngine()
-    
-    # Test cultural context generation
+
     test_pattern = {
         'artist': 'eminem',
         'song': 'Lose Yourself',
         'source_word': 'mind',
         'target_word': 'find'
     }
-    
-    print("🎯 Testing Cultural Intelligence Engine:")
-    print("=" * 50)
-    
+
     context = engine.get_cultural_context(test_pattern)
-    print(f"Cultural Context for Eminem:")
-    print(f"  • Era: {context.era}")
-    print(f"  • Cultural Impact: {context.cultural_significance}")
-    print(f"  • Regional Origin: {context.regional_origin}")
-    print(f"  • Style Characteristics: {context.style_characteristics}")
-    
+    logger.info("Cultural Context for Eminem: %s", context)
+
     rarity_score = engine.get_cultural_rarity_score(context)
-    print(f"  • Cultural Rarity Score: {rarity_score:.2f}")
-    
-    # Test cultural pattern finding
+    logger.info("Cultural rarity score: %.2f", rarity_score)
+
     cultural_patterns = engine.find_cultural_patterns("love", limit=3)
-    print(f"\nCultural patterns for 'love':")
     for pattern in cultural_patterns:
-        print(f"  • '{pattern['target_word']}' - {pattern['artist']} (rarity: {pattern['cultural_rarity']:.2f})")
-    
-    # Performance stats
-    print(f"\n📊 Performance Stats:")
+        logger.info(
+            "Pattern %s by %s (rarity %.2f)",
+            pattern['target_word'],
+            pattern['artist'],
+            pattern['cultural_rarity'],
+        )
+
     stats = engine.get_performance_stats()
-    for key, value in stats.items():
-        print(f"  • {key}: {value}")
-    
-    print("\n✅ Module 3 Enhanced Cultural Database ready for integration")
+    logger.info("Performance stats: %s", stats)
+
+
+if __name__ == "__main__":
+    _demo()

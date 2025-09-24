@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import math
 import re
 from collections import Counter
@@ -20,6 +21,9 @@ from .feature_profile import (
     pronouncing,
 )
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
+
+
+logger = logging.getLogger(__name__)
 
 RARITY_SIMILARITY_WEIGHT: float = 0.65
 RARITY_NOVELTY_WEIGHT: float = 0.35
@@ -42,7 +46,7 @@ class EnhancedPhoneticAnalyzer:
         self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
 
-        print("📊 Enhanced Core Phonetic Analyzer initialized")
+        logger.info("📊 Enhanced Core Phonetic Analyzer initialized")
     
     def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
         """Initialize vowel sound groupings for phonetic analysis"""
@@ -892,24 +896,24 @@ def get_cmu_rhymes(
     scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
     return scored_candidates[:limit]
 
-# Example usage and testing
-if __name__ == "__main__":
+def _demo() -> None:
+    """Run a lightweight demo when executed as a script."""
+
+    logging.basicConfig(level=logging.INFO)
     analyzer = EnhancedPhoneticAnalyzer()
-    
-    # Test some rhyme pairs
+
     test_pairs = [
         ("love", "above"),
         ("mind", "find"),
         ("flow", "go"),
         ("money", "honey"),
-        ("time", "rhyme")
+        ("time", "rhyme"),
     ]
-    
-    print("🎵 Testing Enhanced Phonetic Analyzer:")
-    print("=" * 50)
-    
+
     for word1, word2 in test_pairs:
         match = analyzer.analyze_rhyme_pattern(word1, word2)
-        print(f"'{word1}' / '{word2}': {match.similarity_score:.3f} ({match.rhyme_type})")
-        
-    print("\n✅ Module 1 Enhanced Core Phonetic ready for integration")
+        logger.info("%s / %s -> %.3f (%s)", word1, word2, match.similarity_score, match.rhyme_type)
+
+
+if __name__ == "__main__":
+    _demo()
