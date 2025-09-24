@@ -60,7 +60,7 @@ def test_seed_expansion_uses_shared_rarity_map():
     ]
     engine._extract_suffixes = lambda word: set()  # type: ignore[assignment]
     engine._query_suffix_matches = lambda cursor, suffix, limit: []  # type: ignore[assignment]
-    engine._normalize_module1_candidates = lambda candidates: []  # type: ignore[assignment]
+    engine._normalize_seed_candidate_payloads = lambda candidates: []  # type: ignore[assignment]
     engine._get_phonetic_fingerprint = lambda word: set()  # type: ignore[assignment]
     engine._analyze_phonological_complexity = lambda w1, w2: 0.0  # type: ignore[assignment]
     engine._calculate_syllable_complexity = lambda word: 0.0  # type: ignore[assignment]

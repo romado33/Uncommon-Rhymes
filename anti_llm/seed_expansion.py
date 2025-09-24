@@ -114,10 +114,11 @@ def normalize_seed_candidates(
     return normalized[:8]
 
 
-def normalize_module1_candidates(
+def normalize_seed_candidate_payloads(
     candidates: Optional[List[Any]],
     value_sanitizer: Callable[[Any, float], float] = safe_float,
 ) -> List[Dict[str, Any]]:
+    """Normalise raw seed candidate payloads into a consistent structure of word, similarity, combined, and rarity scores."""
     normalized: List[Dict[str, Any]] = []
     if not candidates:
         return normalized
@@ -287,7 +288,10 @@ def expand_from_seed_candidates(
                 raw_candidates = []
 
             candidate_dicts.extend(
-                (module1_normalizer or (lambda candidates: normalize_module1_candidates(candidates, value_sanitizer)))(
+                (
+                    module1_normalizer
+                    or (lambda candidates: normalize_seed_candidate_payloads(candidates, value_sanitizer))
+                )(
                     raw_candidates
                 )
             )
@@ -394,7 +398,7 @@ def expand_from_seed_candidates(
 __all__ = [
     "safe_float",
     "normalize_seed_candidates",
-    "normalize_module1_candidates",
+    "normalize_seed_candidate_payloads",
     "extract_suffixes",
     "phonetic_fingerprint",
     "expand_from_seed_candidates",

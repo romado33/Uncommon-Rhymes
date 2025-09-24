@@ -111,8 +111,8 @@ class SearchService:
         while len(cache) > self._max_cache_entries:
             cache.popitem(last=False)
 
-    def _fallback_signature(self, word: Optional[str]) -> Set[str]:
-        """Compute a light-weight fallback signature with memoization."""
+    def _build_spelling_signature(self, word: Optional[str]) -> Set[str]:
+        """Build and cache a spelling-based signature (last vowel and ending) for fallback rhyme comparisons."""
 
         cache_key = (word or "").strip().lower()
         with self._cache_lock:
@@ -250,7 +250,9 @@ class SearchService:
         finally:
             semaphore.release()
 
-    def normalize_source_name(self, name: Optional[str]) -> str:
+    def normalize_filter_label(self, name: Optional[str]) -> str:
+        """Normalise user-supplied filter labels by trimming, lowercasing, and replacing underscores for consistent comparisons."""
+
         if name is None:
             return ""
         return str(name).strip().lower().replace("_", "-")
@@ -345,7 +347,7 @@ class SearchService:
                     return [value] if value.strip() else []
                 return [str(value)]
 
-            normalize_name = self.normalize_source_name
+            normalize_name = self.normalize_filter_label
 
             def _normalized_set(value: Optional[List[str] | str]) -> Set[str]:
                 """Return a set of normalised filter names for user-supplied values."""
@@ -366,8 +368,8 @@ class SearchService:
                 except (TypeError, ValueError):
                     return None
 
-            def _prepare_confidence_defaults(entry: Dict) -> float:
-                """Populate common confidence fields and return the comparison score."""
+            def _ensure_score_fields(entry: Dict) -> float:
+                """Ensure an entry carries both `combined_score` and `confidence`, returning the value used for downstream filtering."""
 
                 cache = entry.get("_confidence_cache")
                 if cache is not None:
@@ -619,7 +621,7 @@ class SearchService:
                 entry["_target_phonetics_ready"] = True
                 return profile
 
-            fallback_signature = self._fallback_signature
+            fallback_signature = self._build_spelling_signature
 
             # Build the source word signature set using progressively simpler
             # strategies so that downstream comparisons always have at least a
@@ -945,7 +947,7 @@ class SearchService:
 
                     _ensure_target_phonetics(entry)
 
-                    score_for_filter = _prepare_confidence_defaults(entry)
+                    score_for_filter = _ensure_score_fields(entry)
                     if score_for_filter < min_confidence:
                         continue
 
@@ -1306,13 +1308,13 @@ class SearchService:
                     )
                     _sanitize_feature_profile(entry_payload)
                     _ensure_target_phonetics(entry_payload)
-                    score_for_filter = _prepare_confidence_defaults(entry_payload)
+                    score_for_filter = _ensure_score_fields(entry_payload)
                     if score_for_filter < min_confidence:
                         continue
                     anti_llm_entries.append(entry_payload)
 
             def _passes_min_confidence(entry: Dict) -> bool:
-                score = _prepare_confidence_defaults(entry)
+                score = _ensure_score_fields(entry)
                 return score >= min_confidence
 
             def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
