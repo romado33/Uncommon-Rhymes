@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+_ALT_PATTERN = re.compile(r"\(\d+\)$")
+_DIGIT_PATTERN = re.compile(r"\d")
+_STRESS_PATTERN = re.compile(r"[12]")
 
 VOWEL_PHONEMES: Set[str] = {
     "AA",
@@ -47,9 +51,9 @@ class CMUDictLoader:
                 except OSError:
                     continue
         self.dict_path: Path = base_path
-        self._pronunciations: Dict[str, List[List[str]]] = {}
-        self._rhyme_parts: Dict[str, Set[str]] = {}
-        self._rhyme_index: Dict[str, Set[str]] = {}
+        self._pronunciations: Dict[str, Tuple[Tuple[str, ...], ...]] = {}
+        self._rhyme_parts: Dict[str, FrozenSet[str]] = {}
+        self._rhyme_index: Dict[str, Tuple[str, ...]] = {}
         self._loaded: bool = False
 
     def _ensure_loaded(self) -> None:
@@ -59,7 +63,7 @@ class CMUDictLoader:
         if not self.dict_path.exists():
             return
 
-        pronunciations: Dict[str, List[List[str]]] = {}
+        pronunciations: Dict[str, List[Tuple[str, ...]]] = {}
         rhyme_parts: Dict[str, Set[str]] = {}
         rhyme_index: Dict[str, Set[str]] = {}
 
@@ -75,11 +79,11 @@ class CMUDictLoader:
                         continue
 
                     raw_word, *phones = parts
-                    word = re.sub(r"\(\d+\)$", "", raw_word).lower()
+                    word = _ALT_PATTERN.sub("", raw_word).lower()
                     if not word:
                         continue
 
-                    pronunciations.setdefault(word, []).append(phones)
+                    pronunciations.setdefault(word, []).append(tuple(phones))
 
                     rhyme_part = self._extract_rhyme_part(phones)
                     if not rhyme_part:
@@ -91,9 +95,15 @@ class CMUDictLoader:
             # If the dictionary cannot be read we simply operate without cache.
             return
 
-        self._pronunciations = pronunciations
-        self._rhyme_parts = rhyme_parts
-        self._rhyme_index = rhyme_index
+        self._pronunciations = {
+            word: tuple(variants) for word, variants in pronunciations.items()
+        }
+        self._rhyme_parts = {
+            word: frozenset(parts) for word, parts in rhyme_parts.items()
+        }
+        self._rhyme_index = {
+            part: tuple(sorted(words)) for part, words in rhyme_index.items()
+        }
         self._loaded = True
 
     def _extract_rhyme_part(self, phones: List[str]) -> Optional[str]:
@@ -102,16 +112,16 @@ class CMUDictLoader:
         last_stress_index: Optional[int] = None
 
         for index, phone in enumerate(phones):
-            base = re.sub(r"\d", "", phone)
+            base = _DIGIT_PATTERN.sub("", phone)
             if base not in VOWEL_PHONEMES:
                 continue
 
-            if re.search(r"[12]", phone):
+            if _STRESS_PATTERN.search(phone):
                 last_stress_index = index
 
         if last_stress_index is None:
             for index in range(len(phones) - 1, -1, -1):
-                base = re.sub(r"\d", "", phones[index])
+                base = _DIGIT_PATTERN.sub("", phones[index])
                 if base in VOWEL_PHONEMES:
                     last_stress_index = index
                     break
@@ -123,11 +133,12 @@ class CMUDictLoader:
 
     def get_pronunciations(self, word: str) -> List[List[str]]:
         self._ensure_loaded()
-        return list(self._pronunciations.get(word.lower(), []))
+        variants = self._pronunciations.get(word.lower(), tuple())
+        return [list(variant) for variant in variants]
 
     def get_rhyme_parts(self, word: str) -> Set[str]:
         self._ensure_loaded()
-        return set(self._rhyme_parts.get(word.lower(), set()))
+        return set(self._rhyme_parts.get(word.lower(), frozenset()))
 
     def get_rhyming_words(self, word: str) -> List[str]:
         self._ensure_loaded()
@@ -138,7 +149,7 @@ class CMUDictLoader:
 
         candidates: Set[str] = set()
         for part in rhyme_parts:
-            candidates.update(self._rhyme_index.get(part, set()))
+            candidates.update(self._rhyme_index.get(part, tuple()))
 
         candidates.discard(normalized)
         return sorted(candidates)

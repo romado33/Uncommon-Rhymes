@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
@@ -30,6 +31,30 @@ class PhraseComponents:
     anchor_pronunciations: List[List[str]]
 
 
+_TOKEN_PATTERN = re.compile(r"[A-Za-z']+")
+_STRESS_PATTERN = re.compile(r"[12]")
+
+
+@lru_cache(maxsize=8192)
+def _cached_phrase_structure(
+    phrase: str,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], str, Tuple[int, ...], int]:
+    """Return cached tokenisation and syllable data for ``phrase``."""
+
+    original = phrase or ""
+    tokens = tuple(match.group(0) for match in _TOKEN_PATTERN.finditer(original))
+    normalized_tokens = tuple(token.lower() for token in tokens if token)
+    normalized_phrase = " ".join(normalized_tokens)
+
+    syllable_counts = tuple(
+        estimate_syllable_count(token) for token in normalized_tokens
+    )
+    fallback_word = normalized_phrase or original.strip() or ""
+    total_syllables = sum(syllable_counts) or estimate_syllable_count(fallback_word)
+
+    return tokens, normalized_tokens, normalized_phrase, syllable_counts, total_syllables
+
+
 def extract_phrase_components(
     phrase: str,
     cmu_loader: Optional["CMUDictLoader"] = None,
@@ -37,14 +62,17 @@ def extract_phrase_components(
     """Return the final stressed token and syllable summary for ``phrase``."""
 
     original = phrase or ""
-    token_pattern = re.compile(r"[A-Za-z']+")
-    tokens = [match.group(0) for match in token_pattern.finditer(original)]
-    normalized_tokens = [token.lower() for token in tokens if token]
-    normalized_phrase = " ".join(normalized_tokens)
+    (
+        cached_tokens,
+        cached_normalized,
+        normalized_phrase,
+        cached_syllables,
+        total_syllables,
+    ) = _cached_phrase_structure(original)
 
-    syllable_counts = [estimate_syllable_count(token) for token in normalized_tokens]
-    fallback_word = normalized_phrase or original.strip() or ""
-    total_syllables = sum(syllable_counts) or estimate_syllable_count(fallback_word)
+    tokens = list(cached_tokens)
+    normalized_tokens = list(cached_normalized)
+    syllable_counts = list(cached_syllables)
 
     anchor_index: Optional[int] = None
     anchor_pronunciations: List[List[str]] = []
@@ -54,7 +82,7 @@ def extract_phrase_components(
     fallback_pronunciations: List[List[str]] = []
 
     def _phones_with_stress(phones: Iterable[str]) -> bool:
-        return any(re.search(r"[12]", phone) for phone in phones)
+        return any(_STRESS_PATTERN.search(phone) for phone in phones)
 
     for idx in range(len(normalized_tokens) - 1, -1, -1):
         token = normalized_tokens[idx]

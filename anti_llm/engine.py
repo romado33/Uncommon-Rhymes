@@ -31,6 +31,10 @@ from .strategies import (
 )
 
 
+_VOWEL_RUN_PATTERN = re.compile(r"[aeiou]+")
+_VOWEL_ONLY_PATTERN = re.compile(r"[aeiou]")
+
+
 class AntiLLMRhymeEngine:
     """Enhanced rhyme engine specifically designed to outperform LLMs."""
 
@@ -207,7 +211,11 @@ class AntiLLMRhymeEngine:
                 get_cmu_rhymes,
             )
 
-            self._seed_analyzer = EnhancedPhoneticAnalyzer()
+            analyzer = getattr(self, "phonetic_analyzer", None)
+            if analyzer is not None:
+                self._seed_analyzer = analyzer
+            else:
+                self._seed_analyzer = EnhancedPhoneticAnalyzer()
             self._cmu_seed_fn = get_cmu_rhymes
         except Exception:
             self._seed_analyzer = None
@@ -378,12 +386,12 @@ class AntiLLMRhymeEngine:
 
     def _analyze_phonological_complexity(self, word1: str, word2: str) -> float:
         complexity = 0.0
-        vowels1 = re.findall(r"[aeiou]+", word1)
-        vowels2 = re.findall(r"[aeiou]+", word2)
+        vowels1 = _VOWEL_RUN_PATTERN.findall(word1)
+        vowels2 = _VOWEL_RUN_PATTERN.findall(word2)
         if vowels1 and vowels2 and vowels1[-1] != vowels2[-1]:
             complexity += 1.0
-        consonants1 = re.sub(r"[aeiou]", "", word1)
-        consonants2 = re.sub(r"[aeiou]", "", word2)
+        consonants1 = _VOWEL_ONLY_PATTERN.sub("", word1)
+        consonants2 = _VOWEL_ONLY_PATTERN.sub("", word2)
         if len(consonants1) >= 3 or len(consonants2) >= 3:
             complexity += 1.5
         if (word1.endswith("e") and not word2.endswith("e")) or (

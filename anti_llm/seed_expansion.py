@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from functools import lru_cache
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .dataclasses import AntiLLMPattern, SeedCandidate
 from .repository import PatternRepository
+
+
+_NON_ALPHA_PATTERN = re.compile(r"[^a-z]")
+_VOWEL_GROUP_PATTERN = re.compile(r"[aeiou]+")
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -183,7 +188,7 @@ def normalize_module1_candidates(
 
 
 def extract_suffixes(word: str) -> Set[str]:
-    cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
+    cleaned = _NON_ALPHA_PATTERN.sub("", (word or "").lower())
     suffixes: Set[str] = set()
     for length in (4, 3, 2):
         if len(cleaned) >= length:
@@ -191,12 +196,13 @@ def extract_suffixes(word: str) -> Set[str]:
     return suffixes
 
 
-def phonetic_fingerprint(word: str) -> Set[str]:
-    cleaned = re.sub(r"[^a-z]", "", (word or "").lower())
+@lru_cache(maxsize=8192)
+def _cached_fingerprint(word: str) -> Tuple[str, ...]:
+    cleaned = _NON_ALPHA_PATTERN.sub("", (word or "").lower())
     if not cleaned:
-        return set()
+        return tuple()
 
-    vowels = re.findall(r"[aeiou]+", cleaned)
+    vowels = _VOWEL_GROUP_PATTERN.findall(cleaned)
     fingerprint: Set[str] = set()
 
     if len(cleaned) >= 3:
@@ -208,7 +214,11 @@ def phonetic_fingerprint(word: str) -> Set[str]:
     if len(vowels) >= 2:
         fingerprint.add(f"vv:{vowels[-2]}>{vowels[-1]}")
 
-    return fingerprint
+    return tuple(sorted(fingerprint))
+
+
+def phonetic_fingerprint(word: str) -> Set[str]:
+    return set(_cached_fingerprint(word))
 
 
 def expand_from_seed_candidates(
@@ -240,7 +250,9 @@ def expand_from_seed_candidates(
 
     ensure_seed_resources()
 
+    fingerprint_source = fingerprint_fn or phonetic_fingerprint
     per_seed_limit = max(1, (limit // max(len(seeds), 1)) + 1)
+    max_candidate_pool = max(8, per_seed_limit * 5)
 
     for seed in seeds:
         if len(results) >= limit:
@@ -250,7 +262,9 @@ def expand_from_seed_candidates(
         normalized_seed = seed.normalized()
         combined_signatures = set(signature_hints)
         combined_signatures.update(seed.signatures)
-        combined_signatures.update(phonetic_fingerprint(seed_word))
+        seed_fingerprint = fingerprint_source(seed_word)
+        if seed_fingerprint:
+            combined_signatures.update(set(seed_fingerprint))
 
         if seed.feature_profile:
             stress_hint = seed.feature_profile.get("stress_alignment")
@@ -260,13 +274,46 @@ def expand_from_seed_candidates(
             if device_hint:
                 combined_signatures.add(f"device::{str(device_hint).lower()}")
 
-        candidate_dicts: List[Dict[str, Any]] = []
+        candidate_pool: Dict[str, Dict[str, Any]] = {}
+        candidate_order: List[str] = []
+
+        def _add_candidate(entry: Dict[str, Any]) -> bool:
+            target = str(entry.get("candidate") or "").strip()
+            if not target:
+                return False
+
+            normalized_target = target.lower()
+            if (
+                normalized_target in seen_targets
+                or normalized_target == normalized_seed
+                or normalized_target == source_word
+            ):
+                return False
+
+            existing = candidate_pool.get(normalized_target)
+            candidate_conf = value_sanitizer(
+                entry.get("confidence"),
+                default=value_sanitizer(entry.get("combined"), default=0.0),
+            )
+
+            if existing is None:
+                candidate_pool[normalized_target] = dict(entry)
+                candidate_order.append(normalized_target)
+            else:
+                existing_conf = value_sanitizer(
+                    existing.get("confidence"),
+                    default=value_sanitizer(existing.get("combined"), default=0.0),
+                )
+                if candidate_conf > existing_conf:
+                    candidate_pool[normalized_target] = dict(entry)
+            return len(candidate_pool) >= max_candidate_pool
+
         neighbors_fetcher = fetch_neighbors or (
             lambda seed, limit: repository.fetch_seed_neighbors(seed, limit)
         )
-        candidate_dicts.extend(
-            neighbors_fetcher(normalized_seed, per_seed_limit * 2)
-        )
+        for neighbor in neighbors_fetcher(normalized_seed, per_seed_limit):
+            if _add_candidate(neighbor):
+                break
 
         suffix_source = suffix_extractor or extract_suffixes
         suffix_matches = fetch_suffix_matches or (
@@ -274,7 +321,11 @@ def expand_from_seed_candidates(
         )
 
         for suffix in suffix_source(seed_word):
-            candidate_dicts.extend(suffix_matches(suffix, per_seed_limit))
+            for match in suffix_matches(suffix, max(1, per_seed_limit - 1)):
+                if _add_candidate(match):
+                    break
+            if len(candidate_pool) >= max_candidate_pool:
+                break
 
         if cmu_candidates_fn is not None:
             try:
@@ -286,15 +337,23 @@ def expand_from_seed_candidates(
             except Exception:
                 raw_candidates = []
 
-            candidate_dicts.extend(
-                (module1_normalizer or (lambda candidates: normalize_module1_candidates(candidates, value_sanitizer)))(
-                    raw_candidates
+            normalized_module1 = (
+                module1_normalizer
+                or (
+                    lambda candidates: normalize_module1_candidates(
+                        candidates, value_sanitizer
+                    )
                 )
-            )
+            )(raw_candidates)
+
+            for candidate in normalized_module1:
+                if _add_candidate(candidate):
+                    break
 
         local_seen: Set[str] = set()
 
-        for candidate in candidate_dicts:
+        for normalized_target in candidate_order:
+            candidate = candidate_pool[normalized_target]
             if len(results) >= limit:
                 break
 
@@ -302,18 +361,14 @@ def expand_from_seed_candidates(
             if not target:
                 continue
 
-            normalized_target = target.lower()
-            if (
-                normalized_target in seen_targets
-                or normalized_target in local_seen
-                or normalized_target == normalized_seed
-                or normalized_target == source_word
-            ):
+            if normalized_target in seen_targets or normalized_target in local_seen:
                 continue
 
-            fingerprint_source = fingerprint_fn or phonetic_fingerprint
             fingerprint = fingerprint_source(target)
-            if combined_signatures and fingerprint and not (fingerprint & combined_signatures):
+            fingerprint_set = set(fingerprint)
+            if combined_signatures and fingerprint_set and not (
+                fingerprint_set & combined_signatures
+            ):
                 continue
 
             base_rarity = get_word_rarity(normalized_target)

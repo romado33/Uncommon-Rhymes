@@ -20,6 +20,10 @@ from cultural.engine import CulturalIntelligenceEngine
 from ..data.database import SQLiteRhymeRepository
 
 
+_NON_ALPHA_PATTERN = re.compile(r"[^a-z]")
+_VOWEL_GROUP_PATTERN = re.compile(r"[aeiou]+")
+
+
 
 class SearchService:
     """Coordinates rhyme searches across analyzers and repositories."""
@@ -44,7 +48,7 @@ class SearchService:
             self.cmu_loader = getattr(phonetic_analyzer, "cmu_loader", None)
 
         self._cache_lock = threading.RLock()
-        self._max_cache_entries = 256
+        self._max_cache_entries = 512
         self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
         self._cmu_rhyme_cache: OrderedDict[
             Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]
@@ -121,11 +125,11 @@ class SearchService:
                 self._fallback_signature_cache.move_to_end(cache_key)
                 return set(cached)
 
-        cleaned = re.sub(r"[^a-z]", "", cache_key)
+        cleaned = _NON_ALPHA_PATTERN.sub("", cache_key)
         if not cleaned:
             signature_tuple: Tuple[str, ...] = tuple()
         else:
-            vowels = re.findall(r"[aeiou]+", cleaned)
+            vowels = _VOWEL_GROUP_PATTERN.findall(cleaned)
             last_vowel = vowels[-1] if vowels else ""
             ending = cleaned[-3:] if len(cleaned) >= 3 else cleaned
             signature_bits: List[str] = []
