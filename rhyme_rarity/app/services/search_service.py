@@ -254,6 +254,15 @@ class SearchService:
             def _prepare_confidence_defaults(entry: Dict) -> float:
                 """Populate common confidence fields and return the comparison score."""
 
+                cache = entry.get("_confidence_cache")
+                if cache is not None:
+                    cached_combined, cached_confidence, cached_score = cache
+                    if (
+                        entry.get("combined_score") == cached_combined
+                        and entry.get("confidence") == cached_confidence
+                    ):
+                        return cached_score
+
                 combined_value = _coerce_float(entry.get("combined_score"))
                 confidence_value = _coerce_float(entry.get("confidence"))
 
@@ -270,6 +279,12 @@ class SearchService:
                 )
                 entry["confidence"] = (
                     confidence_value if confidence_value is not None else score_for_filter
+                )
+
+                entry["_confidence_cache"] = (
+                    entry.get("combined_score"),
+                    entry.get("confidence"),
+                    score_for_filter,
                 )
 
                 return score_for_filter
@@ -418,7 +433,25 @@ class SearchService:
 
                 return defaults
 
+            def _compose_pattern(
+                source_value: Optional[str],
+                target_value: Optional[str],
+                is_multi: bool,
+            ) -> str:
+                """Return a formatted rhyme pattern using a shared connector."""
+
+                source_text = str(source_value or source_word)
+                target_text = str(target_value or "").strip()
+                if not target_text:
+                    return source_text
+                connector = " // " if is_multi and target_text else " / "
+                return f"{source_text}{connector}{target_text}"
+
             def _sanitize_feature_profile(entry: Dict[str, Any]) -> Dict[str, Any]:
+                if entry.get("_feature_profile_sanitized"):
+                    profile_obj = entry.get("feature_profile")
+                    return profile_obj if isinstance(profile_obj, dict) else {}
+
                 profile_obj = entry.get("feature_profile")
                 if profile_obj is None:
                     profile_dict: Dict[str, Any] = {}
@@ -453,15 +486,22 @@ class SearchService:
                 entry.pop("bradley_device", None)
                 entry.pop("assonance_score", None)
                 entry.pop("consonance_score", None)
+                entry["_feature_profile_sanitized"] = True
                 return profile_dict
 
             def _ensure_target_phonetics(entry: Dict[str, Any]) -> Dict[str, Any]:
+                if entry.get("_target_phonetics_ready"):
+                    target_profile = entry.get("target_phonetics")
+                    return target_profile if isinstance(target_profile, dict) else {}
+
                 target_profile = entry.get("target_phonetics")
-                if isinstance(target_profile, dict):
+                if isinstance(target_profile, dict) and target_profile:
+                    entry["_target_phonetics_ready"] = True
                     return target_profile
                 target_word = entry.get("target_word")
                 profile = _build_word_phonetics(target_word)
                 entry["target_phonetics"] = profile
+                entry["_target_phonetics_ready"] = True
                 return profile
 
             fallback_signature = self._fallback_signature
@@ -701,13 +741,14 @@ class SearchService:
                         }
 
                     pattern_source = candidate_source_phrase or source_word
-                    pattern_separator = " // " if entry_is_multi else " / "
                     entry = {
                         "source_word": pattern_source,
                         "target_word": target_text,
                         "artist": "CMU Pronouncing Dictionary",
                         "song": "Phonetic Match",
-                        "pattern": f"{pattern_source}{pattern_separator}{target_text}",
+                        "pattern": _compose_pattern(
+                            pattern_source, target_text, entry_is_multi
+                        ),
                         "distance": None,
                         "confidence": combined,
                         "combined_score": combined,
@@ -995,7 +1036,9 @@ class SearchService:
                     pass
 
                 _sanitize_feature_profile(entry)
+                entry.pop("_feature_profile_sanitized", None)
                 _ensure_target_phonetics(entry)
+                entry.pop("_target_phonetics_ready", None)
                 return entry
 
             source_results: List[Tuple] = []
@@ -1041,7 +1084,11 @@ class SearchService:
                     swapped_target = row[0]
                     swapped_pattern = entry["pattern"]
                     if swapped_source and swapped_target:
-                        swapped_pattern = f"{swapped_source} / {swapped_target}"
+                        swapped_pattern = _compose_pattern(
+                            swapped_source,
+                            swapped_target,
+                            " " in str(swapped_target or "").strip(),
+                        )
                     entry = {
                         **entry,
                         "source_word": swapped_source,
@@ -1056,7 +1103,9 @@ class SearchService:
                 entry.setdefault("is_multi_word", is_multi)
                 entry.setdefault("result_variant", "multi_word" if is_multi else "single_word")
                 if is_multi and target_text:
-                    entry["pattern"] = f"{entry.get('source_word', source_word)} // {target_text}"
+                    entry["pattern"] = _compose_pattern(
+                        entry.get("source_word", source_word), target_text, True
+                    )
                 entry.setdefault("source_phrase", entry.get("source_word", source_word))
                 entry.setdefault("source_anchor", source_anchor_word)
                 entry.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
@@ -1108,7 +1157,6 @@ class SearchService:
                     entry_payload = {
                         "source_word": source_word,
                         "target_word": pattern.target_word,
-                        "pattern": f"{source_word} / {pattern.target_word}",
                         "confidence": confidence_float,
                         "rarity_score": pattern.rarity_score,
                         "llm_weakness_type": pattern.llm_weakness_type,
@@ -1123,10 +1171,11 @@ class SearchService:
                         "internal_rhyme_score": internal_rhyme,
                     }
                     is_multi = " " in str(pattern.target_word or "").strip()
+                    entry_payload["pattern"] = _compose_pattern(
+                        source_word, pattern.target_word, is_multi
+                    )
                     entry_payload["is_multi_word"] = is_multi
                     entry_payload["result_variant"] = "multi_word" if is_multi else "single_word"
-                    if is_multi and pattern.target_word:
-                        entry_payload["pattern"] = f"{source_word} // {pattern.target_word}"
                     entry_payload.setdefault("source_phrase", source_word)
                     entry_payload.setdefault("source_anchor", source_anchor_word)
                     entry_payload.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
@@ -1374,13 +1423,12 @@ class SearchService:
                 if not entry.get("result_variant"):
                     entry["result_variant"] = "multi_word" if is_multi else "single_word"
 
-                if entry.get("pattern") and target_text:
-                    connector = " // " if is_multi else " / "
+                if target_text:
                     source_value = str(entry.get("source_word", source_word))
-                    entry["pattern"] = f"{source_value}{connector}{target_text}"
-                elif not entry.get("pattern") and target_text:
-                    connector = " // " if is_multi else " / "
-                    entry["pattern"] = f"{source_word}{connector}{target_text}"
+                    if entry.get("pattern"):
+                        entry["pattern"] = _compose_pattern(source_value, target_text, is_multi)
+                    else:
+                        entry["pattern"] = _compose_pattern(source_word, target_text, is_multi)
                 if entry.get("combined_score") is None and entry.get("confidence") is not None:
                     entry["combined_score"] = entry["confidence"]
                 if entry.get("confidence") is None and entry.get("combined_score") is not None:
@@ -1395,6 +1443,7 @@ class SearchService:
                     except Exception:
                         entry["feature_profile"] = {}
                 _sanitize_feature_profile(entry)
+                entry.pop("_feature_profile_sanitized", None)
 
                 prosody_profile = entry.get("prosody_profile")
                 if prosody_profile is None:
@@ -1419,6 +1468,7 @@ class SearchService:
                 entry.setdefault("target_context", None)
                 entry.setdefault("distance", None)
                 _ensure_target_phonetics(entry)
+                entry.pop("_target_phonetics_ready", None)
 
                 bradley_value = entry.pop("_bradley_device", None)
                 if bradley_value is not None:
@@ -1436,6 +1486,8 @@ class SearchService:
                         normalized_entry = _normalize_entry(entry, category_key)
                         if not _filter_entry(normalized_entry):
                             continue
+
+                        normalized_entry.pop("_confidence_cache", None)
 
                         artist_key = str(normalized_entry.get("artist") or "").strip().lower()
                         song_key = str(normalized_entry.get("song") or "").strip().lower()
@@ -1585,6 +1637,8 @@ class SearchService:
                     normalized_entry = _normalize_entry(entry, category_key)
                     if not _filter_entry(normalized_entry):
                         continue
+
+                    normalized_entry.pop("_confidence_cache", None)
 
                     normalized_entry.pop("source_word", None)
                     processed.append(normalized_entry)
