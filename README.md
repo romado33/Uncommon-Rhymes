@@ -109,4 +109,12 @@ Running the tests ensures the fallback database creation and rhyme search behave
 - Cultural significance filters blend values stored in your database with curated category descriptions (e.g., `classic`, `cultural-icon`, `underground`) so the dropdown always reflects available metadata. The anti-LLM cultural-depth queries automatically detect whichever `cultural_significance` labels exist in the database, allowing you to introduce custom taxonomies without code changes.
 - `app.py` contains helper methods such as `format_rhyme_results` and `search_rhymes` that you can import into other projects or wrap with alternative front-ends.
 
+## Competitive research playbook
+
+Use the materials under `docs/competitor_analysis/` when auditing competitor
+sites such as RhymeZone or B-Rhymes. The playbook explains how to capture UI
+behaviour, network payloads, and parity notes, while the templates and
+`scripts/feature_probe.py` helper make it easy to mirror competitor filters
+against the existing search service.
+
 Happy rhyming!
