@@ -51,14 +51,14 @@ def create_interface(
     cultural_engine = getattr(search_service, "cultural_engine", None)
     if cultural_engine:
         for raw_label in getattr(cultural_engine, "cultural_categories", {}).keys():
-            normalized = search_service.normalize_source_name(raw_label)
+            normalized = search_service.normalize_filter_label(raw_label)
             if normalized:
                 normalized_cultural_labels.add(normalized)
 
     genre_options: List[str] = []
     try:
         for value in repository.get_cultural_significance_labels():
-            normalized = search_service.normalize_source_name(value)
+            normalized = search_service.normalize_filter_label(value)
             if normalized:
                 normalized_cultural_labels.add(normalized)
         genre_options = repository.get_genres()

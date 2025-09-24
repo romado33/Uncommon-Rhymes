@@ -127,8 +127,8 @@ def test_search_rhymes_zero_limit_short_circuits_results() -> None:
     assert result == {"cmu": [], "anti_llm": [], "rap_db": []}
 
 
-def test_normalize_source_name_sanitises_whitespace_and_underscores() -> None:
+def test_normalize_filter_label_sanitises_whitespace_and_underscores() -> None:
     service = make_service([])
 
-    assert service.normalize_source_name(None) == ""
-    assert service.normalize_source_name("  Mixed_CASE_Name  ") == "mixed-case-name"
+    assert service.normalize_filter_label(None) == ""
+    assert service.normalize_filter_label("  Mixed_CASE_Name  ") == "mixed-case-name"

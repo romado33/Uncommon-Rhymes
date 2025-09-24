@@ -13,7 +13,7 @@ from .dataclasses import AntiLLMPattern, SeedCandidate
 from .repository import PatternRepository, SQLitePatternRepository
 from .seed_expansion import (
     expand_from_seed_candidates,
-    normalize_module1_candidates,
+    normalize_seed_candidate_payloads,
     normalize_seed_candidates,
     phonetic_fingerprint,
     safe_float,
@@ -128,8 +128,8 @@ class AntiLLMRhymeEngine:
             value_sanitizer=self._safe_float,
         )
 
-    def _normalize_module1_candidates(self, candidates: Optional[List[Any]]) -> List[Dict[str, Any]]:
-        return normalize_module1_candidates(candidates, value_sanitizer=self._safe_float)
+    def _normalize_seed_candidate_payloads(self, candidates: Optional[List[Any]]) -> List[Dict[str, Any]]:
+        return normalize_seed_candidate_payloads(candidates, value_sanitizer=self._safe_float)
 
     def _extract_suffixes(self, word: str) -> Set[str]:
         return extract_suffixes(word)
@@ -337,7 +337,8 @@ class AntiLLMRhymeEngine:
     # Helper utilities reused by strategies
     # ------------------------------------------------------------------
 
-    def _cmu_candidates(self, word: str, limit: int, analyzer: Any) -> List[Any]:
+    def _fetch_cmu_seed_candidates(self, word: str, limit: int, analyzer: Any) -> List[Any]:
+        """Fetch CMU-derived seed candidates using the configured analyzer, returning an empty list when unavailable."""
         cmu_fn = getattr(self, "_cmu_seed_fn", None)
         if callable(cmu_fn):
             return cmu_fn(word, limit=limit, analyzer=analyzer)
@@ -364,7 +365,7 @@ class AntiLLMRhymeEngine:
             calculate_syllable_complexity=self._calculate_syllable_complexity,
             attach_profile=self._attach_profile,
             ensure_seed_resources=self._ensure_seed_resources,
-            cmu_candidates_fn=self._cmu_candidates,
+            cmu_candidates_fn=self._fetch_cmu_seed_candidates,
             seed_analyzer=self._seed_analyzer,
             stats=self.anti_llm_stats,
             stat_recorder=self._increment_stat,
@@ -372,7 +373,7 @@ class AntiLLMRhymeEngine:
             fetch_neighbors=lambda seed, limit: self._query_seed_neighbors(None, seed, limit),
             fetch_suffix_matches=lambda suffix, limit: self._query_suffix_matches(None, suffix, limit),
             suffix_extractor=self._extract_suffixes,
-            module1_normalizer=self._normalize_module1_candidates,
+            module1_normalizer=self._normalize_seed_candidate_payloads,
             fingerprint_fn=self._get_phonetic_fingerprint,
         )
 
