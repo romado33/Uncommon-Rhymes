@@ -9,6 +9,8 @@ import threading
 from contextlib import contextmanager
 from typing import Generator, Iterable, List, Optional, Sequence, Set, Tuple
 
+from rhyme_rarity.utils.observability import get_logger
+
 from demo_data import DEMO_RHYME_PATTERNS, iter_demo_rhyme_rows
 
 
@@ -62,18 +64,33 @@ class SQLiteRhymeRepository:
         self._pool_timeout = max(0.0, float(pool_timeout))
         self._pool: queue.Queue = queue.Queue(maxsize=self._pool_size)
         self._pool_semaphore = threading.BoundedSemaphore(self._pool_size)
+        self._logger = get_logger(__name__).bind(
+            component="sqlite_repository",
+            db_path=db_path,
+        )
+        self._logger.info(
+            "SQLite repository initialised",
+            context={"pool_size": self._pool_size, "pool_timeout": self._pool_timeout},
+        )
 
     def _create_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, check_same_thread=False)
         try:
             connection.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.Error:
-            # WAL mode is best-effort – ignore if unsupported.
-            pass
+        except sqlite3.Error as exc:
+            # WAL mode is best-effort – log but continue if unsupported.
+            self._logger.warning(
+                "SQLite WAL mode unavailable",
+                context={"error": str(exc)},
+            )
         return connection
 
     def _acquire_connection(self) -> sqlite3.Connection:
         if not self._pool_semaphore.acquire(timeout=self._pool_timeout or None):
+            self._logger.error(
+                "Database connection pool exhausted",
+                context={"pool_size": self._pool_size, "timeout": self._pool_timeout},
+            )
             raise TimeoutError("Database connection pool exhausted")
 
         try:
@@ -98,9 +115,13 @@ class SQLiteRhymeRepository:
             yield connection
             if connection.in_transaction:
                 connection.commit()
-        except Exception:
+        except Exception as exc:
             if connection.in_transaction:
                 connection.rollback()
+            self._logger.error(
+                "SQLite operation failed",
+                context={"error": str(exc)},
+            )
             raise
         finally:
             self._release_connection(connection)
@@ -108,7 +129,12 @@ class SQLiteRhymeRepository:
     def ensure_database(self) -> int:
         """Ensure the database exists and contains the expected schema."""
 
+        self._logger.info("Ensuring database availability")
         if not os.path.exists(self.db_path):
+            self._logger.info(
+                "Database file missing; creating demo database",
+                context={"db_path": self.db_path},
+            )
             return self._create_demo_database()
 
         try:
@@ -117,8 +143,17 @@ class SQLiteRhymeRepository:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM song_rhyme_patterns")
                 (count,) = cursor.fetchone()
-                return int(count)
-        except sqlite3.Error:
+                row_count = int(count)
+                self._logger.info(
+                    "Database schema verified",
+                    context={"row_count": row_count},
+                )
+                return row_count
+        except sqlite3.Error as exc:
+            self._logger.warning(
+                "Database verification failed; recreating demo",
+                context={"error": str(exc)},
+            )
             return self._create_demo_database(overwrite=True)
 
     def _initialise_schema(self, connection: sqlite3.Connection) -> None:
@@ -228,6 +263,11 @@ class SQLiteRhymeRepository:
 
         _ensure_parent_directory(self.db_path)
 
+        self._logger.info(
+            "Seeding demo database",
+            context={"overwrite": overwrite},
+        )
+
         with self._connect() as conn:
             self._initialise_schema(conn)
 
@@ -256,7 +296,12 @@ class SQLiteRhymeRepository:
             self._refresh_normalized_columns(conn)
             conn.commit()
 
-        return len(DEMO_RHYME_PATTERNS)
+        row_count = len(DEMO_RHYME_PATTERNS)
+        self._logger.info(
+            "Demo database seeded",
+            context={"rows": row_count},
+        )
+        return row_count
 
     def fetch_related_words(self, lookup_terms: Iterable[str]) -> Set[str]:
         terms = {str(term or "").strip().lower() for term in lookup_terms if term}
@@ -270,6 +315,11 @@ class SQLiteRhymeRepository:
         related: Set[str] = set()
         placeholders = ",".join("?" for _ in normalized_terms)
         limit_hint = 50 * len(normalized_terms)
+
+        self._logger.debug(
+            "Fetching related words",
+            context={"term_count": len(normalized_terms)},
+        )
 
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -305,6 +355,14 @@ class SQLiteRhymeRepository:
                 for row in cursor.fetchall()
                 if row and row[0]
             )
+
+        self._logger.info(
+            "Related words fetched",
+            context={
+                "term_count": len(normalized_terms),
+                "related_count": len(related),
+            },
+        )
 
         return related
 

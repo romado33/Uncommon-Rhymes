@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.profile import normalize_profile_dict
+from rhyme_rarity.utils.observability import get_logger
 
 from .analytics import (
     aggregate_cultural_distribution,
@@ -46,13 +47,13 @@ class CulturalIntelligenceEngine:
         self._signature_cache: OrderedDict[
             Tuple[str, Optional[int]], Tuple[str, ...]
         ] = OrderedDict()
-        
+
         # Initialize cultural intelligence components
         self.artist_profiles = build_artist_profiles()
         self.cultural_categories = build_cultural_categories()
         self.era_classifications = build_era_classifications()
         self.regional_mappings = build_regional_mappings()
-        
+
         # Performance tracking
         self.cultural_stats = {
             'patterns_analyzed': 0,
@@ -60,15 +61,22 @@ class CulturalIntelligenceEngine:
             'cultural_contexts_generated': 0,
             'regional_patterns_identified': 0
         }
-        
-        print("🎯 Enhanced Cultural Database Engine initialized")
-        print("Providing authentic cultural attribution beyond LLM capabilities")
+
+        self._logger = get_logger(__name__).bind(component="cultural_engine")
+        self._logger.info(
+            "Cultural intelligence engine initialised",
+            context={"db_path": db_path},
+        )
 
     def _get_connection(self) -> sqlite3.Connection:
         connection = self._connection
         if connection is None:
             connection = sqlite3.connect(self.db_path)
             self._connection = connection
+            self._logger.info(
+                "Opened cultural engine database connection",
+                context={"db_path": self.db_path},
+            )
         return connection
 
     @contextmanager
@@ -84,6 +92,7 @@ class CulturalIntelligenceEngine:
         if connection is not None:
             connection.close()
             self._connection = None
+            self._logger.info("Closed cultural engine database connection")
 
     def __del__(self) -> None:  # pragma: no cover - defensive cleanup
         try:
@@ -95,6 +104,10 @@ class CulturalIntelligenceEngine:
         """Attach or replace the phonetic analyzer for phonetic validation."""
         self.phonetic_analyzer = analyzer
         self._clear_signature_cache()
+        self._logger.info(
+            "Updated cultural engine phonetic analyzer",
+            context={"analyzer_present": analyzer is not None},
+        )
 
     def _estimate_syllables(self, word: str) -> int:
         if not word:
@@ -146,6 +159,7 @@ class CulturalIntelligenceEngine:
     def _clear_signature_cache(self) -> None:
         with self._cache_lock:
             self._signature_cache.clear()
+        self._logger.debug("Cleared cultural signature cache")
 
     def _trim_cache(self, cache: OrderedDict) -> None:
         if self._max_cache_entries <= 0:
@@ -286,7 +300,10 @@ class CulturalIntelligenceEngine:
             return cultural_patterns
             
         except sqlite3.Error as e:
-            print(f"Database error in cultural engine: {e}")
+            self._logger.error(
+                "Database error in cultural engine",
+                context={"error": str(e), "source_word": source_word},
+            )
             return []
     
     def get_artist_signature_patterns(self, artist_name: str, limit: int = 20) -> List[Dict]:
@@ -319,7 +336,10 @@ class CulturalIntelligenceEngine:
             return signature_patterns
             
         except sqlite3.Error as e:
-            print(f"Database error getting artist patterns: {e}")
+            self._logger.error(
+                "Database error getting artist patterns",
+                context={"error": str(e), "artist": artist_name},
+            )
             return []
     
     def analyze_cultural_distribution(self) -> Dict:
@@ -363,7 +383,10 @@ class CulturalIntelligenceEngine:
             }
             
         except sqlite3.Error as e:
-            print(f"Database error in cultural analysis: {e}")
+            self._logger.error(
+                "Database error in cultural analysis",
+                context={"error": str(e)},
+            )
             return {}
     
     def get_performance_stats(self) -> Dict:
