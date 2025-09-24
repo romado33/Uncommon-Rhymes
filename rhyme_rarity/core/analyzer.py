@@ -50,6 +50,9 @@ class EnhancedPhoneticAnalyzer:
             Tuple[str, Tuple[Tuple[str, ...], ...]], Tuple[Tuple[str, ...], ...]
         ] = OrderedDict()
         self._similarity_cache: OrderedDict[Tuple[str, str], float] = OrderedDict()
+        self._phrase_component_cache: OrderedDict[
+            Tuple[str, Optional[int]], PhraseComponents
+        ] = OrderedDict()
 
         print("📊 Enhanced Core Phonetic Analyzer initialized")
     
@@ -96,6 +99,54 @@ class EnhancedPhoneticAnalyzer:
 
         while len(cache) > self._max_cache_entries:
             cache.popitem(last=False)
+
+    def get_phrase_components(
+        self,
+        phrase: str,
+        cmu_loader: Optional[CMUDictLoader] = None,
+    ) -> PhraseComponents:
+        """Return memoized ``PhraseComponents`` for ``phrase``.
+
+        Results are cached per CMU loader instance so repeated lookups during a
+        single request can reuse earlier phonetic analysis without recomputing
+        tokenisation and syllable estimates.
+        """
+
+        loader = cmu_loader or getattr(self, "cmu_loader", None)
+        cache_key = ((phrase or "").strip().lower(), id(loader) if loader else None)
+
+        with self._cache_lock:
+            cached = self._phrase_component_cache.get(cache_key)
+            if cached is not None:
+                self._phrase_component_cache.move_to_end(cache_key)
+                return cached
+
+        components = extract_phrase_components(phrase or "", loader)
+
+        with self._cache_lock:
+            existing = self._phrase_component_cache.get(cache_key)
+            if existing is not None:
+                self._phrase_component_cache.move_to_end(cache_key)
+                return existing
+
+            self._phrase_component_cache[cache_key] = components
+            self._trim_cache(self._phrase_component_cache)
+
+        return components
+
+    def clear_cached_results(self) -> None:
+        """Reset memoized analyzer state.
+
+        Exposes a lightweight hook so services can explicitly drop cached
+        phonetic computations when upstream resources (e.g. CMU dictionaries)
+        change within long-running processes.
+        """
+
+        with self._cache_lock:
+            self._pronunciation_cache.clear()
+            self._rhyme_tail_cache.clear()
+            self._similarity_cache.clear()
+            self._phrase_component_cache.clear()
     
     def get_phonetic_similarity(self, word1: str, word2: str) -> float:
         """
@@ -169,7 +220,7 @@ class EnhancedPhoneticAnalyzer:
     
     def _phrase_components(self, word: str) -> PhraseComponents:
         loader = getattr(self, "cmu_loader", None)
-        return extract_phrase_components(word or "", loader)
+        return self.get_phrase_components(word or "", loader)
 
     def _clean_word(self, word: str) -> str:
         """Clean and normalize word or phrase for phonetic analysis."""
@@ -810,7 +861,13 @@ def get_cmu_rhymes(
     if loader is None:
         loader = DEFAULT_CMU_LOADER
 
-    components = extract_phrase_components(base_phrase, loader)
+    if analyzer is not None and hasattr(analyzer, "get_phrase_components"):
+        try:
+            components = analyzer.get_phrase_components(base_phrase, loader)
+        except Exception:
+            components = extract_phrase_components(base_phrase, loader)
+    else:
+        components = extract_phrase_components(base_phrase, loader)
     normalized_phrase = components.normalized_phrase or base_phrase.lower()
     anchor_lookup = components.anchor or normalized_phrase.split()[-1] if normalized_phrase else base_phrase.lower()
 
@@ -914,7 +971,13 @@ def get_cmu_rhymes(
         else:
             combined = score
 
-        candidate_info = extract_phrase_components(suggestion, loader)
+        if analyzer is not None and hasattr(analyzer, "get_phrase_components"):
+            try:
+                candidate_info = analyzer.get_phrase_components(suggestion, loader)
+            except Exception:
+                candidate_info = extract_phrase_components(suggestion, loader)
+        else:
+            candidate_info = extract_phrase_components(suggestion, loader)
 
         entry: Dict[str, Any] = {
             "word": suggestion,
