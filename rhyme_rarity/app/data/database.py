@@ -16,6 +16,35 @@ def _ensure_parent_directory(path: str) -> None:
         os.makedirs(directory, exist_ok=True)
 
 
+_GENRE_NORMALIZED_EXPR = (
+    "CASE "
+    "WHEN genre IS NULL OR TRIM(genre) = '' THEN NULL "
+    "ELSE LOWER(TRIM(genre)) "
+    "END"
+)
+
+_CULTURAL_NORMALIZED_EXPR = (
+    "CASE "
+    "WHEN cultural_significance IS NULL OR TRIM(cultural_significance) = '' THEN NULL "
+    "ELSE REPLACE(LOWER(TRIM(cultural_significance)), '_', '-') "
+    "END"
+)
+
+
+def _normalise_genre(value: str) -> Optional[str]:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    return cleaned.lower()
+
+
+def _normalise_cultural_significance(value: str) -> Optional[str]:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    return cleaned.lower().replace("_", "-")
+
+
 class SQLiteRhymeRepository:
     """Repository encapsulating all SQLite access for rhyme searches."""
 
@@ -38,6 +67,7 @@ class SQLiteRhymeRepository:
 
         try:
             with self._connect() as conn:
+                self._ensure_schema_extensions(conn)
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM song_rhyme_patterns")
                 (count,) = cursor.fetchone()
@@ -62,8 +92,87 @@ class SQLiteRhymeRepository:
                 phonetic_similarity REAL,
                 cultural_significance TEXT,
                 source_context TEXT,
-                target_context TEXT
+                target_context TEXT,
+                genre_normalized TEXT,
+                cultural_significance_normalized TEXT
             )
+            """
+        )
+        self._ensure_schema_extensions(connection)
+
+    def _ensure_schema_extensions(self, connection: sqlite3.Connection) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA table_info(song_rhyme_patterns)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        if "genre_normalized" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN genre_normalized TEXT
+                """
+            )
+
+        if "cultural_significance_normalized" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN cultural_significance_normalized TEXT
+                """
+            )
+
+        self._refresh_normalized_columns(connection)
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_source_lookup
+            ON song_rhyme_patterns (
+                source_word,
+                line_distance,
+                confidence_score DESC,
+                phonetic_similarity DESC
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_target_lookup
+            ON song_rhyme_patterns (
+                target_word,
+                line_distance,
+                confidence_score DESC,
+                phonetic_similarity DESC
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_genre_normalized
+            ON song_rhyme_patterns (genre_normalized)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_cultural_normalized
+            ON song_rhyme_patterns (cultural_significance_normalized)
+            """
+        )
+        connection.commit()
+
+    def _refresh_normalized_columns(self, connection: sqlite3.Connection) -> None:
+        cursor = connection.cursor()
+        cursor.execute(
+            f"""
+            UPDATE song_rhyme_patterns
+            SET genre_normalized = {_GENRE_NORMALIZED_EXPR}
+            WHERE COALESCE(genre_normalized, '') != COALESCE({_GENRE_NORMALIZED_EXPR}, '')
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE song_rhyme_patterns
+            SET cultural_significance_normalized = {_CULTURAL_NORMALIZED_EXPR}
+            WHERE COALESCE(cultural_significance_normalized, '') != COALESCE({_CULTURAL_NORMALIZED_EXPR}, '')
             """
         )
 
@@ -98,6 +207,7 @@ class SQLiteRhymeRepository:
                 """,
                 iter_demo_rhyme_rows(),
             )
+            self._refresh_normalized_columns(conn)
             conn.commit()
 
         return len(DEMO_RHYME_PATTERNS)
@@ -177,6 +287,17 @@ class SQLiteRhymeRepository:
             FROM song_rhyme_patterns
         """
 
+        normalised_cultural_filters = [
+            value
+            for value in (
+                _normalise_cultural_significance(item) for item in cultural_filters
+            )
+            if value is not None
+        ]
+        normalised_genre_filters = [
+            value for value in (_normalise_genre(item) for item in genre_filters) if value is not None
+        ]
+
         def build_query(column: str) -> Tuple[str, List]:
             conditions = [
                 f"{column} = ?",
@@ -189,17 +310,19 @@ class SQLiteRhymeRepository:
                 conditions.append("phonetic_similarity >= ?")
                 params.append(phonetic_threshold)
 
-            if cultural_filters:
-                placeholders = ",".join("?" for _ in cultural_filters)
+            if normalised_cultural_filters:
+                placeholders = ",".join("?" for _ in normalised_cultural_filters)
                 conditions.append(
-                    f"REPLACE(LOWER(cultural_significance), '_', '-') IN ({placeholders})"
+                    f"cultural_significance_normalized IN ({placeholders})"
                 )
-                params.extend(cultural_filters)
+                params.extend(normalised_cultural_filters)
 
-            if genre_filters:
-                placeholders = ",".join("?" for _ in genre_filters)
-                conditions.append("LOWER(genre) IN ({})".format(placeholders))
-                params.extend(genre_filters)
+            if normalised_genre_filters:
+                placeholders = ",".join("?" for _ in normalised_genre_filters)
+                conditions.append(
+                    "genre_normalized IN ({})".format(placeholders)
+                )
+                params.extend(normalised_genre_filters)
 
             if max_line_distance is not None:
                 conditions.append("line_distance <= ?")
@@ -213,6 +336,8 @@ class SQLiteRhymeRepository:
             return query, params
 
         with self._connect() as conn:
+            self._refresh_normalized_columns(conn)
+            conn.commit()
             cursor = conn.cursor()
             query, params = build_query("source_word")
             cursor.execute(query, params)
