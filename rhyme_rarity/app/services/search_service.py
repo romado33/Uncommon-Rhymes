@@ -98,7 +98,7 @@ class RhymeQueryOrchestrator:
         )
 
         self._cache_lock = threading.RLock()
-        self._max_cache_entries = 256
+        self._max_cache_entries = 512
         self._fallback_signature_cache: OrderedDict[str, Tuple[str, ...]] = OrderedDict()
         self._cmu_rhyme_cache: OrderedDict[
             Tuple[str, int, Optional[int], Optional[int]], Tuple[Any, ...]

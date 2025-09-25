@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
@@ -12,6 +13,21 @@ try:  # pragma: no cover - optional dependency
     import pronouncing  # type: ignore
 except ImportError:  # pragma: no cover - gracefully handle missing package
     pronouncing = None  # type: ignore
+
+
+TOKEN_PATTERN = re.compile(r"[A-Za-z']+")
+STRESS_PATTERN = re.compile(r"[12]")
+
+
+@lru_cache(maxsize=2048)
+def _tokenize_phrase(phrase: str) -> Tuple[Tuple[str, ...], Tuple[str, ...], str]:
+    """Return cached tokenisation for ``phrase`` using precompiled regexes."""
+
+    original = phrase or ""
+    tokens = tuple(match.group(0) for match in TOKEN_PATTERN.finditer(original))
+    normalized_tokens = tuple(token.lower() for token in tokens if token)
+    normalized_phrase = " ".join(normalized_tokens)
+    return tokens, normalized_tokens, normalized_phrase
 
 
 @dataclass
@@ -37,10 +53,9 @@ def extract_phrase_components(
     """Return the final stressed token and syllable summary for ``phrase``."""
 
     original = phrase or ""
-    token_pattern = re.compile(r"[A-Za-z']+")
-    tokens = [match.group(0) for match in token_pattern.finditer(original)]
-    normalized_tokens = [token.lower() for token in tokens if token]
-    normalized_phrase = " ".join(normalized_tokens)
+    tokens_cached, normalized_cached, normalized_phrase = _tokenize_phrase(original)
+    tokens = list(tokens_cached)
+    normalized_tokens = list(normalized_cached)
 
     syllable_counts = [estimate_syllable_count(token) for token in normalized_tokens]
     fallback_word = normalized_phrase or original.strip() or ""
@@ -54,7 +69,7 @@ def extract_phrase_components(
     fallback_pronunciations: List[List[str]] = []
 
     def _phones_with_stress(phones: Iterable[str]) -> bool:
-        return any(re.search(r"[12]", phone) for phone in phones)
+        return any(STRESS_PATTERN.search(phone) for phone in phones)
 
     for idx in range(len(normalized_tokens) - 1, -1, -1):
         token = normalized_tokens[idx]

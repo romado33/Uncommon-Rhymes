@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .dataclasses import AntiLLMPattern, SeedCandidate
 from .repository import PatternRepository
@@ -32,6 +32,7 @@ def normalize_seed_candidates(
     seen: Set[str] = set()
     fingerprint_builder = fingerprint_fn or phonetic_fingerprint
     suffix_builder = suffix_extractor or extract_suffixes
+    fingerprint_cache: Dict[str, Set[str]] = {}
 
     for raw_seed in module1_seeds:
         word: Optional[str] = None
@@ -103,7 +104,9 @@ def normalize_seed_candidates(
         if rarity_value <= 0:
             rarity_value = get_word_rarity(normalized_word)
 
-        fingerprint = set(fingerprint_builder(word_str))
+        if word_str not in fingerprint_cache:
+            fingerprint_cache[word_str] = set(fingerprint_builder(word_str))
+        fingerprint = set(fingerprint_cache[word_str])
         suffixes = set(suffix_builder(word_str))
         signature_hints = set(signatures)
         signature_hints.update(fingerprint)
@@ -255,6 +258,11 @@ def expand_from_seed_candidates(
 
     per_seed_limit = max(1, (limit // max(len(seeds), 1)) + 1)
 
+    fingerprint_source = fingerprint_fn or phonetic_fingerprint
+    complexity_cache: Dict[Tuple[str, str], float] = {}
+    syllable_cache: Dict[str, float] = {}
+    candidate_fingerprint_cache: Dict[str, Set[str]] = {}
+
     for seed in seeds:
         if len(results) >= limit:
             break
@@ -270,9 +278,7 @@ def expand_from_seed_candidates(
         if seed.fingerprint:
             combined_signatures.update(seed.fingerprint)
         else:
-            generated_fingerprint = (fingerprint_fn or phonetic_fingerprint)(
-                seed_word
-            )
+            generated_fingerprint = fingerprint_source(seed_word)
             combined_signatures.update(generated_fingerprint)
             seed.fingerprint = set(generated_fingerprint)
 
@@ -335,6 +341,8 @@ def expand_from_seed_candidates(
 
         local_seen: Set[str] = set()
 
+        deduped_candidates: Dict[str, Dict[str, Any]] = {}
+
         for candidate in candidate_dicts:
             if len(results) >= limit:
                 break
@@ -344,6 +352,46 @@ def expand_from_seed_candidates(
                 continue
 
             normalized_target = target.lower()
+            entry = deduped_candidates.get(normalized_target)
+            rarity_value = value_sanitizer(candidate.get("rarity"), default=0.0)
+            combined_value = value_sanitizer(
+                candidate.get("combined"), default=0.0
+            )
+            similarity_value = value_sanitizer(
+                candidate.get("similarity"), default=0.0
+            )
+            phonetic_similarity = value_sanitizer(
+                candidate.get("phonetic_similarity"), default=0.0
+            )
+            confidence_value = value_sanitizer(
+                candidate.get("confidence"), default=combined_value or similarity_value
+            )
+
+            if entry is None:
+                deduped_candidates[normalized_target] = {
+                    "candidate": target,
+                    "rarity": rarity_value,
+                    "combined": combined_value,
+                    "similarity": similarity_value,
+                    "phonetic_similarity": phonetic_similarity,
+                    "confidence": confidence_value,
+                    "context": candidate.get("context") or candidate.get("source"),
+                }
+            else:
+                entry["rarity"] = max(entry["rarity"], rarity_value)
+                entry["combined"] = max(entry["combined"], combined_value)
+                entry["similarity"] = max(entry["similarity"], similarity_value)
+                entry["phonetic_similarity"] = max(
+                    entry["phonetic_similarity"], phonetic_similarity
+                )
+                entry["confidence"] = max(entry["confidence"], confidence_value)
+                if not entry.get("context"):
+                    entry["context"] = candidate.get("context") or candidate.get("source")
+
+        for normalized_target, candidate in deduped_candidates.items():
+            if len(results) >= limit:
+                break
+
             if (
                 normalized_target in seen_targets
                 or normalized_target in local_seen
@@ -352,20 +400,30 @@ def expand_from_seed_candidates(
             ):
                 continue
 
-            fingerprint_source = fingerprint_fn or phonetic_fingerprint
-            fingerprint = fingerprint_source(target)
+            fingerprint = candidate_fingerprint_cache.get(normalized_target)
+            if fingerprint is None:
+                fingerprint = set(fingerprint_source(candidate["candidate"]))
+                candidate_fingerprint_cache[normalized_target] = fingerprint
+
             if combined_signatures and fingerprint and not (fingerprint & combined_signatures):
                 continue
 
             base_rarity = get_word_rarity(normalized_target)
-            base_rarity = max(
-                base_rarity,
-                value_sanitizer(candidate.get("rarity"), default=0.0),
-            )
+            base_rarity = max(base_rarity, candidate["rarity"])
 
             seed_boost = min(1.5, seed.rarity * 0.5)
-            complexity = analyze_phonological_complexity(source_word, normalized_target)
-            syllable_complexity = calculate_syllable_complexity(normalized_target)
+            complexity_key = (source_word, normalized_target)
+            if complexity_key not in complexity_cache:
+                complexity_cache[complexity_key] = analyze_phonological_complexity(
+                    source_word, normalized_target
+                )
+            complexity = complexity_cache[complexity_key]
+
+            if normalized_target not in syllable_cache:
+                syllable_cache[normalized_target] = calculate_syllable_complexity(
+                    normalized_target
+                )
+            syllable_complexity = syllable_cache[normalized_target]
 
             final_score = min(
                 5.0,
@@ -389,16 +447,11 @@ def expand_from_seed_candidates(
             elif complexity >= 2.0:
                 weakness = "phonological_processing"
 
-            confidence = value_sanitizer(
-                candidate.get("confidence"),
-                default=value_sanitizer(candidate.get("combined"), default=0.7),
+            confidence = max(
+                candidate["confidence"],
+                candidate["phonetic_similarity"],
+                candidate["similarity"],
             )
-            similarity_hint = value_sanitizer(
-                candidate.get("phonetic_similarity"),
-                default=value_sanitizer(candidate.get("similarity"), default=0.0),
-            )
-            if similarity_hint:
-                confidence = max(confidence, similarity_hint)
             if confidence <= 0:
                 confidence = 0.65 + min(0.25, complexity * 0.1)
 
@@ -410,7 +463,7 @@ def expand_from_seed_candidates(
 
             pattern = AntiLLMPattern(
                 source_word=source_word,
-                target_word=target,
+                target_word=candidate["candidate"],
                 rarity_score=final_score,
                 cultural_depth=str(cultural_depth),
                 llm_weakness_type=weakness,
