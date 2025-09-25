@@ -88,10 +88,10 @@ class WordRarityMap:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    SELECT LOWER(target_word), COUNT(*)
+                    SELECT target_word_normalized, COUNT(*)
                     FROM song_rhyme_patterns
-                    WHERE target_word IS NOT NULL AND TRIM(target_word) != ''
-                    GROUP BY LOWER(target_word)
+                    WHERE target_word_normalized IS NOT NULL
+                    GROUP BY target_word_normalized
                     """
                 )
                 rows = cursor.fetchall()

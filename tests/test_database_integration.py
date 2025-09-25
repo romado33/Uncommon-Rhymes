@@ -11,13 +11,22 @@ import pytest
 from rhyme_rarity.app.data.database import SQLiteRhymeRepository
 
 
+def _normalize_text(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_cultural(value: str) -> str:
+    normalized = _normalize_text(value)
+    return normalized.replace("_", "-") if normalized else normalized
+
+
 @pytest.fixture
 def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
     db_path = tmp_path / "integration.db"
     repository = SQLiteRhymeRepository(str(db_path))
     repository.ensure_database()
 
-    rows: List[Tuple] = [
+    base_rows: List[Tuple[str, str, str, str, str, str, int, float, float, str, str, str]] = [
         (
             "pattern-accepted-source",
             "sun",
@@ -118,6 +127,44 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
         ),
     ]
 
+    rows: List[Tuple] = []
+    for entry in base_rows:
+        (
+            pattern,
+            source_word,
+            target_word,
+            artist,
+            song_title,
+            genre,
+            line_distance,
+            confidence,
+            phonetic_similarity,
+            cultural_significance,
+            source_context,
+            target_context,
+        ) = entry
+        rows.append(
+            (
+                pattern,
+                source_word,
+                _normalize_text(source_word),
+                target_word,
+                _normalize_text(target_word),
+                artist,
+                _normalize_text(artist),
+                song_title,
+                genre,
+                line_distance,
+                confidence,
+                phonetic_similarity,
+                cultural_significance,
+                source_context,
+                target_context,
+                _normalize_text(genre),
+                _normalize_cultural(cultural_significance),
+            )
+        )
+
     with repository._connect() as connection:
         cursor = connection.cursor()
         cursor.execute("DELETE FROM song_rhyme_patterns")
@@ -126,8 +173,11 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             INSERT INTO song_rhyme_patterns (
                 pattern,
                 source_word,
+                source_word_normalized,
                 target_word,
+                target_word_normalized,
                 artist,
+                artist_normalized,
                 song_title,
                 genre,
                 line_distance,
@@ -135,9 +185,11 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
                 phonetic_similarity,
                 cultural_significance,
                 source_context,
-                target_context
+                target_context,
+                genre_normalized,
+                cultural_significance_normalized
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

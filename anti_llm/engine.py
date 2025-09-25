@@ -314,6 +314,10 @@ class AntiLLMRhymeEngine:
         from rhyme_rarity.core import WordRarityMap  # Local import to avoid cycle
 
         fallback = WordRarityMap()
+        try:
+            fallback.update_from_database(self.db_path)
+        except Exception:
+            pass
         self._rarity_map = fallback
         return fallback
 

@@ -31,6 +31,20 @@ from .profiles import (
     generate_dynamic_profile,
 )
 
+def _normalize_lookup_term(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _normalize_cultural_value(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_lookup_term(value)
+    if not normalized:
+        return None
+    return normalized.replace("_", "-")
+
+
 class CulturalIntelligenceEngine:
     """
     Enhanced cultural intelligence system providing authentic attribution
@@ -254,25 +268,32 @@ class CulturalIntelligenceEngine:
         """Calculate cultural rarity score based on context"""
         return cultural_rarity_score(context)
 
-    def find_cultural_patterns(self, source_word: str, cultural_filter: Optional[str] = None, 
+    def find_cultural_patterns(self, source_word: str, cultural_filter: Optional[str] = None,
                              limit: int = 20) -> List[Dict]:
         """Find patterns with specific cultural characteristics"""
         try:
+            normalized_source = _normalize_lookup_term(source_word)
+            if not normalized_source:
+                return []
+
             with self._cursor() as cursor:
                 query = """
                 SELECT target_word, artist, song_title, confidence_score, cultural_significance
                 FROM song_rhyme_patterns
-                WHERE source_word = ?
-                  AND source_word != target_word
+                WHERE source_word_normalized = ?
+                  AND target_word_normalized IS NOT NULL
+                  AND target_word_normalized != ?
                 """
 
-                params = [source_word]
+                params = [normalized_source, normalized_source]
 
                 if cultural_filter:
-                    query += " AND cultural_significance = ?"
-                    params.append(cultural_filter)
+                    normalized_filter = _normalize_cultural_value(cultural_filter)
+                    if normalized_filter:
+                        query += " AND cultural_significance_normalized = ?"
+                        params.append(normalized_filter)
 
-                query += " ORDER BY confidence_score DESC LIMIT ?"
+                query += " ORDER BY confidence_score DESC, phonetic_similarity DESC LIMIT ?"
                 params.append(limit)
 
                 cursor.execute(query, params)
@@ -309,16 +330,21 @@ class CulturalIntelligenceEngine:
     def get_artist_signature_patterns(self, artist_name: str, limit: int = 20) -> List[Dict]:
         """Get signature rhyme patterns for a specific artist"""
         try:
+            normalized_artist = _normalize_lookup_term(artist_name)
+            if not normalized_artist:
+                return []
+
             with self._cursor() as cursor:
                 cursor.execute("""
                     SELECT source_word, target_word, song_title, confidence_score, pattern
                     FROM song_rhyme_patterns
-                    WHERE LOWER(artist) = ?
-                      AND source_word != target_word
+                    WHERE artist_normalized = ?
+                      AND target_word_normalized IS NOT NULL
+                      AND source_word_normalized != target_word_normalized
                       AND confidence_score >= 0.8
-                    ORDER BY confidence_score DESC
+                    ORDER BY confidence_score DESC, phonetic_similarity DESC
                     LIMIT ?
-                """, (artist_name.lower(), limit))
+                """, (normalized_artist, limit))
 
                 results = cursor.fetchall()
 
@@ -358,9 +384,10 @@ class CulturalIntelligenceEngine:
 
                 # Artist distribution
                 cursor.execute("""
-                    SELECT artist, COUNT(*)
+                    SELECT COALESCE(MIN(artist), '') AS artist, COUNT(*)
                     FROM song_rhyme_patterns
-                    GROUP BY artist
+                    WHERE artist_normalized IS NOT NULL
+                    GROUP BY artist_normalized
                     ORDER BY COUNT(*) DESC
                     LIMIT 20
                 """)
@@ -368,9 +395,10 @@ class CulturalIntelligenceEngine:
 
                 # Genre distribution
                 cursor.execute("""
-                    SELECT genre, COUNT(*)
+                    SELECT COALESCE(MIN(genre), '') AS genre, COUNT(*)
                     FROM song_rhyme_patterns
-                    GROUP BY genre
+                    WHERE genre_normalized IS NOT NULL
+                    GROUP BY genre_normalized
                     ORDER BY COUNT(*) DESC
                 """)
                 genre_dist = dict(cursor.fetchall())
