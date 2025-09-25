@@ -15,6 +15,8 @@ Anti-LLM pattern generation
 Result normalization & return
 ```
 
+> **Note:** The "Anti-LLM" phase does not introduce a distinct dataset. It reuses the CMU-derived phonetic candidates harvested in the previous stage, layering rarity heuristics and synthesis on top of the same pipeline that powers the CMU column in the UI. As a result the product exposes two high-level result families: CMU/Anti-LLM (combined phonetic outputs) and the cultural repository branch.
+
 ## 1. Normalization & Input Preparation
 * Trim, lowercase, and validate the source word while capturing telemetry of raw inputs and limits.
 * Coerce confidence to a float, normalise filter labels (cultural, genre, rhyme type, cadence, Bradley devices), and clamp numeric thresholds for syllables, rarity, stress, and concurrency filters.【F:rhyme_rarity/app/services/search_service.py†L452-L558】
