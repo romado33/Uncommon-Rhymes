@@ -2158,42 +2158,15 @@ class RhymeResultFormatter:
             if rhyme_type:
                 details.append(f"• Rhyme type: {str(rhyme_type).replace('_', ' ').title()}")
 
-            cadence_value = None
-            prosody_profile = entry.get("prosody_profile")
-            if isinstance(prosody_profile, dict):
-                cadence_value = (
-                    prosody_profile.get("complexity_tag")
-                    or prosody_profile.get("cadence_tag")
-                )
-            if cadence_value is None and isinstance(feature_profile, dict):
-                cadence_value = (
-                    feature_profile.get("complexity_tag")
-                    or feature_profile.get("cadence_tag")
-                )
-            if cadence_value:
-                details.append(f"• Cadence: {str(cadence_value).replace('_', ' ').title()}")
-
             stress_alignment = entry.get("stress_alignment")
             if stress_alignment is None and isinstance(feature_profile, dict):
                 stress_alignment = feature_profile.get("stress_alignment")
-            if stress_alignment is not None:
-                try:
-                    details.append(f"• Stress alignment: {float(stress_alignment):.2f}")
-                except (TypeError, ValueError):
-                    pass
             rhythm_score = entry.get("rhythm_score")
             if rhythm_score is not None and rhythm_score != stress_alignment:
                 try:
                     details.append(f"• Rhythm score: {float(rhythm_score):.2f}")
                 except (TypeError, ValueError):
                     pass
-
-            matched_sources = entry.get("matched_signature_sources")
-            if matched_sources:
-                support = ", ".join(
-                    sorted(str(src).replace('_', ' ').title() for src in matched_sources)
-                )
-                details.append(f"• Signature support: {support}")
 
             context_matches = entry.get("signature_context_matches")
             if context_matches:
@@ -2294,35 +2267,6 @@ class RhymeResultFormatter:
                     details.append(
                         f"• Source: {artist or 'Unknown'} — {song or 'Unknown'}"
                     )
-                cultural_context = entry.get("cultural_context")
-                if isinstance(cultural_context, dict):
-                    for label, value in cultural_context.items():
-                        if not value:
-                            continue
-                        label_text = str(label).replace("_", " ").title()
-                        if isinstance(value, (list, tuple, set)):
-                            items: List[str] = []
-                            for item in value:
-                                if not item:
-                                    continue
-                                text = str(item)
-                                if isinstance(item, str):
-                                    text = text.replace("_", " ").title()
-                                items.append(text)
-                            value_text = ", ".join(items)
-                        else:
-                            value_text = str(value)
-                            if isinstance(value, str):
-                                value_text = value_text.replace("_", " ").title()
-                        key_normalized = str(label).lower()
-                        if key_normalized == "regional_origin":
-                            details.append(f"• Region: {value_text}")
-                        elif key_normalized == "style_characteristics":
-                            details.append(f"• Styles: {value_text}")
-                        elif key_normalized == "era":
-                            details.append(f"• Cultural: Era: {value_text}")
-                        else:
-                            details.append(f"• Cultural: {label_text}: {value_text}")
                 source_context_raw = entry.get("source_context")
                 target_context_raw = entry.get("target_context")
                 source_context = (

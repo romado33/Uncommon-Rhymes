@@ -284,4 +284,3 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
     assert "Cadence focus: Smooth Flow" in output
     assert "Min stress alignment: 0.72" in output
     assert "Phonetic threshold: 0.86" in output
-    assert "Signature support: Alignment, Spelling" in output
