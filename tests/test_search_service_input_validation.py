@@ -99,7 +99,14 @@ def make_service(patterns: Iterable[DummyPattern]) -> SearchService:
 
 
 def _anti_targets(result: dict[str, list[dict]]) -> list[str]:
-    return [entry["target_word"] for entry in result["anti_llm"]]
+    entries: list[dict] = []
+    for bucket in ("uncommon", "multi_word"):
+        entries.extend(result.get(bucket, []))
+    return [
+        entry["target_word"]
+        for entry in entries
+        if entry.get("result_source") == "anti_llm"
+    ]
 
 
 def test_search_rhymes_returns_empty_for_null_source_word() -> None:
@@ -107,7 +114,7 @@ def test_search_rhymes_returns_empty_for_null_source_word() -> None:
 
     result = service.search_rhymes(None)
 
-    assert result == {"cmu": [], "anti_llm": [], "rap_db": []}
+    assert result == {"uncommon": [], "multi_word": [], "rap_db": []}
 
 
 def test_search_rhymes_coerces_invalid_min_confidence() -> None:
@@ -138,7 +145,7 @@ def test_search_rhymes_zero_limit_short_circuits_results() -> None:
 
     result = service.search_rhymes("Echo", limit=0, result_sources=["anti_llm"])
 
-    assert result == {"cmu": [], "anti_llm": [], "rap_db": []}
+    assert result == {"uncommon": [], "multi_word": [], "rap_db": []}
 
 
 def test_normalize_filter_label_sanitises_whitespace_and_underscores() -> None:

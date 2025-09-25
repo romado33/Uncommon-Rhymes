@@ -216,6 +216,13 @@ def create_test_database(db_path):
     conn.close()
 
 
+def _anti_entries(result: dict[str, list[dict]]) -> list[dict]:
+    entries: list[dict] = []
+    for bucket in ("uncommon", "multi_word"):
+        entries.extend(result.get(bucket, []))
+    return [entry for entry in entries if entry.get("result_source") == "anti_llm"]
+
+
 def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
     db_path = tmp_path / "patterns.db"
     create_test_database(str(db_path))
@@ -385,9 +392,9 @@ def test_search_rhymes_handles_multi_word_phrases(tmp_path):
     source_profile = results["source_profile"]
     assert source_profile["phonetics"].get("is_multi_word")
 
-    cmu_results = results["cmu"]
-    assert any(entry["is_multi_word"] for entry in cmu_results)
-    cmu_multi = next(entry for entry in cmu_results if entry["is_multi_word"])
+    multi_results = results["multi_word"]
+    assert any(entry["is_multi_word"] for entry in multi_results)
+    cmu_multi = next(entry for entry in multi_results if entry["is_multi_word"])
     assert " // " in cmu_multi["pattern"]
 
     rap_results = results["rap_db"]
@@ -480,15 +487,30 @@ def test_search_rhymes_phonetic_rhyme_cases(
     source_profile = results["source_profile"]
     assert source_profile["phonetics"]["syllables"] == expected_syllables
 
-    cmu_results = results["cmu"]
-    assert cmu_results, f"Expected CMU results for '{source_word}'"
+    uncommon_results = results["uncommon"]
+    multi_results = results["multi_word"]
+    assert uncommon_results or multi_results, f"Expected phonetic results for '{source_word}'"
 
     for expectation in expectations:
         target = expectation["target"]
+        search_pool = multi_results if expectation.get("is_multi") else uncommon_results
         entry = next(
-            (candidate for candidate in cmu_results if candidate["target_word"] == target),
+            (
+                candidate
+                for candidate in search_pool
+                if candidate["target_word"] == target
+            ),
             None,
         )
+        if entry is None and expectation.get("is_multi"):
+            entry = next(
+                (
+                    candidate
+                    for candidate in uncommon_results
+                    if candidate["target_word"] == target
+                ),
+                None,
+            )
         assert entry is not None, f"Expected phonetic rhyme '{target}' for '{source_word}'"
         assert entry["phonetic_sim"] >= expectation["min_similarity"]
         assert entry["combined_score"] >= expectation["min_confidence"]
@@ -583,7 +605,7 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    anti_llm_results = results["anti_llm"]
+    anti_llm_results = _anti_entries(results)
 
     assert anti_llm_results, "Expected anti-LLM results when engine is patched"
     anti_entry = anti_llm_results[0]
@@ -621,15 +643,15 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
         result_sources=["phonetic"],
     )
 
-    cmu_results = results["cmu"]
+    uncommon_results = results["uncommon"]
 
-    assert cmu_results, "Expected high-confidence phonetic suggestions"
-    targets = {entry["target_word"] for entry in cmu_results}
+    assert uncommon_results, "Expected high-confidence phonetic suggestions"
+    targets = {entry["target_word"] for entry in uncommon_results}
     assert "alpha" in targets
     assert "beta" not in targets
     assert all(
         float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
-        for entry in cmu_results
+        for entry in uncommon_results
     )
 
 
@@ -686,11 +708,11 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
         result_sources=["phonetic"],
     )
 
-    cmu_results = results["cmu"]
+    uncommon_results = results["uncommon"]
 
-    assert cmu_results, "Expected phonetic matches when candidates are available"
-    assert len(cmu_results) == 2, "Results should still be capped by the requested limit"
-    targets = [entry["target_word"] for entry in cmu_results]
+    assert uncommon_results, "Expected phonetic matches when candidates are available"
+    assert len(uncommon_results) == 2, "Results should still be capped by the requested limit"
+    targets = [entry["target_word"] for entry in uncommon_results]
     assert "beta" not in targets
     assert "gamma" in targets, "Candidate beyond the initial limit should be retained"
 
@@ -739,7 +761,7 @@ def test_min_confidence_filters_anti_llm_candidates(tmp_path):
         result_sources=["anti-llm"],
     )
 
-    anti_llm_results = results["anti_llm"]
+    anti_llm_results = _anti_entries(results)
 
     assert anti_llm_results, "Expected at least one high-confidence anti-LLM suggestion"
     targets = {entry["target_word"] for entry in anti_llm_results}
