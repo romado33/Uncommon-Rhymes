@@ -92,10 +92,9 @@ def create_interface(
     .rr-result-card.rr-span-2 {flex-basis: 100%;}
     .rr-rhyme-list {list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px;}
     .rr-rhyme-entry {background: #f8fafc; border-radius: 10px; padding: 12px 14px; border: 1px solid rgba(15, 23, 42, 0.06);}
+    .rr-rhyme-line {display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;}
     .rr-rhyme-term {font-weight: 700; letter-spacing: 0.04em; color: #0f172a;}
-    .rr-rhyme-pattern {margin-top: 4px; font-size: 0.9rem; color: #64748b;}
-    .rr-rhyme-details {margin: 8px 0 0; padding-left: 18px; color: #475569;}
-    .rr-rhyme-details li {margin-bottom: 4px;}
+    .rr-rhyme-details-inline {color: #475569; font-size: 0.95rem;}
     .rr-empty {margin: 0; color: #94a3b8; font-style: italic;}
     .rr-accordion .gr-accordion-label {font-weight: 600;}
     """
