@@ -942,21 +942,34 @@ def get_cmu_rhymes(
     scored_candidates: List[Dict[str, Any]] = []
     seen_variants: Set[str] = set()
 
-    def _score_variant(suggestion: str, *, is_multi: bool, base_candidate: str) -> None:
+    multi_similarity_factor = 0.93
+    multi_rarity_factor = 0.9
+    multi_combined_factor = 0.93
+
+    def _score_variant(
+        suggestion: str,
+        *,
+        is_multi: bool,
+        base_candidate: str,
+        base_metrics: Optional[Dict[str, float]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, float]]:
         normalized_suggestion = suggestion.strip()
         if not normalized_suggestion:
-            return
+            return None
         normalized_key = normalized_suggestion.lower()
         if normalized_key == normalized_phrase.lower():
-            return
+            return None
         if normalized_key in seen_variants:
-            return
+            return None
         seen_variants.add(normalized_key)
 
         try:
             score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
         except Exception:
             score = 0.0
+
+        raw_similarity = score
 
         try:
             if " " in normalized_suggestion:
@@ -988,6 +1001,21 @@ def get_cmu_rhymes(
         else:
             candidate_info = extract_phrase_components(suggestion, loader)
 
+        raw_rarity = rarity
+        raw_combined = combined
+
+        if is_multi and base_metrics:
+            base_similarity = base_metrics.get("similarity")
+            base_rarity = base_metrics.get("rarity")
+            base_combined = base_metrics.get("combined")
+
+            if base_similarity is not None:
+                score = max(score, float(base_similarity) * multi_similarity_factor)
+            if base_rarity is not None:
+                rarity = max(rarity, float(base_rarity) * multi_rarity_factor)
+            if base_combined is not None:
+                combined = max(combined, float(base_combined) * multi_combined_factor)
+
         entry: Dict[str, Any] = {
             "word": suggestion,
             "target": suggestion,
@@ -1011,7 +1039,24 @@ def get_cmu_rhymes(
             "target_tokens": candidate_info.normalized_tokens,
         }
 
+        if is_multi and base_metrics:
+            entry.setdefault("parent_candidate", base_candidate)
+            entry.setdefault("raw_multi_similarity", raw_similarity)
+            entry.setdefault("raw_multi_combined", raw_combined)
+            entry.setdefault("raw_multi_rarity", raw_rarity)
+
+        if metadata:
+            for key, value in metadata.items():
+                if key not in entry:
+                    entry[key] = value
+
         scored_candidates.append(entry)
+
+        return {
+            "similarity": score,
+            "rarity": rarity,
+            "combined": combined,
+        }
 
     for candidate in candidate_words:
         base_candidate = candidate.strip()
@@ -1020,15 +1065,106 @@ def get_cmu_rhymes(
         if base_candidate == anchor_lookup:
             continue
 
-        _score_variant(base_candidate, is_multi=False, base_candidate=base_candidate)
+        base_metrics = _score_variant(
+            base_candidate,
+            is_multi=False,
+            base_candidate=base_candidate,
+        )
 
-        if components.total_syllables >= 2:
+        generated_multi = 0
+        max_multi_variants = 3
+
+        if components.total_syllables >= 2 and (prefix_tokens_norm or suffix_tokens_norm):
             multi_tokens = list(prefix_tokens_norm)
             multi_tokens.append(base_candidate)
             multi_tokens.extend(suffix_tokens_norm)
             multi_phrase = " ".join(multi_tokens).strip()
             if multi_phrase and multi_phrase != base_candidate:
-                _score_variant(multi_phrase, is_multi=True, base_candidate=base_candidate)
+                result = _score_variant(
+                    multi_phrase,
+                    is_multi=True,
+                    base_candidate=base_candidate,
+                    base_metrics=base_metrics,
+                    metadata={"multi_source": "contextual"},
+                )
+                if result:
+                    generated_multi += 1
+
+        def _generate_phoneme_splits(max_variants: int) -> int:
+            if (
+                loader is None
+                or not hasattr(loader, "find_words_by_phonemes")
+                or base_metrics is None
+            ):
+                return 0
+
+            base_prons: List[List[str]] = []
+            base_components: Optional[PhraseComponents] = None
+            if analyzer is not None and hasattr(analyzer, "get_phrase_components"):
+                try:
+                    base_components = analyzer.get_phrase_components(base_candidate, loader)
+                except Exception:
+                    base_components = extract_phrase_components(base_candidate, loader)
+            else:
+                base_components = extract_phrase_components(base_candidate, loader)
+
+            if base_components and base_components.anchor_pronunciations:
+                base_prons.extend(base_components.anchor_pronunciations)
+
+            if not base_prons:
+                try:
+                    base_prons = loader.get_pronunciations(base_candidate)
+                except Exception:
+                    base_prons = []
+
+            generated = 0
+            seen_pairs: Set[Tuple[str, str]] = set()
+
+            for phones in base_prons:
+                if not phones or len(phones) < 2:
+                    continue
+                for split_index in range(1, len(phones)):
+                    prefix_candidates = loader.find_words_by_phonemes(
+                        phones[:split_index],
+                        limit=4,
+                    )
+                    suffix_candidates = loader.find_words_by_phonemes(
+                        phones[split_index:],
+                        limit=6,
+                    )
+                    if not prefix_candidates or not suffix_candidates:
+                        continue
+
+                    for prefix_word in prefix_candidates:
+                        for suffix_word in suffix_candidates:
+                            key = (prefix_word, suffix_word)
+                            if key in seen_pairs:
+                                continue
+                            seen_pairs.add(key)
+
+                            phrase = f"{prefix_word} {suffix_word}".strip()
+                            if not phrase or phrase.lower() == base_candidate.lower():
+                                continue
+
+                            metadata = {
+                                "multi_source": "phoneme_split",
+                                "phoneme_split": split_index,
+                            }
+                            result = _score_variant(
+                                phrase,
+                                is_multi=True,
+                                base_candidate=base_candidate,
+                                base_metrics=base_metrics,
+                                metadata=metadata,
+                            )
+                            if result:
+                                generated += 1
+                            if generated >= max_variants:
+                                return generated
+            return generated
+
+        if generated_multi < max_multi_variants:
+            generated_multi += _generate_phoneme_splits(max_multi_variants - generated_multi)
 
     scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
     return scored_candidates[:limit]

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 VOWEL_PHONEMES: Set[str] = {
     "AA",
@@ -58,6 +59,7 @@ class CMUDictLoader:
         self._pronunciations: Dict[str, Tuple[Tuple[str, ...], ...]] = {}
         self._rhyme_parts: Dict[str, frozenset[str]] = {}
         self._rhyme_index: Dict[str, frozenset[str]] = {}
+        self._phoneme_index: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
         self._loaded: bool = False
 
     def _ensure_loaded(self) -> None:
@@ -70,6 +72,7 @@ class CMUDictLoader:
         pronunciations: Dict[str, List[Tuple[str, ...]]] = {}
         rhyme_parts: Dict[str, Set[str]] = {}
         rhyme_index: Dict[str, Set[str]] = {}
+        phoneme_index: Dict[Tuple[str, ...], Set[str]] = defaultdict(set)
 
         try:
             with self.dict_path.open("r", encoding="utf-8") as handle:
@@ -96,6 +99,12 @@ class CMUDictLoader:
 
                     rhyme_parts.setdefault(word, set()).add(rhyme_part)
                     rhyme_index.setdefault(rhyme_part, set()).add(word)
+
+                    normalized_tuple = tuple(
+                        _DIGIT_PATTERN.sub("", phone) for phone in phone_tuple if phone
+                    )
+                    if normalized_tuple:
+                        phoneme_index[normalized_tuple].add(word)
         except (OSError, UnicodeDecodeError):
             # If the dictionary cannot be read we simply operate without cache.
             return
@@ -108,6 +117,9 @@ class CMUDictLoader:
         }
         self._rhyme_index = {
             part: frozenset(words) for part, words in rhyme_index.items()
+        }
+        self._phoneme_index = {
+            key: tuple(sorted(values)) for key, values in phoneme_index.items()
         }
         self._loaded = True
 
@@ -161,6 +173,52 @@ class CMUDictLoader:
 
         candidates.discard(normalized)
         return sorted(candidates)
+
+    def find_words_by_phonemes(
+        self,
+        phones: Sequence[str],
+        *,
+        limit: Optional[int] = None,
+        prefer_short: bool = True,
+    ) -> List[str]:
+        """Return words matching the provided CMU phoneme sequence.
+
+        Args:
+            phones: Iterable of phoneme strings that should match a full word
+                pronunciation. Stress markers are ignored so callers may supply
+                either stressed or unstressed variants.
+            limit: Optional maximum number of words to return. ``None`` returns
+                all matches, while ``0`` yields an empty list.
+            prefer_short: When ``True`` results are ordered to favour shorter
+                words which typically produce tighter multi-word phrases.
+
+        Returns:
+            A list of matching words in deterministic order.
+        """
+
+        if limit == 0:
+            return []
+
+        normalized = tuple(
+            _DIGIT_PATTERN.sub("", phone) for phone in phones if isinstance(phone, str)
+        )
+        if not normalized:
+            return []
+
+        self._ensure_loaded()
+        matches = self._phoneme_index.get(normalized)
+        if not matches:
+            return []
+
+        ordered = list(matches)
+        if prefer_short:
+            ordered.sort(key=lambda word: (len(word), word))
+        else:
+            ordered.sort()
+
+        if limit is None or limit < 0:
+            return ordered
+        return ordered[:limit]
 
 
 DEFAULT_CMU_LOADER = CMUDictLoader()

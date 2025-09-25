@@ -2144,6 +2144,17 @@ class RhymeResultFormatter:
                                     lines.append(f"  • Cultural: Era: {value_text}")
                                 else:
                                     lines.append(f"  • Cultural: {label_text}: {value_text}")
+                    source_context_raw = entry.get("source_context")
+                    target_context_raw = entry.get("target_context")
+                    source_context = str(source_context_raw).strip() if source_context_raw else ""
+                    target_context = str(target_context_raw).strip() if target_context_raw else ""
+                    lyric_segments: List[str] = []
+                    if source_context:
+                        lyric_segments.append(f"source: {source_context}")
+                    if target_context and target_context.lower() != source_context.lower():
+                        lyric_segments.append(f"target: {target_context}")
+                    if lyric_segments:
+                        lines.append("  • Lyrics: " + " | ".join(lyric_segments))
                 lines.append("")
 
         return "\n".join(lines).strip()
