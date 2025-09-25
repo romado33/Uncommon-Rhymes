@@ -36,3 +36,24 @@ def test_cmudict_loader_retries_after_file_creation(tmp_path):
     assert loader._loaded is True
     assert "test" in loader._rhyme_parts
     assert loader._rhyme_parts["test"] == {"EH1 S T"}
+
+
+def test_split_pronunciation_into_words_returns_dictionary_pairs():
+    loader = CMUDictLoader()
+    pronunciations = loader.get_pronunciations("below")
+
+    assert pronunciations, "Expected CMU pronunciations for 'below'"
+
+    pairs = loader.split_pronunciation_into_words(pronunciations[0], max_pairs=5)
+
+    assert pairs, "Expected at least one phoneme split for 'below'"
+    for prefix, suffix, split_index in pairs:
+        assert prefix and suffix
+        assert isinstance(split_index, int)
+        combined = f"{prefix} {suffix}".strip()
+        assert combined
+
+        prefix_prons = loader.get_pronunciations(prefix)
+        suffix_prons = loader.get_pronunciations(suffix)
+        assert prefix_prons, f"Expected CMU pronunciation for prefix '{prefix}'"
+        assert suffix_prons, f"Expected CMU pronunciation for suffix '{suffix}'"

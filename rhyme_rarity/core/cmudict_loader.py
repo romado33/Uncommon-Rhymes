@@ -220,6 +220,83 @@ class CMUDictLoader:
             return ordered
         return ordered[:limit]
 
+    def split_pronunciation_into_words(
+        self,
+        phones: Sequence[str],
+        *,
+        max_pairs: Optional[int] = None,
+        prefix_limit: int = 4,
+        suffix_limit: int = 6,
+        prefer_short: bool = True,
+    ) -> List[Tuple[str, str, int]]:
+        """Return word pairs that exactly realise ``phones`` when combined.
+
+        The function searches for a split point inside ``phones`` and looks up
+        words whose pronunciations match the prefix and suffix segments. Only
+        combinations where *both* halves correspond to real CMU entries are
+        returned. Stress markers are ignored, matching the behaviour of
+        :meth:`find_words_by_phonemes`.
+
+        Args:
+            phones: Full pronunciation to split.
+            max_pairs: Optional cap on the number of distinct word pairs to
+                return across all split positions.
+            prefix_limit: Maximum number of candidate words to request for the
+                leading segment at each split.
+            suffix_limit: Maximum number of candidate words to request for the
+                trailing segment at each split.
+            prefer_short: Whether shorter words should be prioritised when
+                fetching matches for each segment.
+
+        Returns:
+            A list of ``(prefix_word, suffix_word, split_index)`` tuples sorted
+            by the order they were discovered.
+        """
+
+        phone_list = [
+            phone for phone in phones if isinstance(phone, str) and phone.strip()
+        ]
+        if len(phone_list) < 2:
+            return []
+
+        results: List[Tuple[str, str, int]] = []
+        seen_pairs: Set[Tuple[str, str]] = set()
+        remaining = None if max_pairs is None else max(int(max_pairs), 0)
+
+        for split_index in range(1, len(phone_list)):
+            if remaining is not None and remaining <= 0:
+                break
+
+            prefix_candidates = self.find_words_by_phonemes(
+                phone_list[:split_index],
+                limit=prefix_limit,
+                prefer_short=prefer_short,
+            )
+            if not prefix_candidates:
+                continue
+
+            suffix_candidates = self.find_words_by_phonemes(
+                phone_list[split_index:],
+                limit=suffix_limit,
+                prefer_short=prefer_short,
+            )
+            if not suffix_candidates:
+                continue
+
+            for prefix_word in prefix_candidates:
+                for suffix_word in suffix_candidates:
+                    key = (prefix_word, suffix_word)
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    results.append((prefix_word, suffix_word, split_index))
+                    if remaining is not None:
+                        remaining -= 1
+                        if remaining <= 0:
+                            return results
+
+        return results
+
 
 DEFAULT_CMU_LOADER = CMUDictLoader()
 
