@@ -1657,6 +1657,121 @@ class RhymeQueryOrchestrator:
             telemetry.annotate(f'filters.{scope}', stats)
 
         return result
+    def _coerce_int(self, value: Any) -> Optional[int]:
+        """Best-effort conversion of ``value`` to an integer."""
+
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number != number:  # NaN guard
+            return None
+        try:
+            return int(round(number))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _result_identity(self, entry: Dict[str, Any]) -> str:
+        """Return a stable identifier for a rhyme entry."""
+
+        target = str(entry.get('target_word') or '').strip().lower()
+        pattern = str(entry.get('pattern') or '').strip().lower()
+        if target:
+            return target
+        if pattern:
+            return pattern
+        return str(id(entry))
+
+    def _is_multi_word_entry(self, entry: Dict[str, Any]) -> bool:
+        """Determine whether ``entry`` represents a multi-word rhyme."""
+
+        if 'is_multi_word' in entry:
+            return bool(entry['is_multi_word'])
+        target = str(entry.get('target_word') or '')
+        return bool(target and ' ' in target.strip())
+
+    def _dedupe_and_truncate(
+        self,
+        entries: List[Dict[str, Any]],
+        limit: int,
+        *,
+        seen: Optional[Set[str]] = None,
+    ) -> Tuple[List[Dict[str, Any]], Set[str]]:
+        """Return ``entries`` capped at ``limit`` while removing duplicates."""
+
+        if seen is None:
+            seen = set()
+        result: List[Dict[str, Any]] = []
+        if limit <= 0:
+            return result, set(seen)
+
+        for entry in entries:
+            key = self._result_identity(entry)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(entry)
+            if len(result) >= limit:
+                break
+        return result, set(seen)
+
+    def _merge_uncommon_sources(
+        self,
+        phonetic: List[Dict[str, Any]],
+        anti_llm: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Combine phonetic and anti-LLM matches preserving rarity focus."""
+
+        merged: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for entry in list(anti_llm) + list(phonetic):
+            key = self._result_identity(entry)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+        return merged
+
+    def _source_profile_shape(
+        self, profile: Dict[str, Any]
+    ) -> Tuple[Optional[int], bool]:
+        """Return (syllable_count, is_multi_word) for the source request."""
+
+        syllable_count: Optional[int] = None
+        is_multi_word = False
+
+        if isinstance(profile, dict):
+            phonetics = profile.get('phonetics')
+            if isinstance(phonetics, dict):
+                syllable_count = self._coerce_int(phonetics.get('syllables'))
+            if syllable_count is None:
+                syllable_count = self._coerce_int(profile.get('syllables'))
+
+            token_syllables = profile.get('token_syllables')
+            if syllable_count is None and isinstance(token_syllables, (list, tuple)):
+                total = 0
+                valid = False
+                for raw in token_syllables:
+                    value = self._coerce_int(raw)
+                    if value is None:
+                        valid = False
+                        break
+                    total += value
+                    valid = True
+                if valid and total > 0:
+                    syllable_count = total
+
+            tokens = profile.get('phrase_tokens') or profile.get('tokens') or []
+            is_multi_word = bool(profile.get('is_multi_word'))
+            if tokens and len(tokens) > 1:
+                is_multi_word = True
+
+        return syllable_count, is_multi_word
+
     def _finalize_results(
         self,
         context: Dict[str, Any],
@@ -1665,6 +1780,7 @@ class RhymeQueryOrchestrator:
         cultural: List[Dict[str, Any]],
         anti_llm: List[Dict[str, Any]],
         filters: Optional[Dict[str, Any]] = None,
+        limit: int = 20,
     ) -> Dict[str, Any]:
         profile = context.get('profile', {})
         if isinstance(profile, dict):
@@ -1679,11 +1795,67 @@ class RhymeQueryOrchestrator:
                     if value
                 }
             profile.setdefault('signature_set', sorted(context.get('signature_set') or []))
+
+        syllable_count, is_multi_word = self._source_profile_shape(profile)
+        single_syllable = bool(not is_multi_word and syllable_count == 1)
+
+        uncommon_candidates = self._merge_uncommon_sources(phonetic, anti_llm)
+
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 0
+        if limit_value <= 0:
+            limit_value = 1
+
+        rap_cap = min(limit_value, 10)
+        rap_results, seen_keys = self._dedupe_and_truncate(cultural, rap_cap)
+
+        multi_results: List[Dict[str, Any]] = []
+
+        if single_syllable:
+            uncommon_cap = min(limit_value, 20)
+            single_candidates = [
+                entry
+                for entry in uncommon_candidates
+                if self._result_identity(entry) not in seen_keys
+            ]
+            uncommon_results, seen_keys = self._dedupe_and_truncate(
+                single_candidates,
+                uncommon_cap,
+                seen=seen_keys,
+            )
+        else:
+            multi_cap = min(limit_value, 10)
+            multi_candidates = [
+                entry
+                for entry in uncommon_candidates
+                if self._is_multi_word_entry(entry)
+            ]
+            multi_results, seen_keys = self._dedupe_and_truncate(
+                multi_candidates,
+                multi_cap,
+                seen=seen_keys,
+            )
+
+            uncommon_cap = min(limit_value, 10)
+            single_candidates = [
+                entry
+                for entry in uncommon_candidates
+                if not self._is_multi_word_entry(entry)
+                and self._result_identity(entry) not in seen_keys
+            ]
+            uncommon_results, seen_keys = self._dedupe_and_truncate(
+                single_candidates,
+                uncommon_cap,
+                seen=seen_keys,
+            )
+
         return {
             'source_profile': profile,
-            'cmu': phonetic,
-            'rap_db': cultural,
-            'anti_llm': anti_llm,
+            'uncommon': uncommon_results,
+            'multi_word': multi_results,
+            'rap_db': rap_results,
             'filters': filters or {},
         }
 
@@ -1708,14 +1880,14 @@ class RhymeQueryOrchestrator:
         """Search for rhymes without external coordination plumbing."""
 
         if not source_word or not str(source_word).strip():
-            return {'cmu': [], 'anti_llm': [], 'rap_db': []}
+            return {'uncommon': [], 'multi_word': [], 'rap_db': []}
 
         try:
             limit_value = int(limit)
         except (TypeError, ValueError):
             limit_value = 0
         if limit_value <= 0:
-            return {'cmu': [], 'anti_llm': [], 'rap_db': []}
+            return {'uncommon': [], 'multi_word': [], 'rap_db': []}
         limit = limit_value
 
         try:
@@ -1924,6 +2096,7 @@ class RhymeQueryOrchestrator:
             cultural=cultural_filtered,
             anti_llm=anti_llm_filtered,
             filters=filter_summary,
+            limit=limit,
         )
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
@@ -1932,9 +2105,9 @@ class RhymeResultFormatter:
         """Render grouped rhyme results with shared phonetic context."""
 
         category_order: List[Tuple[str, str]] = [
-            ("cmu", "📚 CMU Matches"),
-            ("anti_llm", "🧠 Anti-LLM Patterns"),
-            ("rap_db", "🎤 Cultural Archive"),
+            ("uncommon", "🧠 Uncommon Rhymes"),
+            ("multi_word", "🧩 Multi-Word Rhymes"),
+            ("rap_db", "🎤 Rap Database Patterns"),
         ]
 
         if not rhymes:
@@ -2101,15 +2274,14 @@ class RhymeResultFormatter:
                 lines.append(f"- **{target.upper()}**")
                 for detail in _format_entry(entry):
                     lines.append(f"  {detail}")
-                if key == "anti_llm":
-                    weakness = entry.get("llm_weakness_type")
-                    if weakness:
-                        lines.append(
-                            f"  • LLM weakness: {str(weakness).replace('_', ' ').title()}"
-                        )
-                    depth = entry.get("cultural_depth")
-                    if depth:
-                        lines.append(f"  • Cultural depth: {depth}")
+                weakness = entry.get("llm_weakness_type")
+                if weakness:
+                    lines.append(
+                        f"  • LLM weakness: {str(weakness).replace('_', ' ').title()}"
+                    )
+                depth = entry.get("cultural_depth")
+                if depth:
+                    lines.append(f"  • Cultural depth: {depth}")
                 if key == "rap_db":
                     artist = entry.get("artist")
                     song = entry.get("song")

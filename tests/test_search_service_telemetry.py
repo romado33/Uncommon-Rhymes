@@ -108,6 +108,13 @@ class DummyCmuRepository:
         return list(self._results)
 
 
+def _anti_entries(result: dict[str, list[dict]]) -> list[dict]:
+    entries: list[dict] = []
+    for bucket in ("uncommon", "multi_word"):
+        entries.extend(result.get(bucket, []))
+    return [entry for entry in entries if entry.get("result_source") == "anti_llm"]
+
+
 @pytest.fixture(autouse=True)
 def patch_core_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_extract_components(phrase: str, *_: Any, **__: Any) -> types.SimpleNamespace:
@@ -147,7 +154,7 @@ def test_search_service_records_branch_timings() -> None:
     )
 
     result = service.search_rhymes("Echo", limit=5, result_sources=["phonetic", "cultural", "anti_llm"])
-    assert result["cmu"] or result["rap_db"] or result["anti_llm"]
+    assert result["uncommon"] or result["multi_word"] or result["rap_db"]
 
     metrics = service.get_latest_telemetry()
     assert metrics["counters"]["search.completed"] == 1
@@ -155,7 +162,7 @@ def test_search_service_records_branch_timings() -> None:
     assert "search.branch.cultural" in metrics["timings"]
     assert "search.branch.anti_llm" in metrics["timings"]
     counts = metrics["metadata"]["result.counts"]
-    assert set(counts.keys()) == {"cmu", "anti_llm", "rap_db"}
+    assert set(counts.keys()) == {"uncommon", "multi_word", "rap_db"}
 
 
 def test_filter_telemetry_tracks_rejections() -> None:
@@ -220,7 +227,7 @@ def test_anti_llm_respects_dynamic_threshold() -> None:
         min_confidence=0.6,
     )
 
-    anti_targets = {entry["target_word"]: entry for entry in results["anti_llm"]}
+    anti_targets = {entry["target_word"]: entry for entry in _anti_entries(results)}
     assert set(anti_targets) == {"Alpha", "Beta"}
     assert anti_targets["Alpha"]["threshold_gate"] == "strict"
     assert anti_targets["Beta"]["threshold_gate"] == "fallback"
@@ -252,7 +259,7 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
             },
             "signature_set": ["v:eh|e:cho"],
         },
-        "cmu": [
+        "uncommon": [
             {
                 "target_word": "Echo",
                 "pattern": "echo / echo",
@@ -268,7 +275,7 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
                 "phonetic_threshold": 0.86,
             }
         ],
-        "anti_llm": [],
+        "multi_word": [],
         "rap_db": [],
     }
 

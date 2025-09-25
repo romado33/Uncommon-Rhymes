@@ -102,7 +102,22 @@ def make_service(patterns: Iterable[DummyPattern]) -> SearchService:
 
 
 def _targets(result: dict[str, list[dict]]) -> list[str]:
-    return [entry["target_word"] for entry in result["anti_llm"]]
+    entries: list[dict] = []
+    for bucket in ("uncommon", "multi_word"):
+        entries.extend(result.get(bucket, []))
+    return [
+        entry["target_word"]
+        for entry in entries
+        if entry.get("result_source") == "anti_llm"
+    ]
+
+
+def _first_anti_entry(result: dict[str, list[dict]]) -> dict:
+    for bucket in ("uncommon", "multi_word"):
+        for entry in result.get(bucket, []):
+            if entry.get("result_source") == "anti_llm":
+                return entry
+    raise AssertionError("No anti-LLM entry found in result")
 
 
 def test_min_confidence_filter_blocks_low_scoring_entries() -> None:
@@ -119,7 +134,7 @@ def test_min_confidence_filter_blocks_low_scoring_entries() -> None:
     )
 
     assert _targets(result) == ["Alpha"]
-    assert result["cmu"] == []
+    assert result["multi_word"] == []
     assert result["rap_db"] == []
 
 
@@ -140,8 +155,9 @@ def test_rarity_and_stress_filters_keep_only_strong_matches() -> None:
     )
 
     assert _targets(result) == ["Alpha"]
-    assert result["anti_llm"][0]["rarity_score"] >= 0.5
-    assert result["anti_llm"][0]["stress_alignment"] >= 0.7
+    anti_entry = _first_anti_entry(result)
+    assert anti_entry["rarity_score"] >= 0.5
+    assert anti_entry["stress_alignment"] >= 0.7
 
 
 def test_cadence_focus_matches_normalised_complexity_tag() -> None:
@@ -171,4 +187,5 @@ def test_cadence_focus_matches_normalised_complexity_tag() -> None:
     )
 
     assert _targets(result) == ["Alpha"]
-    assert result["anti_llm"][0]["prosody_profile"]["complexity_tag"] == "Smooth Flow"
+    anti_entry = _first_anti_entry(result)
+    assert anti_entry["prosody_profile"]["complexity_tag"] == "Smooth Flow"
