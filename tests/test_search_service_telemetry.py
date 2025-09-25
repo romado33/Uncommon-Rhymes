@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 import pytest
 
 from rhyme_rarity.utils.telemetry import StructuredTelemetry
-from rhyme_rarity.app.services.search_service import SearchService
+from rhyme_rarity.app.services.search_service import RhymeResultFormatter, SearchService
 
 
 class FakeClock:
@@ -156,3 +156,125 @@ def test_search_service_records_branch_timings() -> None:
     assert "search.branch.anti_llm" in metrics["timings"]
     counts = metrics["metadata"]["result.counts"]
     assert set(counts.keys()) == {"cmu", "anti_llm", "rap_db"}
+
+
+def test_filter_telemetry_tracks_rejections() -> None:
+    telemetry = StructuredTelemetry(time_fn=FakeClock())
+    repo = DummyRepository()
+    analyzer = DummyAnalyzer()
+    cmu_repo = DummyCmuRepository([("ember", 0.85, 0.6, 0.85)])
+
+    service = SearchService(
+        repository=repo,
+        phonetic_analyzer=analyzer,
+        cultural_engine=None,
+        anti_llm_engine=None,
+        telemetry=telemetry,
+        cmu_repository=cmu_repo,
+    )
+
+    service.search_rhymes(
+        "Echo",
+        limit=3,
+        min_confidence=0.9,
+        min_rarity=0.7,
+        result_sources=["phonetic"],
+    )
+
+    metrics = service.get_latest_telemetry()
+    filter_meta = metrics["metadata"].get("filters.phonetic")
+    assert filter_meta is not None
+    assert filter_meta["scope"] == "phonetic"
+    assert filter_meta["input"] >= 1
+    assert filter_meta["rejected"] >= 1
+    assert "min_confidence" in filter_meta["reasons"]
+    assert "min_confidence" in filter_meta["active_filters"]
+
+
+def test_anti_llm_respects_dynamic_threshold() -> None:
+    telemetry = StructuredTelemetry(time_fn=FakeClock())
+    repo = DummyRepository()
+    analyzer = DummyAnalyzer()
+    cmu_repo = DummyCmuRepository([("mecho", 0.95, 0.8, 0.95)])
+    anti_engine = DummyAntiEngine(
+        [
+            DummyPattern("Alpha", confidence=0.94, rarity_score=0.6),
+            DummyPattern("Beta", confidence=0.83, rarity_score=0.7),
+            DummyPattern("Gamma", confidence=0.6, rarity_score=0.4),
+        ]
+    )
+
+    service = SearchService(
+        repository=repo,
+        phonetic_analyzer=analyzer,
+        cultural_engine=None,
+        anti_llm_engine=anti_engine,
+        telemetry=telemetry,
+        cmu_repository=cmu_repo,
+    )
+
+    results = service.search_rhymes(
+        "Echo",
+        limit=3,
+        result_sources=["phonetic", "anti_llm"],
+        min_confidence=0.6,
+    )
+
+    anti_targets = {entry["target_word"]: entry for entry in results["anti_llm"]}
+    assert set(anti_targets) == {"Alpha", "Beta"}
+    assert anti_targets["Alpha"]["threshold_gate"] == "strict"
+    assert anti_targets["Beta"]["threshold_gate"] == "fallback"
+    metrics = service.get_latest_telemetry()
+    counters = metrics["counters"]
+    assert counters["search.anti_llm.threshold_fallback"] >= 1
+    assert counters["search.anti_llm.threshold_blocked"] >= 1
+
+
+def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
+    formatter = RhymeResultFormatter()
+    rhymes = {
+        "source_profile": {
+            "word": "Echo",
+            "phonetics": {"syllables": 2, "stress_pattern_display": "1-0"},
+            "threshold": 0.86,
+            "signature_provenance": {
+                "cultural": ["v:eh"],
+                "spelling": ["e:cho"],
+            },
+        },
+        "filters": {
+            "cadence_focus": "smooth_flow",
+            "min_stress_alignment": 0.72,
+            "phonetic_threshold": 0.86,
+            "signature_sources": {
+                "cultural": ["v:eh"],
+                "spelling": ["e:cho"],
+            },
+            "signature_set": ["v:eh|e:cho"],
+        },
+        "cmu": [
+            {
+                "target_word": "Echo",
+                "pattern": "echo / echo",
+                "rarity_score": 0.9,
+                "combined_score": 0.91,
+                "target_phonetics": {"syllables": 2, "stress_pattern_display": "1-0"},
+                "prosody_profile": {"complexity_tag": "smooth_flow"},
+                "feature_profile": {"stress_alignment": 0.75},
+                "stress_alignment": 0.75,
+                "matched_signature_sources": ["alignment", "spelling"],
+                "signature_context_matches": ["cultural", "spelling"],
+                "threshold_gate": "strict",
+                "phonetic_threshold": 0.86,
+            }
+        ],
+        "anti_llm": [],
+        "rap_db": [],
+    }
+
+    output = formatter.format_rhyme_results("Echo", rhymes)
+    assert "Diagnostics:" in output
+    assert "Cadence focus: Smooth Flow" in output
+    assert "Min stress alignment: 0.72" in output
+    assert "Phonetic threshold: 0.86" in output
+    assert "Signature support: Alignment, Spelling" in output
