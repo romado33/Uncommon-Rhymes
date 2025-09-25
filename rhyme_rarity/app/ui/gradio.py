@@ -111,6 +111,11 @@ def create_interface(
                 "<p>Discover uncommon CMU patterns, LLM-proof multi-word phrases, and rap-inspired cultural rhymes.</p>",
                 elem_classes=["rr-hero"],
             )
+            gr.Markdown(
+                "**Confidence score:** Weighted 0–1 blend (65% phonetic match, 35% rarity) showing rhyme strength.\n"
+                "**Rarity score:** 0–1 indicator of how uncommon the word or cultural context is in the corpus.",
+                elem_classes=["rr-tip"],
+            )
 
             with gr.Column(elem_classes=["rr-section"]):
                 with gr.Group(elem_classes=["rr-panel", "rr-input-panel", "rr-search-panel"]):
