@@ -613,8 +613,8 @@ def test_anti_llm_patterns_in_formatting(tmp_path):
 
     assert "SHOVE" in formatted
     assert "Rarity: 4.20" in formatted
-    assert "• LLM weakness: Rare Word Combinations" in formatted
-    assert "• Cultural depth: Sentinel Depth" in formatted
+    assert "• LLM weakness:" not in formatted
+    assert "• Cultural depth:" not in formatted
 
 
 def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):

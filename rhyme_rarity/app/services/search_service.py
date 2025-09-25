@@ -2252,6 +2252,7 @@ class RhymeResultFormatter:
 
         def _collect_details(entry: Dict[str, Any], key: str) -> List[str]:
             details = list(_format_entry(entry))
+
             weakness = entry.get("llm_weakness_type")
             if weakness:
                 details.append(
@@ -2260,6 +2261,7 @@ class RhymeResultFormatter:
             depth = entry.get("cultural_depth")
             if depth:
                 details.append(f"Cultural depth: {depth}")
+
             if key == "rap_db":
                 artist = entry.get("artist")
                 song = entry.get("song")
