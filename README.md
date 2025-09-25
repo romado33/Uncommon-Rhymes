@@ -16,6 +16,8 @@ RhymeRarity is an experimental research project that explores uncommon rhyme pat
 - **Module 2 – Enhanced Anti-LLM Rhyme Engine** (`module2_enhanced_anti_llm.py`): expands on Module 1 results to prioritise patterns that challenge common LLM failure modes while capturing prosody and internal rhyme complexity.
 - **Module 3 – Enhanced Cultural Database Engine** (`module3_enhanced_cultural_database.py`): layers cultural context, attribution, rhythm-aware metadata, and genre-aware filtering over the rhyme search.
 
+Even though the Gradio demo displays separate "CMU" and "Anti-LLM" columns, both are produced by the phonetic pipeline rooted in Module 1. Module 2 simply extends the CMU seed set with rarity heuristics and prosody-aware synthesis so the combined CMU/Anti-LLM branch represents a single family of outputs. The cultural column is the only branch backed by an independent repository.
+
 The project ships with a Gradio interface (`app.py`) that ties the modules together and exposes an interactive search workflow. When the bundled `patterns.db` file is missing the app automatically creates a demo database populated with sample rhyme patterns so you can explore the workflow immediately.
 
 ### Research-driven rhyme metrics
