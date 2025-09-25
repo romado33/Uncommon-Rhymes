@@ -852,5 +852,5 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     formatted = app.format_rhyme_results("love", filtered_results)
     assert "Rhyme type: Perfect" in formatted
     assert "Cadence: Steady" in formatted
-    assert "Stress align" not in formatted
+    assert "Stress alignment" in formatted
 

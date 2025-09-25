@@ -714,14 +714,35 @@ class RhymeQueryOrchestrator:
 
         phonetics = self._describe_word(analyzer, source_word)
 
-        signature_set: Set[str] = set()
+        signature_provenance: Dict[str, Set[str]] = {}
+        cultural_signatures: Set[str] = set()
         if cultural_engine and hasattr(cultural_engine, 'derive_rhyme_signatures'):
             try:
-                signature_set = set(cultural_engine.derive_rhyme_signatures(source_word))
+                cultural_signatures = {
+                    str(sig)
+                    for sig in cultural_engine.derive_rhyme_signatures(source_word)
+                    if sig
+                }
             except Exception:
-                signature_set = set()
+                cultural_signatures = set()
+        if cultural_signatures:
+            signature_provenance['cultural'] = set(cultural_signatures)
+
+        fallback_signatures = self._build_spelling_signature(source_word)
+        if fallback_signatures:
+            signature_provenance['spelling'] = set(fallback_signatures)
+
+        signature_set: Set[str] = set()
+        for values in signature_provenance.values():
+            signature_set.update(values)
         if not signature_set:
-            signature_set = self._build_spelling_signature(source_word)
+            signature_set = set(fallback_signatures)
+
+        profile_signature_provenance = {
+            key: sorted(value)
+            for key, value in signature_provenance.items()
+            if value
+        }
 
         profile = {
             'word': source_word,
@@ -736,6 +757,7 @@ class RhymeQueryOrchestrator:
             'threshold': 0.7,
             'reference_similarity': 0.0,
             'is_multi_word': bool(phonetics.get('is_multi_word')),
+            'signature_provenance': profile_signature_provenance,
         }
 
         return {
@@ -745,6 +767,7 @@ class RhymeQueryOrchestrator:
             'signature_set': signature_set,
             'threshold': 0.7,
             'reference_similarity': 0.0,
+            'signature_provenance': signature_provenance,
         }
 
     def _update_threshold_from_similarity(self, context: Dict[str, Any], similarity: float) -> None:
@@ -784,6 +807,14 @@ class RhymeQueryOrchestrator:
 
         source_profile = context.get('profile', {})
         signature_set: Set[str] = set(context.get('signature_set') or [])
+        telemetry = getattr(self, 'telemetry', None)
+        context_provenance = context.get('signature_provenance') or {}
+        available_context_sources: Dict[str, Set[str]] = {
+            key: set(value)
+            for key, value in context_provenance.items()
+            if value
+        }
+        enforce_multi_source = len(available_context_sources) >= 2
 
         try:
             candidates = self.cmu_repository.lookup(
@@ -874,7 +905,13 @@ class RhymeQueryOrchestrator:
             else:
                 entry['target_phonetics'] = self._describe_word(None, target_word)
 
+            candidate_signature_map: Dict[str, Set[str]] = {}
+            fallback_signature_set = self._build_spelling_signature(target_word)
+            if fallback_signature_set:
+                candidate_signature_map['spelling'] = set(fallback_signature_set)
+
             alignment = None
+            alignment_successful = False
             if cultural_engine and hasattr(cultural_engine, 'evaluate_rhyme_alignment'):
                 try:
                     alignment = cultural_engine.evaluate_rhyme_alignment(
@@ -891,6 +928,7 @@ class RhymeQueryOrchestrator:
                     continue
 
             if isinstance(alignment, dict):
+                alignment_successful = True
                 entry.update({
                     key: value
                     for key, value in alignment.items()
@@ -916,13 +954,95 @@ class RhymeQueryOrchestrator:
                 if alignment.get('rarity') is not None:
                     entry['rarity_score'] = alignment['rarity']
                 if alignment.get('target_signatures'):
-                    aggregated_signatures.update(
-                        str(sig) for sig in alignment['target_signatures'] if sig
-                    )
+                    alignment_signatures = {
+                        str(sig)
+                        for sig in alignment['target_signatures']
+                        if sig
+                    }
+                    if alignment_signatures:
+                        candidate_signature_map.setdefault('alignment', set()).update(
+                            alignment_signatures
+                        )
                 if alignment.get('stress_alignment') is not None:
                     entry['rhythm_score'] = alignment['stress_alignment']
             else:
-                aggregated_signatures.update(self._build_spelling_signature(target_word))
+                aggregated_signatures.update(fallback_signature_set)
+
+            if isinstance(candidate, dict):
+                for key in ('target_rhyme_signatures', 'signatures', 'candidate_signatures'):
+                    value = candidate.get(key)
+                    if not value:
+                        continue
+                    candidate_signature_map.setdefault('candidate', set()).update(
+                        str(sig) for sig in value if sig
+                    )
+
+            if analyzer is not None and hasattr(analyzer, 'derive_rhyme_profile'):
+                try:
+                    analyzer_profile = analyzer.derive_rhyme_profile(
+                        source_word,
+                        target_word,
+                        similarity if similarity else None,
+                    )
+                except Exception:
+                    analyzer_profile = None
+                if isinstance(analyzer_profile, dict):
+                    analyzer_signatures = analyzer_profile.get('target_signatures')
+                    if not analyzer_signatures:
+                        analyzer_signatures = analyzer_profile.get('signatures')
+                    if analyzer_signatures:
+                        candidate_signature_map.setdefault('analyzer', set()).update(
+                            str(sig) for sig in analyzer_signatures if sig
+                        )
+                    if entry.get('stress_alignment') is None and (
+                        analyzer_profile.get('stress_alignment') is not None
+                    ):
+                        entry['stress_alignment'] = analyzer_profile['stress_alignment']
+                    for key in ('feature_profile', 'prosody_profile'):
+                        if key not in entry or not isinstance(entry.get(key), dict):
+                            value = analyzer_profile.get(key)
+                            if isinstance(value, dict):
+                                entry[key] = value
+
+            matched_context_sources: Set[str] = set()
+            for context_name, context_signatures in available_context_sources.items():
+                if not context_signatures:
+                    continue
+                for candidate_signatures in candidate_signature_map.values():
+                    if context_signatures & candidate_signatures:
+                        matched_context_sources.add(context_name)
+                        break
+
+            if 'spelling' in available_context_sources and 'spelling' in candidate_signature_map:
+                matched_context_sources.add('spelling')
+            if alignment_successful and 'cultural' in available_context_sources:
+                matched_context_sources.add('cultural')
+
+            if enforce_multi_source and len(matched_context_sources) < 2:
+                if telemetry:
+                    telemetry.increment('search.phonetic.signature_reject')
+                continue
+
+            matching_candidate_sources = {
+                source_name
+                for source_name, candidate_signatures in candidate_signature_map.items()
+                if candidate_signatures & signature_set
+            }
+            if matching_candidate_sources:
+                entry['matched_signature_sources'] = sorted(matching_candidate_sources)
+            if matched_context_sources:
+                entry['signature_context_matches'] = sorted(matched_context_sources)
+
+            combined_candidate_signatures: Set[str] = set()
+            for sig_set in candidate_signature_map.values():
+                combined_candidate_signatures.update(sig_set)
+
+            if combined_candidate_signatures:
+                aggregated_signatures.update(combined_candidate_signatures)
+                entry.setdefault(
+                    'target_rhyme_signatures',
+                    sorted(combined_candidate_signatures),
+                )
 
             self._ensure_rhythm_score(entry)
 
@@ -1111,6 +1231,7 @@ class RhymeQueryOrchestrator:
         anti_llm_engine: Optional[AntiLLMRhymeEngine],
         limit: int,
         min_confidence: float,
+        phonetic_threshold: Optional[float],
         module1_seeds: Optional[List[Dict[str, Any]]],
         seed_signatures: Optional[Set[str]],
         delivered_words: Optional[Set[str]],
@@ -1119,6 +1240,21 @@ class RhymeQueryOrchestrator:
 
         if anti_llm_engine is None:
             return []
+
+        telemetry = getattr(self, 'telemetry', None)
+
+        try:
+            threshold = (
+                float(phonetic_threshold)
+                if phonetic_threshold is not None
+                else float(min_confidence)
+            )
+        except (TypeError, ValueError):
+            threshold = float(min_confidence)
+        threshold = max(float(min_confidence), threshold)
+        fallback_floor = max(float(min_confidence), threshold - 0.05)
+        if not delivered_words:
+            fallback_floor = float(min_confidence)
 
         try:
             raw_patterns = anti_llm_engine.generate_anti_llm_patterns(
@@ -1169,6 +1305,20 @@ class RhymeQueryOrchestrator:
                 confidence_val = float(confidence_val) if confidence_val is not None else 0.0
             except (TypeError, ValueError):
                 confidence_val = 0.0
+
+            gate_mode = 'strict'
+            if confidence_val < threshold:
+                if confidence_val >= fallback_floor:
+                    gate_mode = 'fallback'
+                    if telemetry:
+                        telemetry.increment('search.anti_llm.threshold_fallback')
+                else:
+                    if telemetry:
+                        telemetry.increment('search.anti_llm.threshold_blocked')
+                    continue
+            elif telemetry:
+                telemetry.increment('search.anti_llm.threshold_pass')
+
             entry = {
                 'source_word': data.get('source_word', source_word),
                 'target_word': target_word,
@@ -1184,6 +1334,8 @@ class RhymeQueryOrchestrator:
                 'bradley_device': data.get('bradley_device'),
                 'result_source': 'anti_llm',
                 'is_multi_word': bool(' ' in target_word),
+                'phonetic_threshold': threshold,
+                'threshold_gate': gate_mode,
             }
             if analyzer is not None:
                 entry['target_phonetics'] = self._describe_word(analyzer, target_word)
@@ -1332,48 +1484,94 @@ class RhymeQueryOrchestrator:
         max_line_distance: Optional[int],
         cultural_filters: Set[str],
         genre_filters: Set[str],
+        scope: str,
     ) -> List[Dict[str, Any]]:
         cadence_focus_label = self.normalize_filter_label(cadence_focus) if cadence_focus else ''
+        telemetry = getattr(self, 'telemetry', None)
         filtered: List[Dict[str, Any]] = []
         seen: Set[Tuple[str, str]] = set()
 
+        reasons: Dict[str, int] = {}
+
+        active_filters: List[str] = []
+        if min_confidence > 0.0:
+            active_filters.append('min_confidence')
+        if min_rarity is not None:
+            active_filters.append('min_rarity')
+        if min_stress_alignment is not None:
+            active_filters.append('min_stress_alignment')
+        if cadence_focus_label:
+            active_filters.append('cadence_focus')
+        if allowed_rhyme_types:
+            active_filters.append('allowed_rhyme_types')
+        if bradley_devices:
+            active_filters.append('bradley_devices')
+        if require_internal:
+            active_filters.append('require_internal')
+        if min_syllables is not None:
+            active_filters.append('min_syllables')
+        if max_syllables is not None:
+            active_filters.append('max_syllables')
+        if max_line_distance is not None:
+            active_filters.append('max_line_distance')
+        if cultural_filters:
+            active_filters.append('cultural_filters')
+        if genre_filters:
+            active_filters.append('genre_filters')
+
+        def _reject(reason: str) -> None:
+            reasons[reason] = reasons.get(reason, 0) + 1
+
         for entry in entries:
-            confidence_value = self._confidence_value(entry)
-            if confidence_value < min_confidence:
+            if self._confidence_value(entry) < min_confidence:
+                _reject('min_confidence')
                 continue
 
             if cultural_filters:
                 label = self.normalize_filter_label(entry.get('cultural_sig'))
                 if label not in cultural_filters:
+                    _reject('cultural_filters')
                     continue
 
             if genre_filters:
                 genre_label = self.normalize_filter_label(entry.get('genre'))
                 if genre_label not in genre_filters:
+                    _reject('genre_filters')
                     continue
 
             if max_line_distance is not None:
-                distance = entry.get('distance')
+                distance = entry.get('line_distance')
+                if distance is None and isinstance(entry.get('feature_profile'), dict):
+                    distance = entry['feature_profile'].get('line_distance')
+                try:
+                    distance = int(distance) if distance is not None else None
+                except (TypeError, ValueError):
+                    distance = None
                 if distance is None or distance > max_line_distance:
+                    _reject('max_line_distance')
                     continue
 
             if min_rarity is not None and self._rarity_value(entry) < min_rarity:
+                _reject('min_rarity')
                 continue
 
             stress_value = self._stress_value(entry)
             if min_stress_alignment is not None and (
                 stress_value is None or stress_value < min_stress_alignment
             ):
+                _reject('min_stress_alignment')
                 continue
 
             if cadence_focus_label:
                 cadence_tag = self._cadence_tag(entry)
                 if cadence_tag != cadence_focus_label:
+                    _reject('cadence_focus')
                     continue
 
             if allowed_rhyme_types:
                 rhyme_type = self._entry_rhyme_type(entry)
                 if rhyme_type not in allowed_rhyme_types:
+                    _reject('allowed_rhyme_types')
                     continue
 
             if bradley_devices:
@@ -1382,6 +1580,7 @@ class RhymeQueryOrchestrator:
                     device = entry['feature_profile'].get('bradley_device')
                 device_label = self.normalize_filter_label(device) if device else ''
                 if device_label not in bradley_devices:
+                    _reject('bradley_devices')
                     continue
 
             if require_internal:
@@ -1393,20 +1592,24 @@ class RhymeQueryOrchestrator:
                 except (TypeError, ValueError):
                     internal_value = 0.0
                 if internal_value < 0.4:
+                    _reject('require_internal')
                     continue
 
             syllable_count = self._syllable_count(entry)
             if min_syllables is not None and (
                 syllable_count is None or syllable_count < min_syllables
             ):
+                _reject('min_syllables')
                 continue
             if max_syllables is not None and (
                 syllable_count is None or syllable_count > max_syllables
             ):
+                _reject('max_syllables')
                 continue
 
             key = (str(entry.get('target_word')).lower(), str(entry.get('result_source')))
             if key in seen:
+                _reject('duplicate')
                 continue
             seen.add(key)
             filtered.append(entry)
@@ -1419,10 +1622,41 @@ class RhymeQueryOrchestrator:
             reverse=True,
         )
 
+        kept_before_limit = len(filtered)
         if limit <= 0:
-            return []
-        return filtered[:limit]
+            result: List[Dict[str, Any]] = []
+        else:
+            result = filtered[:limit]
 
+        stats = {
+            'scope': scope,
+            'input': len(entries),
+            'kept': kept_before_limit,
+            'output': len(result),
+            'limited': kept_before_limit > len(result),
+            'rejected': sum(reasons.values()),
+            'reasons': reasons,
+            'active_filters': sorted(active_filters),
+            'parameters': {
+                'min_confidence': min_confidence,
+                'min_rarity': min_rarity,
+                'min_stress_alignment': min_stress_alignment,
+                'cadence_focus': cadence_focus_label or None,
+                'allowed_rhyme_types': sorted(allowed_rhyme_types),
+                'bradley_devices': sorted(bradley_devices),
+                'require_internal': require_internal,
+                'min_syllables': min_syllables,
+                'max_syllables': max_syllables,
+                'max_line_distance': max_line_distance,
+                'cultural_filters': sorted(cultural_filters),
+                'genre_filters': sorted(genre_filters),
+            },
+        }
+
+        if telemetry:
+            telemetry.annotate(f'filters.{scope}', stats)
+
+        return result
     def _finalize_results(
         self,
         context: Dict[str, Any],
@@ -1430,17 +1664,27 @@ class RhymeQueryOrchestrator:
         phonetic: List[Dict[str, Any]],
         cultural: List[Dict[str, Any]],
         anti_llm: List[Dict[str, Any]],
+        filters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         profile = context.get('profile', {})
         if isinstance(profile, dict):
             profile.setdefault('signatures', sorted(context.get('signature_set', [])))
             profile.setdefault('threshold', context.get('threshold'))
             profile.setdefault('reference_similarity', context.get('reference_similarity'))
+            provenance = context.get('signature_provenance') or {}
+            if provenance and 'signature_provenance' not in profile:
+                profile['signature_provenance'] = {
+                    key: sorted({str(sig) for sig in value})
+                    for key, value in provenance.items()
+                    if value
+                }
+            profile.setdefault('signature_set', sorted(context.get('signature_set') or []))
         return {
             'source_profile': profile,
             'cmu': phonetic,
             'rap_db': cultural,
             'anti_llm': anti_llm,
+            'filters': filters or {},
         }
 
     def _search_rhymes_internal(
@@ -1528,6 +1772,21 @@ class RhymeQueryOrchestrator:
         seed_signatures: Set[str] = set(context.get('signature_set') or [])
         delivered_words: Set[str] = set()
 
+        filter_summary: Dict[str, Any] = {
+            'min_confidence': min_confidence,
+            'min_rarity': min_rarity_threshold,
+            'min_stress_alignment': min_stress_threshold,
+            'cadence_focus': cadence_focus_label or None,
+            'allowed_rhyme_types': sorted(rhyme_filters),
+            'bradley_devices': sorted(bradley_filters),
+            'cultural_filters': sorted(cultural_filters),
+            'genre_filters': sorted(genre_filters),
+            'require_internal': require_internal,
+            'min_syllables': min_syllable_threshold,
+            'max_syllables': max_syllable_threshold,
+            'max_line_distance': max_line_distance,
+        }
+
         if include_phonetic:
             timer = telemetry.timer('search.branch.phonetic') if telemetry else nullcontext()
             with timer as payload:
@@ -1585,6 +1844,7 @@ class RhymeQueryOrchestrator:
                     anti_llm_engine=anti_llm_engine,
                     limit=max(limit, 1),
                     min_confidence=min_confidence,
+                    phonetic_threshold=context.get('threshold'),
                     module1_seeds=module1_seeds,
                     seed_signatures=seed_signatures,
                     delivered_words=delivered_words,
@@ -1609,7 +1869,8 @@ class RhymeQueryOrchestrator:
             max_line_distance=max_line_distance,
             cultural_filters=set(),
             genre_filters=set(),
-        ) if phonetic_matches else []
+            scope='phonetic',
+        )
 
         cultural_filtered = self._apply_filters(
             cultural_matches,
@@ -1626,7 +1887,8 @@ class RhymeQueryOrchestrator:
             max_line_distance=max_line_distance,
             cultural_filters=cultural_filters,
             genre_filters=genre_filters,
-        ) if cultural_matches else []
+            scope='cultural',
+        )
 
         anti_llm_filtered = self._apply_filters(
             anti_llm_matches,
@@ -1643,13 +1905,25 @@ class RhymeQueryOrchestrator:
             max_line_distance=max_line_distance,
             cultural_filters=set(),
             genre_filters=set(),
-        ) if anti_llm_matches else []
+            scope='anti_llm',
+        )
+
+        filter_summary['phonetic_threshold'] = context.get('threshold')
+        signature_provenance = context.get('signature_provenance') or {}
+        if signature_provenance:
+            filter_summary['signature_sources'] = {
+                key: sorted({str(sig) for sig in value})
+                for key, value in signature_provenance.items()
+                if value
+            }
+        filter_summary['signature_set'] = sorted(context.get('signature_set') or [])
 
         return self._finalize_results(
             context,
             phonetic=phonetic_filtered,
             cultural=cultural_filtered,
             anti_llm=anti_llm_filtered,
+            filters=filter_summary,
         )
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
@@ -1730,9 +2004,41 @@ class RhymeResultFormatter:
                 stress_alignment = feature_profile.get("stress_alignment")
             if stress_alignment is not None:
                 try:
-                    details.append(f"• Rhythm score: {float(stress_alignment):.2f}")
+                    details.append(f"• Stress alignment: {float(stress_alignment):.2f}")
                 except (TypeError, ValueError):
                     pass
+            rhythm_score = entry.get("rhythm_score")
+            if rhythm_score is not None and rhythm_score != stress_alignment:
+                try:
+                    details.append(f"• Rhythm score: {float(rhythm_score):.2f}")
+                except (TypeError, ValueError):
+                    pass
+
+            matched_sources = entry.get("matched_signature_sources")
+            if matched_sources:
+                support = ", ".join(
+                    sorted(str(src).replace('_', ' ').title() for src in matched_sources)
+                )
+                details.append(f"• Signature support: {support}")
+
+            context_matches = entry.get("signature_context_matches")
+            if context_matches:
+                context_text = ", ".join(
+                    sorted(str(src).replace('_', ' ').title() for src in context_matches)
+                )
+                details.append(f"• Context signatures: {context_text}")
+
+            gate_mode = entry.get("threshold_gate")
+            if gate_mode:
+                details.append(
+                    f"• Threshold gate: {str(gate_mode).replace('_', ' ').title()}"
+                )
+                gate_threshold = entry.get("phonetic_threshold")
+                if gate_threshold is not None:
+                    try:
+                        details.append(f"• Gate threshold: {float(gate_threshold):.2f}")
+                    except (TypeError, ValueError):
+                        pass
 
             return details
 
@@ -1744,6 +2050,44 @@ class RhymeResultFormatter:
         lines.append(f"Source: {source_profile.get('word', source_word)}")
         if source_meta:
             lines.append(f"• {source_meta}")
+        filters = rhymes.get("filters") or {}
+        diagnostics: List[str] = []
+        cadence_focus = filters.get("cadence_focus")
+        if cadence_focus:
+            diagnostics.append(
+                f"Cadence focus: {str(cadence_focus).replace('_', ' ').title()}"
+            )
+        stress_target = filters.get("min_stress_alignment")
+        if stress_target is not None:
+            try:
+                diagnostics.append(f"Min stress alignment: {float(stress_target):.2f}")
+            except (TypeError, ValueError):
+                pass
+        phonetic_threshold = filters.get("phonetic_threshold")
+        if phonetic_threshold is None:
+            phonetic_threshold = source_profile.get("threshold")
+        if phonetic_threshold is not None:
+            try:
+                diagnostics.append(f"Phonetic threshold: {float(phonetic_threshold):.2f}")
+            except (TypeError, ValueError):
+                pass
+        signature_sources = filters.get("signature_sources")
+        if not signature_sources and isinstance(source_profile.get("signature_provenance"), dict):
+            signature_sources = source_profile.get("signature_provenance")
+        if isinstance(signature_sources, dict) and signature_sources:
+            parts: List[str] = []
+            for key, value in signature_sources.items():
+                count = len(value) if isinstance(value, (list, tuple, set)) else 0
+                label = str(key).replace('_', ' ')
+                parts.append(f"{label} ({count})")
+            diagnostics.append("Signature sources: " + ", ".join(sorted(parts)))
+        signature_set = filters.get("signature_set")
+        if isinstance(signature_set, (list, tuple, set)) and signature_set:
+            diagnostics.append(f"Signature variants tracked: {len(signature_set)}")
+        if diagnostics:
+            lines.append("Diagnostics:")
+            for diag in diagnostics:
+                lines.append(f"• {diag}")
         lines.append("")
 
         for key, header in category_order:
