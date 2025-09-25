@@ -2140,23 +2140,23 @@ class RhymeResultFormatter:
 
             if rarity is not None:
                 try:
-                    details.append(f"• Rarity: {float(rarity):.2f}")
+                    details.append(f"Rarity: {float(rarity):.2f}")
                 except (TypeError, ValueError):
                     pass
             if confidence is not None:
                 try:
-                    details.append(f"• Confidence: {float(confidence):.2f}")
+                    details.append(f"Confidence: {float(confidence):.2f}")
                 except (TypeError, ValueError):
                     pass
             if phonetics_line:
-                details.append(f"• Phonetics: {phonetics_line}")
+                details.append(f"Phonetics: {phonetics_line}")
 
             rhyme_type = entry.get("rhyme_type")
             feature_profile = entry.get("feature_profile")
             if not rhyme_type and isinstance(feature_profile, dict):
                 rhyme_type = feature_profile.get("rhyme_type")
             if rhyme_type:
-                details.append(f"• Rhyme type: {str(rhyme_type).replace('_', ' ').title()}")
+                details.append(f"Rhyme type: {str(rhyme_type).replace('_', ' ').title()}")
 
             stress_alignment = entry.get("stress_alignment")
             if stress_alignment is None and isinstance(feature_profile, dict):
@@ -2164,7 +2164,7 @@ class RhymeResultFormatter:
             rhythm_score = entry.get("rhythm_score")
             if rhythm_score is not None and rhythm_score != stress_alignment:
                 try:
-                    details.append(f"• Rhythm score: {float(rhythm_score):.2f}")
+                    details.append(f"Rhythm score: {float(rhythm_score):.2f}")
                 except (TypeError, ValueError):
                     pass
 
@@ -2173,7 +2173,19 @@ class RhymeResultFormatter:
                 context_text = ", ".join(
                     sorted(str(src).replace('_', ' ').title() for src in context_matches)
                 )
-                details.append(f"• Context signatures: {context_text}")
+                details.append(f"Context signatures: {context_text}")
+
+            gate_mode = entry.get("threshold_gate")
+            if gate_mode:
+                details.append(
+                    f"Threshold gate: {str(gate_mode).replace('_', ' ').title()}"
+                )
+                gate_threshold = entry.get("phonetic_threshold")
+                if gate_threshold is not None:
+                    try:
+                        details.append(f"Gate threshold: {float(gate_threshold):.2f}")
+                    except (TypeError, ValueError):
+                        pass
 
             return details
 
@@ -2240,12 +2252,22 @@ class RhymeResultFormatter:
 
         def _collect_details(entry: Dict[str, Any], key: str) -> List[str]:
             details = list(_format_entry(entry))
+
+            weakness = entry.get("llm_weakness_type")
+            if weakness:
+                details.append(
+                    f"LLM weakness: {str(weakness).replace('_', ' ').title()}"
+                )
+            depth = entry.get("cultural_depth")
+            if depth:
+                details.append(f"Cultural depth: {depth}")
+
             if key == "rap_db":
                 artist = entry.get("artist")
                 song = entry.get("song")
                 if artist or song:
                     details.append(
-                        f"• Source: {artist or 'Unknown'} — {song or 'Unknown'}"
+                        f"Source: {artist or 'Unknown'} — {song or 'Unknown'}"
                     )
                 source_context_raw = entry.get("source_context")
                 target_context_raw = entry.get("target_context")
@@ -2261,7 +2283,7 @@ class RhymeResultFormatter:
                 if target_context and target_context.lower() != source_context.lower():
                     lyric_segments.append(f"target: {target_context}")
                 if lyric_segments:
-                    details.append("• Lyrics: " + " | ".join(lyric_segments))
+                    details.append("Lyrics: " + " | ".join(lyric_segments))
             return details
 
         def _render_section(key: str, *, span_full: bool = False) -> str:
@@ -2281,21 +2303,18 @@ class RhymeResultFormatter:
                 card.append("<ul class='rr-rhyme-list'>")
                 for entry in entries:
                     target = str(entry.get("target_word") or "?")
-                    pattern = entry.get("pattern")
                     card.append("<li class='rr-rhyme-entry'>")
+                    card.append("<div class='rr-rhyme-line'>")
                     card.append(
-                        f"<div class='rr-rhyme-term'>{escape(target.upper())}</div>"
+                        f"<span class='rr-rhyme-term'>{escape(target.upper())}</span>"
                     )
-                    if pattern:
-                        card.append(
-                            f"<div class='rr-rhyme-pattern'>{escape(str(pattern))}</div>"
-                        )
                     details = _collect_details(entry, key)
                     if details:
-                        card.append("<ul class='rr-rhyme-details'>")
-                        for detail in details:
-                            card.append(f"<li>{escape(detail)}</li>")
-                        card.append("</ul>")
+                        detail_text = " • ".join(details)
+                        card.append(
+                            f"<span class='rr-rhyme-details-inline'> • {escape(detail_text)}</span>"
+                        )
+                    card.append("</div>")
                     card.append("</li>")
                 card.append("</ul>")
             card.append("</div>")
