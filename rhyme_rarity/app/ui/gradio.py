@@ -80,7 +80,23 @@ def create_interface(
     .rr-button {width: 100%; font-weight: 600;}
     .rr-tip {color: #4b5563; font-size: 0.92rem; margin-top: 8px;}
     .rr-results-panel {display: flex; flex-direction: column; gap: 16px; min-height: 420px;}
-    .rr-results-panel .gr-markdown {flex: 1; background: #f8fafc; border-radius: 12px; padding: 16px 18px; border: 1px solid rgba(15, 23, 42, 0.05); white-space: pre-wrap;}
+    .rr-results-panel .gr-markdown {flex: 1; background: #f8fafc; border-radius: 12px; padding: 16px 18px; border: 1px solid rgba(15, 23, 42, 0.05); white-space: normal;}
+    .rr-source-summary {margin-bottom: 12px;}
+    .rr-source-summary h3 {margin: 0 0 4px; font-size: 1.35rem;}
+    .rr-source-summary p {margin: 0; color: #334155;}
+    .rr-source-summary ul {margin: 8px 0 0; padding-left: 18px; color: #475569;}
+    .rr-results-grid {display: flex; flex-direction: column; gap: 16px;}
+    .rr-result-row {display: flex; flex-wrap: wrap; gap: 16px;}
+    .rr-result-card {flex: 1 1 280px; background: #ffffff; border-radius: 12px; border: 1px solid rgba(15, 23, 42, 0.05); padding: 16px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);}
+    .rr-result-card h4 {margin-top: 0; margin-bottom: 12px; font-size: 1.05rem;}
+    .rr-result-card.rr-span-2 {flex-basis: 100%;}
+    .rr-rhyme-list {list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px;}
+    .rr-rhyme-entry {background: #f8fafc; border-radius: 10px; padding: 12px 14px; border: 1px solid rgba(15, 23, 42, 0.06);}
+    .rr-rhyme-term {font-weight: 700; letter-spacing: 0.04em; color: #0f172a;}
+    .rr-rhyme-pattern {margin-top: 4px; font-size: 0.9rem; color: #64748b;}
+    .rr-rhyme-details {margin: 8px 0 0; padding-left: 18px; color: #475569;}
+    .rr-rhyme-details li {margin-bottom: 4px;}
+    .rr-empty {margin: 0; color: #94a3b8; font-style: italic;}
     .rr-accordion .gr-accordion-label {font-weight: 600;}
     """
 
@@ -174,6 +190,19 @@ def create_interface(
                     )
 
         search_btn.click(
+            fn=search_interface,
+            inputs=[
+                word_input,
+                max_results,
+                min_confidence,
+                cultural_dropdown,
+                genre_dropdown,
+                rhyme_type_dropdown,
+            ],
+            outputs=output,
+        )
+
+        word_input.submit(
             fn=search_interface,
             inputs=[
                 word_input,

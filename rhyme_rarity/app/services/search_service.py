@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from html import escape
 from contextlib import contextmanager, nullcontext
 import copy
 import re
@@ -2104,18 +2105,18 @@ class RhymeResultFormatter:
     def format_rhyme_results(self, source_word: str, rhymes: Dict[str, Any]) -> str:
         """Render grouped rhyme results with shared phonetic context."""
 
-        category_order: List[Tuple[str, str]] = [
-            ("uncommon", "🧠 Uncommon Rhymes"),
-            ("multi_word", "🧩 Multi-Word Rhymes"),
-            ("rap_db", "🎤 Rap Database Patterns"),
-        ]
+        section_headers: Dict[str, str] = {
+            "uncommon": "🧠 Uncommon Rhymes",
+            "multi_word": "🧩 Multi-Word Rhymes",
+            "rap_db": "🎤 Rap Database Patterns",
+        }
 
         if not rhymes:
-            return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
+            return f"❌ No rhymes found for '{escape(str(source_word))}'. Try another word or adjust your filters."
 
-        has_results = any(rhymes.get(key) for key, _ in category_order)
+        has_results = any(rhymes.get(key) for key in section_headers)
         if not has_results:
-            return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
+            return f"❌ No rhymes found for '{escape(str(source_word))}'. Try another word or adjust your filters."
 
         def _format_phonetics(phonetics: Dict[str, Any]) -> Optional[str]:
             parts: List[str] = []
@@ -2215,14 +2216,9 @@ class RhymeResultFormatter:
 
             return details
 
-        lines: List[str] = [f"### Rhymes for {source_word.upper()}"]
-
         source_profile = rhymes.get("source_profile") or {}
         phonetics = source_profile.get("phonetics") or {}
         source_meta = _format_phonetics(phonetics)
-        lines.append(f"Source: {source_profile.get('word', source_word)}")
-        if source_meta:
-            lines.append(f"• {source_meta}")
         filters = rhymes.get("filters") or {}
         diagnostics: List[str] = []
         cadence_focus = filters.get("cadence_focus")
@@ -2257,78 +2253,143 @@ class RhymeResultFormatter:
         signature_set = filters.get("signature_set")
         if isinstance(signature_set, (list, tuple, set)) and signature_set:
             diagnostics.append(f"Signature variants tracked: {len(signature_set)}")
+        summary_lines: List[str] = ["<div class='rr-source-summary'>"]
+        summary_lines.append(
+            f"<h3>Rhymes for {escape(str(source_word).upper())}</h3>"
+        )
+        source_label = str(source_profile.get("word", source_word))
+        summary_lines.append(f"<p>Source: {escape(source_label)}</p>")
+
+        meta_items: List[str] = []
+        if source_meta:
+            meta_items.append(source_meta)
+        if meta_items:
+            summary_lines.append("<ul>")
+            for item in meta_items:
+                summary_lines.append(f"<li>{escape(item)}</li>")
+            summary_lines.append("</ul>")
+
         if diagnostics:
-            lines.append("Diagnostics:")
+            summary_lines.append("<p><strong>Diagnostics:</strong></p>")
+            summary_lines.append("<ul>")
             for diag in diagnostics:
-                lines.append(f"• {diag}")
-        lines.append("")
+                summary_lines.append(f"<li>{escape(diag)}</li>")
+            summary_lines.append("</ul>")
+        summary_lines.append("</div>")
 
-        for key, header in category_order:
-            entries = rhymes.get(key) or []
-            if not entries:
-                continue
-
-            lines.append(header)
-            for entry in entries:
-                target = str(entry.get("target_word") or "?")
-                lines.append(f"- **{target.upper()}**")
-                for detail in _format_entry(entry):
-                    lines.append(f"  {detail}")
-                weakness = entry.get("llm_weakness_type")
-                if weakness:
-                    lines.append(
-                        f"  • LLM weakness: {str(weakness).replace('_', ' ').title()}"
+        def _collect_details(entry: Dict[str, Any], key: str) -> List[str]:
+            details = list(_format_entry(entry))
+            weakness = entry.get("llm_weakness_type")
+            if weakness:
+                details.append(
+                    f"• LLM weakness: {str(weakness).replace('_', ' ').title()}"
+                )
+            depth = entry.get("cultural_depth")
+            if depth:
+                details.append(f"• Cultural depth: {depth}")
+            if key == "rap_db":
+                artist = entry.get("artist")
+                song = entry.get("song")
+                if artist or song:
+                    details.append(
+                        f"• Source: {artist or 'Unknown'} — {song or 'Unknown'}"
                     )
-                depth = entry.get("cultural_depth")
-                if depth:
-                    lines.append(f"  • Cultural depth: {depth}")
-                if key == "rap_db":
-                    artist = entry.get("artist")
-                    song = entry.get("song")
-                    if artist or song:
-                        lines.append(f"  • Source: {artist or 'Unknown'} — {song or 'Unknown'}")
-                    cultural_context = entry.get("cultural_context")
-                    if isinstance(cultural_context, dict):
-                        for label, value in cultural_context.items():
-                            if value:
-                                label_text = str(label).replace('_', ' ').title()
-                                if isinstance(value, (list, tuple, set)):
-                                    items: List[str] = []
-                                    for item in value:
-                                        if not item:
-                                            continue
-                                        text = str(item)
-                                        if isinstance(item, str):
-                                            text = text.replace('_', ' ').title()
-                                        items.append(text)
-                                    value_text = ", ".join(items)
-                                else:
-                                    value_text = str(value)
-                                    if isinstance(value, str):
-                                        value_text = value_text.replace('_', ' ').title()
-                                key_normalized = str(label).lower()
-                                if key_normalized == 'regional_origin':
-                                    lines.append(f"  • Region: {value_text}")
-                                elif key_normalized == 'style_characteristics':
-                                    lines.append(f"  • Styles: {value_text}")
-                                elif key_normalized == 'era':
-                                    lines.append(f"  • Cultural: Era: {value_text}")
-                                else:
-                                    lines.append(f"  • Cultural: {label_text}: {value_text}")
-                    source_context_raw = entry.get("source_context")
-                    target_context_raw = entry.get("target_context")
-                    source_context = str(source_context_raw).strip() if source_context_raw else ""
-                    target_context = str(target_context_raw).strip() if target_context_raw else ""
-                    lyric_segments: List[str] = []
-                    if source_context:
-                        lyric_segments.append(f"source: {source_context}")
-                    if target_context and target_context.lower() != source_context.lower():
-                        lyric_segments.append(f"target: {target_context}")
-                    if lyric_segments:
-                        lines.append("  • Lyrics: " + " | ".join(lyric_segments))
-                lines.append("")
+                cultural_context = entry.get("cultural_context")
+                if isinstance(cultural_context, dict):
+                    for label, value in cultural_context.items():
+                        if not value:
+                            continue
+                        label_text = str(label).replace("_", " ").title()
+                        if isinstance(value, (list, tuple, set)):
+                            items: List[str] = []
+                            for item in value:
+                                if not item:
+                                    continue
+                                text = str(item)
+                                if isinstance(item, str):
+                                    text = text.replace("_", " ").title()
+                                items.append(text)
+                            value_text = ", ".join(items)
+                        else:
+                            value_text = str(value)
+                            if isinstance(value, str):
+                                value_text = value_text.replace("_", " ").title()
+                        key_normalized = str(label).lower()
+                        if key_normalized == "regional_origin":
+                            details.append(f"• Region: {value_text}")
+                        elif key_normalized == "style_characteristics":
+                            details.append(f"• Styles: {value_text}")
+                        elif key_normalized == "era":
+                            details.append(f"• Cultural: Era: {value_text}")
+                        else:
+                            details.append(f"• Cultural: {label_text}: {value_text}")
+                source_context_raw = entry.get("source_context")
+                target_context_raw = entry.get("target_context")
+                source_context = (
+                    str(source_context_raw).strip() if source_context_raw else ""
+                )
+                target_context = (
+                    str(target_context_raw).strip() if target_context_raw else ""
+                )
+                lyric_segments: List[str] = []
+                if source_context:
+                    lyric_segments.append(f"source: {source_context}")
+                if target_context and target_context.lower() != source_context.lower():
+                    lyric_segments.append(f"target: {target_context}")
+                if lyric_segments:
+                    details.append("• Lyrics: " + " | ".join(lyric_segments))
+            return details
 
-        return "\n".join(lines).strip()
+        def _render_section(key: str, *, span_full: bool = False) -> str:
+            entries = rhymes.get(key) or []
+            classes = ["rr-result-card"]
+            if span_full:
+                classes.append("rr-span-2")
+            card: List[str] = [
+                f"<div class='{' '.join(classes)}'>",
+                f"<h4>{escape(section_headers[key])}</h4>",
+            ]
+            if not entries:
+                card.append(
+                    "<p class='rr-empty'>No matches found. Try expanding the filters.</p>"
+                )
+            else:
+                card.append("<ul class='rr-rhyme-list'>")
+                for entry in entries:
+                    target = str(entry.get("target_word") or "?")
+                    pattern = entry.get("pattern")
+                    card.append("<li class='rr-rhyme-entry'>")
+                    card.append(
+                        f"<div class='rr-rhyme-term'>{escape(target.upper())}</div>"
+                    )
+                    if pattern:
+                        card.append(
+                            f"<div class='rr-rhyme-pattern'>{escape(str(pattern))}</div>"
+                        )
+                    details = _collect_details(entry, key)
+                    if details:
+                        card.append("<ul class='rr-rhyme-details'>")
+                        for detail in details:
+                            card.append(f"<li>{escape(detail)}</li>")
+                        card.append("</ul>")
+                    card.append("</li>")
+                card.append("</ul>")
+            card.append("</div>")
+            return "".join(card)
+
+        grid: List[str] = ["<div class='rr-results-grid'>"]
+        first_row: List[str] = ["<div class='rr-result-row'>"]
+        for key in ("uncommon", "multi_word"):
+            first_row.append(_render_section(key))
+        first_row.append("</div>")
+        grid.extend(first_row)
+        second_row: List[str] = ["<div class='rr-result-row'>"]
+        second_row.append(_render_section("rap_db", span_full=True))
+        second_row.append("</div>")
+        grid.extend(second_row)
+        grid.append("</div>")
+
+        return "\n".join(summary_lines + grid)
 
 
 class SearchService:
