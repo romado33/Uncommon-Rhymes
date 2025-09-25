@@ -2098,8 +2098,7 @@ class RhymeResultFormatter:
             lines.append(header)
             for entry in entries:
                 target = str(entry.get("target_word") or "?")
-                pattern = entry.get("pattern") or f"{source_word} / {target}"
-                lines.append(f"- **{target.upper()}** — {pattern}")
+                lines.append(f"- **{target.upper()}**")
                 for detail in _format_entry(entry):
                     lines.append(f"  {detail}")
                 if key == "anti_llm":
