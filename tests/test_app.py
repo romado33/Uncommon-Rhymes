@@ -29,6 +29,16 @@ sys.modules.setdefault("gradio", gradio_stub)
 pandas_stub = types.ModuleType("pandas")
 sys.modules.setdefault("pandas", pandas_stub)
 
+torch_stub = types.ModuleType("torch")
+torch_stub.cuda = types.SimpleNamespace(is_available=lambda: False)
+torch_stub.rand = lambda *_, **__: 0
+torch_stub.matmul = lambda *_, **__: 0
+sys.modules.setdefault("torch", torch_stub)
+
+spaces_stub = types.ModuleType("spaces")
+spaces_stub.GPU = lambda func: func
+sys.modules.setdefault("spaces", spaces_stub)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

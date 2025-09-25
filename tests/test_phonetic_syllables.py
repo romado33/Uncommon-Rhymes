@@ -1,4 +1,5 @@
 from rhyme_rarity.core import (
+    CMUDictLoader,
     EnhancedPhoneticAnalyzer,
     extract_phrase_components,
     get_cmu_rhymes,
@@ -58,3 +59,18 @@ def test_get_cmu_rhymes_uses_anchor_and_produces_phrase_variants():
     assert any(" " in entry["word"] for entry in results if entry.get("is_multi_word"))
     phrase_words = {entry["word"] for entry in results if entry.get("is_multi_word")}
     assert "paper fail" in phrase_words or "paper mail" in phrase_words
+
+
+def test_single_word_queries_produce_phoneme_split_multi_words():
+    loader = CMUDictLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("window", analyzer=analyzer, cmu_loader=loader, limit=10)
+
+    multi_variants = [
+        entry["word"]
+        for entry in results
+        if entry.get("is_multi_word") and " " in str(entry.get("word", ""))
+    ]
+
+    assert multi_variants, "Expected phoneme-split multi-word variants for single-word input"

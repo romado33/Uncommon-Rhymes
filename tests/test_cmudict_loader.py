@@ -1,6 +1,23 @@
 from rhyme_rarity.core import CMUDictLoader
 
 
+def test_find_words_by_phonemes_ignores_stress_markers():
+    loader = CMUDictLoader()
+
+    matches = loader.find_words_by_phonemes(["D", "OW0"], limit=5)
+
+    assert matches, "Expected at least one match for the /DOH/ phoneme sequence"
+    assert any(word in matches for word in {"doe", "dough", "doh"})
+
+
+def test_find_words_by_phonemes_respects_limit():
+    loader = CMUDictLoader()
+
+    matches = loader.find_words_by_phonemes(["IH1", "N"], limit=2)
+
+    assert len(matches) <= 2
+
+
 def test_cmudict_loader_retries_after_file_creation(tmp_path):
     dict_path = tmp_path / "cmudict.7b"
     loader = CMUDictLoader(dict_path=dict_path)
