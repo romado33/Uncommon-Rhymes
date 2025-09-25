@@ -399,41 +399,47 @@ class CulturalIntelligenceEngine:
             'regional_mappings': len(self.regional_mappings)
         }
 
-# Example usage and testing
-if __name__ == "__main__":
+def run_demo() -> Dict[str, Any]:
+    """Execute a demo run with structured logging for observability."""
+
     engine = CulturalIntelligenceEngine()
-    
-    # Test cultural context generation
+    logger = get_logger(__name__).bind(component="cultural_demo")
+    logger.info("Starting Cultural Intelligence Engine demo")
+
     test_pattern = {
         'artist': 'eminem',
         'song': 'Lose Yourself',
         'source_word': 'mind',
-        'target_word': 'find'
+        'target_word': 'find',
     }
-    
-    print("🎯 Testing Cultural Intelligence Engine:")
-    print("=" * 50)
-    
+
     context = engine.get_cultural_context(test_pattern)
-    print(f"Cultural Context for Eminem:")
-    print(f"  • Era: {context.era}")
-    print(f"  • Cultural Impact: {context.cultural_significance}")
-    print(f"  • Regional Origin: {context.regional_origin}")
-    print(f"  • Style Characteristics: {context.style_characteristics}")
-    
     rarity_score = engine.get_cultural_rarity_score(context)
-    print(f"  • Cultural Rarity Score: {rarity_score:.2f}")
-    
-    # Test cultural pattern finding
+    logger.info(
+        "Demo cultural context generated",
+        context={
+            'artist': context.artist,
+            'era': context.era,
+            'rarity_score': rarity_score,
+        },
+    )
+
     cultural_patterns = engine.find_cultural_patterns("love", limit=3)
-    print(f"\nCultural patterns for 'love':")
-    for pattern in cultural_patterns:
-        print(f"  • '{pattern['target_word']}' - {pattern['artist']} (rarity: {pattern['cultural_rarity']:.2f})")
-    
-    # Performance stats
-    print(f"\n📊 Performance Stats:")
+    logger.info(
+        "Demo cultural patterns retrieved",
+        context={'pattern_count': len(cultural_patterns)},
+    )
+
     stats = engine.get_performance_stats()
-    for key, value in stats.items():
-        print(f"  • {key}: {value}")
-    
-    print("\n✅ Module 3 Enhanced Cultural Database ready for integration")
+    logger.info("Cultural engine performance snapshot", context=stats)
+
+    return {
+        'context': context,
+        'rarity_score': rarity_score,
+        'patterns': cultural_patterns,
+        'stats': stats,
+    }
+
+
+if __name__ == "__main__":  # pragma: no cover - manual demo entry
+    run_demo()

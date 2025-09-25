@@ -633,1606 +633,1024 @@ class RhymeQueryOrchestrator:
 
             return result
 
-    def _search_rhymes_internal(
-            self,
-            source_word: str,
-            limit: int = 20,
-            min_confidence: float = 0.7,
-            cultural_significance: Optional[List[str]] = None,
-            genres: Optional[List[str]] = None,
-            result_sources: Optional[List[str]] = None,
-            max_line_distance: Optional[int] = None,
-            min_syllables: Optional[int] = None,
-            max_syllables: Optional[int] = None,
-            allowed_rhyme_types: Optional[List[str]] = None,
-            bradley_devices: Optional[List[str]] = None,
-            require_internal: bool = False,
-            min_rarity: Optional[float] = None,
-            min_stress_alignment: Optional[float] = None,
-            cadence_focus: Optional[str] = None,
-        ) -> Dict[str, List[Dict]]:
-            """Search for rhymes in the patterns.db database.
+    def _describe_word(
+        self,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        word: Optional[str],
+    ) -> Dict[str, Any]:
+        """Return a consistent phonetic description for ``word``."""
 
-            Returns a mapping keyed by rhyme source so downstream consumers can
-            format each category independently.
-            """
+        base_word = (word or '').strip()
+        profile: Dict[str, Any] = {
+            'word': word or '',
+            'normalized': base_word.lower(),
+            'tokens': [] if not base_word else base_word.lower().split(),
+            'syllables': None,
+            'anchor_word': '',
+            'anchor_display': word or '',
+            'is_multi_word': False,
+        }
 
-            telemetry = getattr(self, "telemetry", None)
-            start_time = telemetry.now() if telemetry else None
+        if analyzer is None:
+            tokens = profile['tokens']
+            if tokens:
+                profile['anchor_word'] = tokens[-1]
+                profile['anchor_display'] = tokens[-1]
+                profile['is_multi_word'] = len(tokens) > 1
+            return profile
 
-            def timed(name: str, initial: Optional[Dict[str, Any]] = None):
-                if telemetry:
-                    return telemetry.timer(name, initial)
-                return nullcontext(initial if initial is not None else {})
+        try:
+            description = analyzer.describe_word(base_word)
+        except Exception:
+            description = None
 
-            def finalize(result: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
-                if telemetry and start_time is not None:
-                    telemetry.record_timing(
-                        "search.total", max(0.0, telemetry.now() - start_time)
-                    )
-                return result
-
-            def _empty_response() -> Dict[str, List[Dict]]:
-                return {"cmu": [], "anti_llm": [], "rap_db": []}
-
-            if not source_word or not source_word.strip():
-                if telemetry:
-                    telemetry.increment("search.empty_input")
-                return finalize(_empty_response())
-
-            source_word = source_word.lower().strip()
-
-            if telemetry:
-                telemetry.annotate("search.normalized_source", source_word)
-
+        data: Dict[str, Any] = {}
+        if isinstance(description, dict):
+            data = dict(description)
+        elif description is not None:
             try:
-                min_conf_threshold = float(min_confidence)
-            except (TypeError, ValueError):
-                min_conf_threshold = 0.0
-            if min_conf_threshold < 0:
-                min_conf_threshold = 0.0
-            min_confidence = min_conf_threshold
+                data = dict(description)
+            except Exception:
+                data = {}
 
-            if telemetry:
-                telemetry.annotate("search.min_confidence", min_confidence)
+        result = {**profile, **{k: v for k, v in data.items() if v is not None}}
+        tokens = result.get('tokens')
+        if not tokens:
+            normalized = result.get('normalized', base_word.lower())
+            tokens = normalized.split() if normalized else []
+            result['tokens'] = tokens
+        result['is_multi_word'] = bool(tokens and len(tokens) > 1 or ' ' in result.get('normalized', ''))
+        if tokens:
+            result.setdefault('anchor_word', tokens[-1])
+            result.setdefault('anchor_display', tokens[-1])
+        elif result.get('normalized'):
+            result.setdefault('anchor_word', result['normalized'].split()[-1])
+            result.setdefault('anchor_display', result['anchor_word'])
+        if result.get('syllables') is None:
+            try:
+                result['syllables'] = analyzer.estimate_syllables(base_word)
+            except Exception:
+                pass
+        return result
 
-            def _normalize_to_list(value: Optional[List[str] | str]) -> List[str]:
-                """Return ``value`` coerced to a list of non-empty strings."""
+    def _build_source_context(
+        self,
+        source_word: str,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        cmu_loader: Optional[object],
+        cultural_engine: Optional[CulturalIntelligenceEngine],
+    ) -> Dict[str, Any]:
+        """Assemble reusable context shared by downstream collectors."""
 
-                if value is None:
-                    return []
-                if isinstance(value, (list, tuple, set)):
-                    return [str(v) for v in value if v is not None and str(v).strip()]
-                if isinstance(value, str):
-                    return [value] if value.strip() else []
-                return [str(value)]
+        components = self._get_phrase_components_cached(source_word, cmu_loader, analyzer)
+        anchor_word = components.anchor or source_word
+        anchor_display = components.anchor_display or anchor_word
 
-            normalize_name = self.normalize_filter_label
+        prefix_tokens: List[str] = []
+        suffix_tokens: List[str] = []
+        if components.anchor_index is not None:
+            prefix_tokens = components.normalized_tokens[: components.anchor_index]
+            suffix_tokens = components.normalized_tokens[components.anchor_index + 1 :]
 
-            def _normalized_set(value: Optional[List[str] | str]) -> Set[str]:
-                """Return a set of normalised filter names for user-supplied values."""
+        phonetics = self._describe_word(analyzer, source_word)
 
-                return {
-                    normalized
-                    for normalized in (normalize_name(item) for item in _normalize_to_list(value))
-                    if normalized
-                }
+        signature_set: Set[str] = set()
+        if cultural_engine and hasattr(cultural_engine, 'derive_rhyme_signatures'):
+            try:
+                signature_set = set(cultural_engine.derive_rhyme_signatures(source_word))
+            except Exception:
+                signature_set = set()
+        if not signature_set:
+            signature_set = self._build_spelling_signature(source_word)
 
-            def _coerce_float(value: Any) -> Optional[float]:
-                """Safely convert a value to ``float`` for numeric filters."""
+        profile = {
+            'word': source_word,
+            'anchor_word': anchor_word,
+            'anchor_display': anchor_display,
+            'phrase_tokens': list(components.normalized_tokens),
+            'phrase_prefix': ' '.join(prefix_tokens).strip(),
+            'phrase_suffix': ' '.join(suffix_tokens).strip(),
+            'token_syllables': list(components.syllable_counts),
+            'phonetics': phonetics,
+            'signatures': sorted(signature_set),
+            'threshold': 0.7,
+            'reference_similarity': 0.0,
+            'is_multi_word': bool(phonetics.get('is_multi_word')),
+        }
 
-                if value is None:
-                    return None
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return None
+        return {
+            'word': source_word,
+            'components': components,
+            'profile': profile,
+            'signature_set': signature_set,
+            'threshold': 0.7,
+            'reference_similarity': 0.0,
+        }
 
-            def _confidence_score(entry: Dict) -> float:
-                """Return a coerced numeric confidence value for ``entry``."""
+    def _update_threshold_from_similarity(self, context: Dict[str, Any], similarity: float) -> None:
+        best_similarity = max(context.get('reference_similarity', 0.0), float(similarity))
+        if best_similarity <= 0:
+            return
+        context['reference_similarity'] = best_similarity
+        threshold = max(0.6, min(0.92, best_similarity - 0.1))
+        context['threshold'] = threshold
+        profile = context.get('profile', {})
+        if isinstance(profile, dict):
+            profile['reference_similarity'] = best_similarity
+            profile['threshold'] = threshold
 
-                cache = entry.get("_confidence_cache")
-                if cache is not None:
-                    cached_combined, cached_confidence, cached_score = cache
-                    if (
-                        entry.get("combined_score") == cached_combined
-                        and entry.get("confidence") == cached_confidence
-                    ):
-                        return cached_score
+    def _compose_pattern(self, source_word: str, target_word: str) -> str:
+        source_text = str(source_word or '').strip()
+        target_text = str(target_word or '').strip()
+        separator = ' // ' if (' ' in source_text or ' ' in target_text) else ' / '
+        if not source_text:
+            return target_text
+        if not target_text:
+            return source_text
+        return f"{source_text}{separator}{target_text}"
 
-                combined_value = _coerce_float(entry.get("combined_score"))
-                confidence_value = _coerce_float(entry.get("confidence"))
+    def _collect_phonetic_matches(
+        self,
+        source_word: str,
+        limit: int,
+        *,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        cultural_engine: Optional[CulturalIntelligenceEngine],
+        cmu_loader: Optional[object],
+        context: Dict[str, Any],
+        min_confidence: float,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Set[str], Set[str]]:
+        """Return CMU phonetic matches plus seed payload metadata."""
 
-                score_for_filter: float
-                if combined_value is not None:
-                    score_for_filter = combined_value
-                elif confidence_value is not None:
-                    score_for_filter = confidence_value
-                else:
-                    score_for_filter = 0.0
+        source_profile = context.get('profile', {})
+        signature_set: Set[str] = set(context.get('signature_set') or [])
 
-                entry["_confidence_cache"] = (
-                    entry.get("combined_score"),
-                    entry.get("confidence"),
-                    score_for_filter,
-                )
-
-                return score_for_filter
-
-            def _prepare_confidence_defaults(entry: Dict) -> float:
-                """Normalise confidence fields on ``entry`` and return the score."""
-
-                score_for_filter = _confidence_score(entry)
-
-                combined_value = _coerce_float(entry.get("combined_score"))
-                confidence_value = _coerce_float(entry.get("confidence"))
-
-                if combined_value is None:
-                    entry["combined_score"] = score_for_filter
-                else:
-                    entry["combined_score"] = combined_value
-
-                if confidence_value is None:
-                    entry["confidence"] = score_for_filter
-                else:
-                    entry["confidence"] = confidence_value
-
-                entry["_confidence_cache"] = (
-                    entry.get("combined_score"),
-                    entry.get("confidence"),
-                    score_for_filter,
-                )
-
-                return score_for_filter
-
-            cultural_filters = _normalized_set(cultural_significance)
-            genre_filters = _normalized_set(genres)
-
-            rhyme_type_filters = _normalized_set(allowed_rhyme_types)
-            bradley_filters = _normalized_set(bradley_devices)
-            cadence_focus_normalized = None
-            if isinstance(cadence_focus, str) and cadence_focus.strip():
-                cadence_focus_normalized = normalize_name(cadence_focus) or None
-
-            min_syllable_threshold = None if min_syllables is None else max(1, int(min_syllables))
-            max_syllable_threshold = None if max_syllables is None else max(1, int(max_syllables))
-            min_rarity_threshold = None
-            if min_rarity is not None:
-                try:
-                    min_rarity_threshold = float(min_rarity)
-                except (TypeError, ValueError):
-                    min_rarity_threshold = None
-            min_stress_threshold = None
-            if min_stress_alignment is not None:
-                try:
-                    min_stress_threshold = float(min_stress_alignment)
-                except (TypeError, ValueError):
-                    min_stress_threshold = None
-
-            selected_sources = _normalized_set(result_sources)
-            if not selected_sources:
-                selected_sources = {"phonetic", "cultural", "anti-llm"}
-
-            include_phonetic = "phonetic" in selected_sources
-            include_cultural = "cultural" in selected_sources
-            include_anti_llm = "anti-llm" in selected_sources
-
-            if telemetry:
-                telemetry.annotate("search.selected_sources", sorted(selected_sources))
-
-            filters_active = bool(
-                cultural_filters
-                or genre_filters
-                or rhyme_type_filters
-                or cadence_focus_normalized
-                or (max_line_distance is not None)
-                or (min_syllable_threshold is not None)
-                or (max_syllable_threshold is not None)
-                or (min_rarity_threshold is not None)
-                or (min_stress_threshold is not None)
-                or require_internal
-                or bradley_filters
-            )
-
-            if telemetry:
-                telemetry.annotate("search.filters_active", filters_active)
-
-            if limit <= 0:
-                if telemetry:
-                    telemetry.increment("search.limit_exhausted")
-                return finalize(_empty_response())
-
-            analyzer = getattr(self, "phonetic_analyzer", None)
-            cultural_engine = getattr(self, "cultural_engine", None)
-            cmu_loader = None
-            if analyzer is not None:
-                cmu_loader = getattr(analyzer, "cmu_loader", None)
-            if cmu_loader is None:
-                cmu_loader = getattr(self, "cmu_loader", None)
-
-            source_components = self._get_phrase_components_cached(
+        try:
+            candidates = self.cmu_repository.lookup(
                 source_word,
-                cmu_loader,
-                analyzer,
+                max(limit * 2, limit + 5),
+                analyzer=analyzer,
+                cmu_loader=cmu_loader,
             )
-            source_anchor_word = source_components.anchor or source_word
-
-            def _build_word_phonetics(word: Optional[str]) -> Dict[str, Any]:
-                base_word = "" if word is None else str(word)
-                defaults: Dict[str, Any] = {
-                    "word": base_word,
-                    "normalized": base_word.lower().strip(),
-                    "syllables": None,
-                    "stress_pattern": "",
-                    "stress_pattern_display": "",
-                    "meter_hint": None,
-                    "metrical_foot": None,
-                    "vowel_skeleton": "",
-                    "consonant_tail": "",
-                    "pronunciations": [],
-                    "tokens": [],
-                    "token_syllables": [],
-                    "anchor_word": "",
-                    "anchor_display": "",
-                    "is_multi_word": False,
-                }
-
-                if analyzer and hasattr(analyzer, "describe_word"):
-                    try:
-                        description = analyzer.describe_word(base_word)
-                    except Exception:
-                        description = None
-                    if description:
-                        if isinstance(description, dict):
-                            for key in defaults:
-                                if key in description and description[key] not in (None, ""):
-                                    defaults[key] = description[key]
-                        else:
-                            try:
-                                desc_dict = dict(description)
-                            except Exception:
-                                desc_dict = {}
-                            for key in defaults:
-                                if key in desc_dict and desc_dict[key] not in (None, ""):
-                                    defaults[key] = desc_dict[key]
-
-                if not defaults.get("tokens") and defaults.get("normalized"):
-                    defaults["tokens"] = defaults["normalized"].split()
-
-                if not defaults.get("anchor_word") and defaults.get("tokens"):
-                    defaults["anchor_word"] = defaults["tokens"][-1].lower()
-
-                if not defaults.get("anchor_display") and defaults.get("tokens"):
-                    defaults["anchor_display"] = defaults["tokens"][-1]
-
-                defaults["is_multi_word"] = bool(
-                    defaults.get("tokens") and len(defaults["tokens"]) > 1
-                )
-                if not defaults["is_multi_word"] and isinstance(defaults.get("normalized"), str):
-                    defaults["is_multi_word"] = " " in defaults["normalized"]
-
-                if defaults["syllables"] is None:
-                    estimate_fn = getattr(analyzer, "estimate_syllables", None)
-                    try:
-                        if callable(estimate_fn):
-                            defaults["syllables"] = estimate_fn(base_word)
-                    except Exception:
-                        defaults["syllables"] = None
-
-                stress_pattern = defaults.get("stress_pattern")
-                if stress_pattern and not defaults.get("stress_pattern_display"):
-                    defaults["stress_pattern_display"] = "-".join(str(ch) for ch in str(stress_pattern))
-
-                if not defaults.get("pronunciations"):
-                    pronunciations: List[str] = []
-                    if analyzer and hasattr(analyzer, "_get_pronunciation_variants"):
-                        try:
-                            variants = analyzer._get_pronunciation_variants(base_word)
-                        except Exception:
-                            variants = []
-                        for phones in variants[:2]:
-                            try:
-                                stripped = " ".join(analyzer._strip_stress_markers(phones))
-                            except Exception:
-                                stripped = ""
-                            if stripped:
-                                pronunciations.append(stripped)
-                    defaults["pronunciations"] = pronunciations
-
-                return defaults
-
-            def _compose_pattern(
-                source_value: Optional[str],
-                target_value: Optional[str],
-                is_multi: bool,
-            ) -> str:
-                """Return a formatted rhyme pattern using a shared connector."""
-
-                source_text = str(source_value or source_word)
-                target_text = str(target_value or "").strip()
-                if not target_text:
-                    return source_text
-                connector = " // " if is_multi and target_text else " / "
-                return f"{source_text}{connector}{target_text}"
-
-            def _sanitize_feature_profile(entry: Dict[str, Any]) -> Dict[str, Any]:
-                if entry.get("_feature_profile_sanitized"):
-                    profile_obj = entry.get("feature_profile")
-                    return profile_obj if isinstance(profile_obj, dict) else {}
-
-                profile_obj = entry.get("feature_profile")
-                if profile_obj is None:
-                    profile_dict: Dict[str, Any] = {}
-                elif isinstance(profile_obj, dict):
-                    profile_dict = dict(profile_obj)
-                elif hasattr(profile_obj, "__dict__"):
-                    try:
-                        profile_dict = dict(vars(profile_obj))
-                    except Exception:
-                        profile_dict = {}
-                else:
-                    try:
-                        profile_dict = dict(profile_obj)
-                    except Exception:
-                        profile_dict = {}
-
-                bradley_value = None
-                if "bradley_device" in profile_dict:
-                    bradley_value = profile_dict.get("bradley_device")
-                    profile_dict.pop("bradley_device", None)
-                if entry.get("bradley_device") is not None and bradley_value is None:
-                    bradley_value = entry.get("bradley_device")
-
-                for banned_key in ("assonance_score", "consonance_score"):
-                    if banned_key in profile_dict:
-                        profile_dict.pop(banned_key, None)
-
-                if bradley_value is not None:
-                    entry["_bradley_device"] = bradley_value
-
-                entry["feature_profile"] = profile_dict
-                entry.pop("bradley_device", None)
-                entry.pop("assonance_score", None)
-                entry.pop("consonance_score", None)
-                entry["_feature_profile_sanitized"] = True
-                return profile_dict
-
-            def _ensure_target_phonetics(entry: Dict[str, Any]) -> Dict[str, Any]:
-                if entry.get("_target_phonetics_ready"):
-                    target_profile = entry.get("target_phonetics")
-                    return target_profile if isinstance(target_profile, dict) else {}
-
-                target_profile = entry.get("target_phonetics")
-                if isinstance(target_profile, dict) and target_profile:
-                    entry["_target_phonetics_ready"] = True
-                    return target_profile
-                target_word = entry.get("target_word")
-                profile = _build_word_phonetics(target_word)
-                entry["target_phonetics"] = profile
-                entry["_target_phonetics_ready"] = True
-                return profile
-
-            fallback_signature = self._build_spelling_signature
-
-            # Build the source word signature set using progressively simpler
-            # strategies so that downstream comparisons always have at least a
-            # minimal representation to work with.
-            source_signature_set: Set[str] = set()
-            signature_source = None
-            with start_span(
-                "search.signature_resolution",
-                {"source_word": source_word, "anchor": source_anchor_word or ""},
-            ) as signature_span:
-                fallback_reason: Optional[str] = None
-                if cultural_engine and hasattr(cultural_engine, "derive_rhyme_signatures"):
-                    try:
-                        derived_signatures = cultural_engine.derive_rhyme_signatures(source_word)
-                        source_signature_set = {sig for sig in derived_signatures if sig}
-                        if source_signature_set:
-                            signature_source = "cultural"
-                    except Exception as exc:
-                        self._logger.warning(
-                            "Cultural signature derivation failed",
-                            context={"source_word": source_word, "error": str(exc)},
-                        )
-                        record_exception(signature_span, exc)
-                        source_signature_set = set()
-                        fallback_reason = "cultural-error"
-
-                if not source_signature_set and cmu_loader is not None and source_anchor_word:
-                    try:
-                        source_signature_set = {
-                            sig for sig in cmu_loader.get_rhyme_parts(source_anchor_word) if sig
-                        }
-                        if source_signature_set:
-                            signature_source = "cmu"
-                    except Exception as exc:
-                        self._logger.warning(
-                            "CMU signature derivation failed",
-                            context={"source_word": source_anchor_word, "error": str(exc)},
-                        )
-                        record_exception(signature_span, exc)
-                        source_signature_set = set()
-                        fallback_reason = fallback_reason or "cmu-error"
-
-                if not source_signature_set:
-                    fallback_reason = fallback_reason or "spelling"
-                    fallback_word = source_anchor_word or source_word
-                    source_signature_set = fallback_signature(fallback_word)
-                    self._record_fallback(
-                        "signature_resolution",
-                        reason=fallback_reason,
-                        span=signature_span,
-                        details={
-                            "word": fallback_word,
-                            "signature_count": len(source_signature_set),
-                        },
-                    )
-                    signature_source = "fallback"
-
-                add_span_attributes(
-                    signature_span,
-                    {
-                        "signature.source": signature_source or "unknown",
-                        "signature.count": len(source_signature_set),
-                    },
-                )
-
-            self._logger.info(
-                "Resolved source signatures",
-                context={
-                    "source_word": source_word,
-                    "anchor": source_anchor_word,
-                    "count": len(source_signature_set),
-                    "strategy": signature_source or "unknown",
-                },
+        except Exception as exc:
+            self._logger.error(
+                'CMU lookup failed',
+                context={'error': str(exc), 'source_word': source_word},
             )
+            return [], [], set(), set()
 
-            source_signature_list = sorted(source_signature_set)
+        matches: List[Dict[str, Any]] = []
+        delivered_words: Set[str] = set()
+        aggregated_signatures: Set[str] = set(signature_set)
 
-            # Fetch more CMU candidates than requested results so that scoring
-            # filters can discard low-quality matches without leaving the
-            # response empty.
-            reference_limit = max(limit * 2, 10)
-            with timed("search.branch.phonetic.lookup") as lookup_meta:
-                cmu_candidates = self._lookup_cmu_rhymes(
-                    source_word,
-                    reference_limit,
-                    analyzer,
-                    cmu_loader,
-                )
-                lookup_meta["candidate_count"] = len(cmu_candidates)
+        for candidate in candidates:
+            target_word: str = ''
+            similarity = 0.0
+            rarity = 0.0
+            combined = 0.0
+            candidate_tokens: List[str] = []
+            candidate_syllables: Optional[int] = None
+            is_multi_variant = False
 
-            reference_similarity = 0.0
-            for candidate in cmu_candidates:
-                if isinstance(candidate, dict):
+            if isinstance(candidate, dict):
+                target_word = str(
+                    candidate.get('word')
+                    or candidate.get('target')
+                    or candidate.get('candidate')
+                    or ''
+                ).strip()
+                similarity = float(candidate.get('similarity', candidate.get('score', 0.0)) or 0.0)
+                rarity = float(candidate.get('rarity', candidate.get('rarity_score', 0.0)) or 0.0)
+                combined = float(candidate.get('combined', candidate.get('combined_score', similarity)) or similarity)
+                candidate_tokens = list(candidate.get('target_tokens') or [])
+                candidate_syllables = candidate.get('candidate_syllables')
+                is_multi_variant = bool(candidate.get('is_multi_word'))
+            elif isinstance(candidate, (tuple, list)) and candidate:
+                target_word = str(candidate[0]).strip()
+                if len(candidate) > 1:
                     try:
-                        score = float(candidate.get("similarity", candidate.get("score", 0.0)))
+                        similarity = float(candidate[1])
                     except (TypeError, ValueError):
-                        continue
-                else:
+                        similarity = 0.0
+                if len(candidate) > 2:
                     try:
-                        score = float(candidate[1]) if len(candidate) > 1 else 0.0
-                    except (TypeError, ValueError, IndexError):
-                        score = 0.0
-                if score > reference_similarity:
-                    reference_similarity = score
-
-            db_candidate_words: Set[str] = set()
-            if analyzer and self.repository:
-                lookup_terms = {source_word}
-                if source_anchor_word and source_anchor_word != source_word:
-                    lookup_terms.add(source_anchor_word)
-                with timed("search.branch.phonetic.related_words") as related_meta:
-                    db_candidate_words = self._fetch_related_words_cached(lookup_terms)
-                    related_meta["candidate_count"] = len(db_candidate_words)
-
-                for candidate_word in db_candidate_words:
-                    if not candidate_word or candidate_word == source_word:
-                        continue
+                        rarity = float(candidate[2])
+                    except (TypeError, ValueError):
+                        rarity = 0.0
+                if len(candidate) > 3:
                     try:
-                        score = float(analyzer.get_phonetic_similarity(source_word, candidate_word))
-                    except Exception:
-                        continue
-                    if score > reference_similarity:
-                        reference_similarity = score
+                        combined = float(candidate[3])
+                    except (TypeError, ValueError):
+                        combined = similarity
+            else:
+                continue
 
-            phonetic_threshold = 0.7
-            if reference_similarity > 0:
-                phonetic_threshold = max(0.6, min(0.92, reference_similarity - 0.1))
+            if not target_word or target_word.lower() == source_word.lower():
+                continue
 
-            source_phonetics = _build_word_phonetics(source_word)
+            self._update_threshold_from_similarity(context, similarity)
+            delivered_words.add(target_word.strip().lower())
 
-            prefix_tokens = []
-            suffix_tokens = []
-            if source_components.anchor_index is not None:
-                prefix_tokens = source_components.normalized_tokens[: source_components.anchor_index]
-                suffix_tokens = source_components.normalized_tokens[source_components.anchor_index + 1 :]
-
-            source_phonetic_profile = {
-                "word": source_word,
-                "threshold": phonetic_threshold,
-                "reference_similarity": reference_similarity,
-                "signatures": source_signature_list,
-                "phonetics": source_phonetics,
-                "anchor_word": source_anchor_word,
-                "anchor_display": source_components.anchor_display or source_anchor_word,
-                "phrase_tokens": source_components.normalized_tokens,
-                "phrase_prefix": " ".join(prefix_tokens).strip(),
-                "phrase_suffix": " ".join(suffix_tokens).strip(),
-                "token_syllables": source_components.syllable_counts,
-                "is_multi_word": bool(source_phonetics.get("is_multi_word")),
+            entry: Dict[str, Any] = {
+                'source_word': source_word,
+                'target_word': target_word,
+                'pattern': self._compose_pattern(source_word, target_word),
+                'confidence': combined,
+                'combined_score': combined,
+                'phonetic_sim': similarity,
+                'rarity_score': rarity,
+                'result_source': 'phonetic',
+                'target_tokens': candidate_tokens,
+                'candidate_syllables': candidate_syllables,
+                'source_phonetic_profile': source_profile,
+                'source_rhyme_signatures': list(signature_set),
+                'phonetic_threshold': context.get('threshold'),
+                'is_multi_word': bool(is_multi_variant or (' ' in target_word.strip())),
+                'result_variant': 'multi_word' if is_multi_variant or (' ' in target_word.strip()) else 'single_word',
             }
 
-            phonetic_entries: List[Dict] = []
-            module1_seed_payload: List[Dict] = []
-            aggregated_seed_signatures: Set[str] = (
-                set(source_signature_set) if include_anti_llm else set()
-            )
-            delivered_words_set: Set[str] = set()
-            phonetic_branch_start = (
-                telemetry.now() if telemetry and include_phonetic else None
-            )
-            if include_phonetic:
-                slice_limit = reference_limit if reference_limit else max(limit, 1)
-                phonetic_matches = cmu_candidates[:slice_limit]
-                rarity_source = analyzer
-                for candidate in phonetic_matches:
-                    is_multi_variant = False
-                    variant_candidate: Optional[str] = None
-                    candidate_tokens: List[str] = []
-                    candidate_syllables: Optional[int] = None
-                    phrase_prefix = None
-                    phrase_suffix = None
-                    prefix_display = None
-                    suffix_display = None
-                    candidate_source_phrase = None
-                    anchor_display = None
+            if analyzer is not None:
+                entry['target_phonetics'] = self._describe_word(analyzer, target_word)
+            else:
+                entry['target_phonetics'] = self._describe_word(None, target_word)
 
-                    if isinstance(candidate, dict):
-                        target = (
-                            candidate.get("word")
-                            or candidate.get("target")
-                            or candidate.get("candidate")
-                        )
-                        similarity = float(
-                            candidate.get("similarity", candidate.get("score", 0.0))
-                        )
-                        rarity_value = float(
-                            candidate.get("rarity", candidate.get("rarity_score", 0.0))
-                        )
-                        combined = float(
-                            candidate.get("combined", candidate.get("combined_score", similarity))
-                        )
-                        is_multi_variant = bool(candidate.get("is_multi_word"))
-                        variant_candidate = (
-                            candidate.get("candidate")
-                            or (target if isinstance(target, str) else None)
-                        )
-                        candidate_tokens = candidate.get("target_tokens") or []
-                        candidate_syllables = candidate.get("candidate_syllables")
-                        phrase_prefix = candidate.get("prefix")
-                        phrase_suffix = candidate.get("suffix")
-                        prefix_display = candidate.get("prefix_display")
-                        suffix_display = candidate.get("suffix_display")
-                        candidate_source_phrase = candidate.get("source_phrase")
-                        anchor_display = candidate.get("anchor_display")
-                    else:
-                        try:
-                            target = candidate[0]
-                            similarity = float(candidate[1]) if len(candidate) > 1 else 0.0
-                            if len(candidate) > 2:
-                                rarity_value = float(candidate[2])
-                            elif rarity_source and hasattr(rarity_source, "get_rarity_score"):
-                                rarity_value = float(rarity_source.get_rarity_score(candidate[0]))
-                            else:
-                                rarity_value = 0.0
-                            combined = float(candidate[3]) if len(candidate) > 3 else similarity
-                        except Exception:
-                            target = candidate if isinstance(candidate, str) else None
-                            similarity = 0.0
-                            rarity_value = 0.0
-                            combined = 0.0
-                        variant_candidate = target if isinstance(target, str) else None
-
-                    if not target:
-                        continue
-
-                    if variant_candidate is None and isinstance(target, str):
-                        variant_candidate = target
-                    target_text = str(target)
-                    entry_is_multi = is_multi_variant or (" " in target_text.strip())
-                    entry_prefix = (
-                        phrase_prefix
-                        if phrase_prefix is not None
-                        else source_phonetic_profile.get("phrase_prefix")
-                    )
-                    entry_suffix = (
-                        phrase_suffix
-                        if phrase_suffix is not None
-                        else source_phonetic_profile.get("phrase_suffix")
-                    )
-
-                    candidate_source_phrase = (
-                        candidate_source_phrase if candidate_source_phrase is not None else source_word
-                    )
-
-                    # Attempt to evaluate cultural alignment when the cultural
-                    # engine is available; otherwise fall back to a lightweight
-                    # profile derived from the phonetic analyzer.
-                    alignment = None
-                    if cultural_engine and hasattr(cultural_engine, "evaluate_rhyme_alignment"):
-                        try:
-                            alignment = cultural_engine.evaluate_rhyme_alignment(
-                                source_word,
-                                target,
-                                threshold=phonetic_threshold,
-                                rhyme_signatures=source_signature_set,
-                                source_context=None,
-                                target_context=None,
-                            )
-                        except Exception:
-                            alignment = None
-                        if alignment is None:
-                            continue
-                    else:
-                        profile_payload: Dict[str, Any] = {}
-                        if analyzer is not None:
-                            try:
-                                profile_obj = analyzer.derive_rhyme_profile(
-                                    source_word,
-                                    target,
-                                    similarity=similarity,
-                                )
-                            except Exception:
-                                profile_obj = None
-                            if profile_obj is not None:
-                                if hasattr(profile_obj, "as_dict"):
-                                    try:
-                                        profile_payload = dict(profile_obj.as_dict())
-                                    except Exception:
-                                        profile_payload = {}
-                                elif isinstance(profile_obj, dict):
-                                    profile_payload = dict(profile_obj)
-                                else:
-                                    try:
-                                        profile_payload = dict(vars(profile_obj))
-                                    except Exception:
-                                        profile_payload = {}
-
-                        alignment = {
-                            "similarity": similarity,
-                            "rarity": rarity_value,
-                            "combined": combined,
-                            "signature_matches": [],
-                            "target_signatures": [],
-                            "features": {},
-                            "feature_profile": profile_payload,
-                            "prosody_profile": {},
-                        }
-
-                    pattern_source = candidate_source_phrase or source_word
-                    entry = {
-                        "source_word": pattern_source,
-                        "target_word": target_text,
-                        "artist": "CMU Pronouncing Dictionary",
-                        "song": "Phonetic Match",
-                        "pattern": _compose_pattern(
-                            pattern_source, target_text, entry_is_multi
-                        ),
-                        "distance": None,
-                        "confidence": combined,
-                        "combined_score": combined,
-                        "phonetic_sim": similarity,
-                        "rarity_score": rarity_value,
-                        "cultural_sig": "phonetic",
-                        "genre": None,
-                        "source_context": "Phonetic match suggested by the CMU Pronouncing Dictionary.",
-                        "target_context": "",
-                        "result_source": "phonetic",
-                        "source_rhyme_signatures": source_signature_list,
-                        "source_phonetic_profile": source_phonetic_profile,
-                        "phonetic_threshold": phonetic_threshold,
-                        "is_multi_word": entry_is_multi,
-                        "result_variant": "multi_word" if entry_is_multi else "single_word",
-                        "candidate_word": variant_candidate,
-                        "phrase_prefix": entry_prefix,
-                        "phrase_suffix": entry_suffix,
-                        "prefix_display": prefix_display or entry_prefix,
-                        "suffix_display": suffix_display or entry_suffix,
-                        "target_tokens": candidate_tokens,
-                        "candidate_syllables": candidate_syllables,
-                        "source_phrase": pattern_source,
-                        "source_anchor": source_anchor_word,
-                        "anchor_display": anchor_display or source_phonetic_profile.get("anchor_display"),
-                    }
-
-                    entry["phonetic_sim"] = alignment.get("similarity", entry["phonetic_sim"])
-                    if alignment.get("rarity") is not None:
-                        entry["rarity_score"] = alignment["rarity"]
-                    if alignment.get("combined") is not None:
-                        entry["combined_score"] = alignment["combined"]
-                        try:
-                            entry["confidence"] = max(
-                                float(entry.get("confidence", 0.0)),
-                                float(alignment["combined"]),
-                            )
-                        except (TypeError, ValueError):
-                            entry["confidence"] = alignment["combined"]
-                    if alignment.get("rhyme_type"):
-                        entry["rhyme_type"] = alignment["rhyme_type"]
-                    entry["matched_signatures"] = alignment.get("signature_matches", [])
-                    entry["target_rhyme_signatures"] = alignment.get("target_signatures", [])
-                    features = alignment.get("features")
-                    if features:
-                        entry["phonetic_features"] = features
-
-                    feature_profile_obj = alignment.get("feature_profile")
-                    if feature_profile_obj is not None:
-                        entry["feature_profile"] = feature_profile_obj
-
-                    prosody_profile = alignment.get("prosody_profile")
-                    if prosody_profile:
-                        entry["prosody_profile"] = prosody_profile
-
-                    score_for_filter = _confidence_score(entry)
-                    if score_for_filter < min_confidence:
-                        continue
-
-                    phonetic_entries.append(entry)
-
-                phonetic_entries.sort(
-                    key=lambda entry: (
-                        entry.get("combined_score", entry.get("confidence", 0.0)),
-                        entry.get("phonetic_sim", 0.0),
-                    ),
-                    reverse=True,
-                )
-
-                delivered_words_set = {
-                    str(item.get("target_word", "")).strip().lower()
-                    for item in phonetic_entries
-                    if item.get("target_word")
-                }
-
-                if include_anti_llm:
-                    rare_seed_candidates: List[Dict] = []
-                    for entry in phonetic_entries:
-                        target_value = entry.get("target_word")
-                        if not target_value:
-                            continue
-
-                        rarity_value = entry.get("rarity_score")
-                        try:
-                            rarity_float = (
-                                float(rarity_value) if rarity_value is not None else 0.0
-                            )
-                        except (TypeError, ValueError):
-                            rarity_float = 0.0
-
-                        combined_value = entry.get(
-                            "combined_score", entry.get("confidence", 0.0)
-                        )
-                        try:
-                            combined_float = (
-                                float(combined_value)
-                                if combined_value is not None
-                                else 0.0
-                            )
-                        except (TypeError, ValueError):
-                            combined_float = 0.0
-
-                        signature_values = entry.get("target_rhyme_signatures") or entry.get(
-                            "matched_signatures"
-                        )
-                        if signature_values:
-                            signature_set = {str(sig) for sig in signature_values if sig}
-                        else:
-                            signature_set = fallback_signature(str(target_value))
-
-                        aggregated_seed_signatures.update(signature_set)
-
-                        rare_seed_candidates.append(
-                            {
-                                "word": target_value,
-                                "rarity": rarity_float,
-                                "combined": combined_float,
-                                "signatures": list(signature_set),
-                                "feature_profile": entry.get("feature_profile", {}),
-                                "prosody_profile": entry.get("prosody_profile", {}),
-                            }
-                        )
-
-                    rare_seed_candidates.sort(
-                        key=lambda payload: (
-                            payload.get("rarity", 0.0), payload.get("combined", 0.0)
-                        ),
-                        reverse=True,
-                    )
-
-                    max_seed_count = max(3, min(6, limit))
-                    for candidate in rare_seed_candidates:
-                        if len(module1_seed_payload) >= max_seed_count:
-                            break
-                        if candidate.get("rarity", 0.0) <= 0 and module1_seed_payload:
-                            continue
-                        module1_seed_payload.append(candidate)
-
-            if telemetry and phonetic_branch_start is not None:
-                telemetry.record_timing(
-                    "search.branch.phonetic",
-                    max(0.0, telemetry.now() - phonetic_branch_start),
-                    {
-                        "result_count": len(phonetic_entries),
-                        "seed_payload": len(module1_seed_payload),
-                        "delivered_candidates": len(delivered_words_set),
-                    },
-                )
-
-            fetch_limit = None
-
-            cultural_entries: List[Dict] = []
-
-            def _context_to_dict(context_obj):
-                if context_obj is None:
-                    return None
-                if isinstance(context_obj, dict):
-                    return dict(context_obj)
-                if hasattr(context_obj, "__dict__"):
-                    return dict(vars(context_obj))
-                return {"value": context_obj}
-
-            def _enrich_with_cultural_context(entry: Dict) -> Optional[Dict]:
-                engine = getattr(self, "cultural_engine", None)
-                if not engine:
-                    return entry
-
-                entry.setdefault("source_phonetic_profile", source_phonetic_profile)
-                entry.setdefault("source_rhyme_signatures", source_signature_list)
-                entry.setdefault("phonetic_threshold", phonetic_threshold)
-                entry.setdefault("matched_signatures", [])
-                entry.setdefault("target_rhyme_signatures", [])
-
-                context_data = None
-                rarity_value = None
-
+            alignment = None
+            if cultural_engine and hasattr(cultural_engine, 'evaluate_rhyme_alignment'):
                 try:
-                    get_context = getattr(engine, "get_cultural_context", None)
-                    if callable(get_context):
-                        pattern_payload = {
-                            "artist": entry.get("artist"),
-                            "song": entry.get("song"),
-                            "source_word": entry.get("source_word", source_word),
-                            "target_word": entry.get("target_word"),
-                            "pattern": entry.get("pattern"),
-                            "cultural_significance": entry.get("cultural_sig"),
-                        }
-                        context_data = get_context(pattern_payload)
-                    elif hasattr(engine, "find_cultural_patterns"):
-                        finder = getattr(engine, "find_cultural_patterns")
-                        if callable(finder):
-                            patterns = finder(entry.get("source_word", source_word), limit=1)
-                            if patterns:
-                                pattern_info = patterns[0]
-                                context_data = pattern_info.get("cultural_context")
-                                rarity_value = pattern_info.get("cultural_rarity")
-
-                    context_dict = _context_to_dict(context_data)
-                    if context_dict:
-                        entry["cultural_context"] = context_dict
-
-                        rarity_fn = getattr(engine, "get_cultural_rarity_score", None)
-                        if callable(rarity_fn):
-                            try:
-                                rarity_value = rarity_fn(context_data)
-                            except (TypeError, AttributeError):
-                                rarity_value = rarity_fn(context_dict)
-
-                    if rarity_value is not None:
-                        entry["cultural_rarity"] = rarity_value
-
-                except Exception:
-                    pass
-
-                try:
-                    evaluate_alignment = getattr(engine, "evaluate_rhyme_alignment", None)
-                    if callable(evaluate_alignment):
-                        alignment = evaluate_alignment(
-                            entry.get("source_word", source_word),
-                            entry.get("target_word"),
-                            threshold=phonetic_threshold,
-                            rhyme_signatures=source_signature_set,
-                            source_context=entry.get("source_context"),
-                            target_context=entry.get("target_context"),
-                        )
-                        if alignment is None:
-                            return None
-                        sim_value = alignment.get("similarity")
-                        if sim_value is not None:
-                            entry["phonetic_sim"] = sim_value
-                        combined_value = alignment.get("combined")
-                        if combined_value is not None:
-                            entry["combined_score"] = combined_value
-                            try:
-                                entry["confidence"] = max(
-                                    float(entry.get("confidence", 0.0)),
-                                    float(combined_value),
-                                )
-                            except (TypeError, ValueError):
-                                entry["confidence"] = combined_value
-                        rarity_metric = alignment.get("rarity")
-                        if rarity_metric is not None:
-                            entry["rarity_score"] = rarity_metric
-                        rhyme_type = alignment.get("rhyme_type")
-                        if rhyme_type:
-                            entry["rhyme_type"] = rhyme_type
-                        entry["matched_signatures"] = alignment.get(
-                            "signature_matches", entry.get("matched_signatures", [])
-                        )
-                        entry["target_rhyme_signatures"] = alignment.get(
-                            "target_signatures", entry.get("target_rhyme_signatures", [])
-                        )
-                        features = alignment.get("features")
-                        if features:
-                            entry["phonetic_features"] = features
-                        feature_profile_obj = alignment.get("feature_profile")
-                        if feature_profile_obj is not None:
-                            entry["feature_profile"] = feature_profile_obj
-                        prosody_profile = alignment.get("prosody_profile")
-                        if prosody_profile:
-                            entry["prosody_profile"] = prosody_profile
-                except Exception:
-                    pass
-
-                return entry
-
-            source_results: List[Tuple] = []
-            target_results: List[Tuple] = []
-
-            cultural_branch_start = (
-                telemetry.now() if telemetry and include_cultural else None
-            )
-
-            if include_cultural and self.repository:
-                try:
-                    with timed("search.branch.cultural.query") as query_meta:
-                        source_results, target_results = self.repository.fetch_cultural_matches(
-                            source_word,
-                            min_confidence=min_confidence,
-                            phonetic_threshold=phonetic_threshold,
-                            cultural_filters=sorted(cultural_filters),
-                            genre_filters=sorted(genre_filters),
-                            max_line_distance=max_line_distance,
-                            limit=fetch_limit,
-                        )
-                        query_meta["source_rows"] = len(source_results)
-                        query_meta["target_rows"] = len(target_results)
-                except Exception:
-                    source_results, target_results = [], []
-
-            def build_entry(row: Tuple, swap: bool = False) -> Optional[Dict]:
-                entry = {
-                    "source_word": row[0],
-                    "target_word": row[1],
-                    "artist": row[2],
-                    "song": row[3],
-                    "pattern": row[4],
-                    "genre": row[5],
-                    "distance": row[6],
-                    "confidence": row[7],
-                    "phonetic_sim": row[8],
-                    "cultural_sig": row[9],
-                    "source_context": row[10],
-                    "target_context": row[11],
-                    "result_source": "cultural",
-                    "combined_score": row[7],
-                    "source_phonetic_profile": source_phonetic_profile,
-                    "source_rhyme_signatures": source_signature_list,
-                    "phonetic_threshold": phonetic_threshold,
-                }
-
-                if swap:
-                    swapped_source = row[1]
-                    swapped_target = row[0]
-                    swapped_pattern = entry["pattern"]
-                    if swapped_source and swapped_target:
-                        swapped_pattern = _compose_pattern(
-                            swapped_source,
-                            swapped_target,
-                            " " in str(swapped_target or "").strip(),
-                        )
-                    entry = {
-                        **entry,
-                        "source_word": swapped_source,
-                        "target_word": swapped_target,
-                        "pattern": swapped_pattern,
-                        "source_context": row[11],
-                        "target_context": row[10],
-                    }
-
-                target_text = str(entry.get("target_word", ""))
-                is_multi = " " in target_text.strip() if target_text else False
-                entry.setdefault("is_multi_word", is_multi)
-                entry.setdefault("result_variant", "multi_word" if is_multi else "single_word")
-                if is_multi and target_text:
-                    entry["pattern"] = _compose_pattern(
-                        entry.get("source_word", source_word), target_text, True
-                    )
-                entry.setdefault("source_phrase", entry.get("source_word", source_word))
-                entry.setdefault("source_anchor", source_anchor_word)
-                entry.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
-                entry.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
-                entry.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
-
-                return _enrich_with_cultural_context(entry)
-
-            for row in source_results:
-                enriched_entry = build_entry(row)
-                if enriched_entry:
-                    cultural_entries.append(enriched_entry)
-
-            for row in target_results:
-                enriched_entry = build_entry(row, swap=True)
-                if enriched_entry:
-                    cultural_entries.append(enriched_entry)
-
-            cultural_entries.sort(
-                key=lambda r: (
-                    -float(r.get("confidence", 0.0)),
-                    -float(r.get("phonetic_sim", 0.0)),
-                )
-            )
-
-            if telemetry and cultural_branch_start is not None:
-                telemetry.record_timing(
-                    "search.branch.cultural",
-                    max(0.0, telemetry.now() - cultural_branch_start),
-                    {
-                        "result_count": len(cultural_entries),
-                        "source_rows": len(source_results),
-                        "target_rows": len(target_results),
-                    },
-                )
-
-            anti_llm_entries: List[Dict] = []
-            anti_branch_start = (
-                telemetry.now() if telemetry and include_anti_llm else None
-            )
-            if include_anti_llm:
-                with timed("search.branch.anti_llm.generate") as anti_meta:
-                    anti_patterns = self.anti_llm_engine.generate_anti_llm_patterns(
+                    alignment = cultural_engine.evaluate_rhyme_alignment(
                         source_word,
-                        limit=limit,
-                        module1_seeds=module1_seed_payload,
-                        seed_signatures=aggregated_seed_signatures,
-                        delivered_words=delivered_words_set,
+                        target_word,
+                        threshold=context.get('threshold'),
+                        rhyme_signatures=signature_set,
+                        source_context=None,
+                        target_context=None,
                     )
-                    anti_meta["pattern_count"] = len(anti_patterns)
-                for pattern in anti_patterns:
-                    feature_profile = getattr(pattern, "feature_profile", {}) or {}
-                    syllable_span = getattr(pattern, "syllable_span", None)
-                    stress_alignment = getattr(pattern, "stress_alignment", None)
-                    internal_rhyme = None
-                    if isinstance(feature_profile, dict):
-                        internal_rhyme = feature_profile.get("internal_rhyme_score")
-                    confidence_float = _coerce_float(getattr(pattern, "confidence", None))
-                    if confidence_float is None:
-                        confidence_float = 0.0
-                    combined_metric = getattr(pattern, "combined", None)
-                    if combined_metric is None:
-                        combined_metric = getattr(pattern, "combined_score", None)
-                    combined_float = _coerce_float(combined_metric)
-                    entry_payload = {
-                        "source_word": source_word,
-                        "target_word": pattern.target_word,
-                        "confidence": confidence_float,
-                        "rarity_score": pattern.rarity_score,
-                        "llm_weakness_type": pattern.llm_weakness_type,
-                        "cultural_depth": pattern.cultural_depth,
-                        "result_source": "anti_llm",
-                        "source_rhyme_signatures": source_signature_list,
-                        "source_phonetic_profile": source_phonetic_profile,
-                        "phonetic_threshold": phonetic_threshold,
-                        "feature_profile": feature_profile,
-                        "bradley_device": getattr(pattern, "bradley_device", None),
-                        "stress_alignment": stress_alignment,
-                        "internal_rhyme_score": internal_rhyme,
+                except Exception:
+                    alignment = None
+                if alignment is None:
+                    continue
+
+            if isinstance(alignment, dict):
+                entry.update({
+                    key: value
+                    for key, value in alignment.items()
+                    if key in {
+                        'similarity',
+                        'rarity',
+                        'combined',
+                        'rhyme_type',
+                        'matched_signatures',
+                        'target_signatures',
+                        'features',
+                        'feature_profile',
+                        'prosody_profile',
+                        'internal_rhyme_score',
+                        'stress_alignment',
                     }
-                    is_multi = " " in str(pattern.target_word or "").strip()
-                    entry_payload["pattern"] = _compose_pattern(
-                        source_word, pattern.target_word, is_multi
+                })
+                if alignment.get('combined') is not None:
+                    entry['combined_score'] = alignment['combined']
+                    entry['confidence'] = alignment['combined']
+                if alignment.get('similarity') is not None:
+                    entry['phonetic_sim'] = alignment['similarity']
+                if alignment.get('rarity') is not None:
+                    entry['rarity_score'] = alignment['rarity']
+                if alignment.get('target_signatures'):
+                    aggregated_signatures.update(
+                        str(sig) for sig in alignment['target_signatures'] if sig
                     )
-                    entry_payload["is_multi_word"] = is_multi
-                    entry_payload["result_variant"] = "multi_word" if is_multi else "single_word"
-                    entry_payload.setdefault("source_phrase", source_word)
-                    entry_payload.setdefault("source_anchor", source_anchor_word)
-                    entry_payload.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
-                    entry_payload.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
-                    entry_payload.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
-                    if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                        entry_payload["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                    prosody_payload = getattr(pattern, "prosody_profile", None)
-                    if isinstance(prosody_payload, dict):
-                        entry_payload["prosody_profile"] = prosody_payload
-                    entry_payload["combined_score"] = (
-                        combined_float if combined_float is not None else confidence_float
-                    )
-                    score_for_filter = _confidence_score(entry_payload)
-                    if score_for_filter < min_confidence:
-                        continue
-                    anti_llm_entries.append(entry_payload)
+                if alignment.get('stress_alignment') is not None:
+                    entry['rhythm_score'] = alignment['stress_alignment']
+            else:
+                aggregated_signatures.update(self._build_spelling_signature(target_word))
 
-            if telemetry and anti_branch_start is not None:
-                telemetry.record_timing(
-                    "search.branch.anti_llm",
-                    max(0.0, telemetry.now() - anti_branch_start),
-                    {"result_count": len(anti_llm_entries)},
-                )
+            self._ensure_rhythm_score(entry)
 
-            def _passes_min_confidence(entry: Dict) -> bool:
-                score = _confidence_score(entry)
-                return score >= min_confidence
+            matches.append(entry)
 
-            def _ensure_feature_profile(entry: Dict) -> Dict[str, Any]:
-                """Return a sanitised feature profile dictionary for ``entry``."""
+        matches.sort(
+            key=lambda item: (
+                float(item.get('combined_score', item.get('confidence', 0.0)) or 0.0),
+                float(item.get('rarity_score', 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
 
-                profile_dict = _sanitize_feature_profile(entry)
-                return profile_dict if isinstance(profile_dict, dict) else {}
-
-            def _extract_rhyme_category(entry: Dict) -> Optional[str]:
-                """Pull a rhyme category label from an entry and normalise storage."""
-
-                rhyme_value = entry.get("rhyme_type")
-                if not rhyme_value:
-                    features_obj = entry.get("phonetic_features")
-                    if features_obj is not None:
-                        if isinstance(features_obj, dict):
-                            rhyme_value = features_obj.get("rhyme_type")
-                        elif hasattr(features_obj, "__dict__"):
-                            rhyme_value = vars(features_obj).get("rhyme_type")
-                        else:
-                            try:
-                                rhyme_value = dict(features_obj).get("rhyme_type")
-                            except Exception:
-                                rhyme_value = None
-                if not rhyme_value:
-                    profile_obj = entry.get("feature_profile")
-                    if profile_obj is not None:
-                        if isinstance(profile_obj, dict):
-                            rhyme_value = profile_obj.get("rhyme_type")
-                        elif hasattr(profile_obj, "__dict__"):
-                            rhyme_value = vars(profile_obj).get("rhyme_type")
-                        else:
-                            try:
-                                rhyme_value = dict(profile_obj).get("rhyme_type")
-                            except Exception:
-                                rhyme_value = None
-                if rhyme_value:
-                    entry["rhyme_type"] = rhyme_value
-                    profile_dict = _ensure_feature_profile(entry)
-                    profile_dict.setdefault("rhyme_type", rhyme_value)
-                return rhyme_value
-
-            def _extract_rhythm_score(entry: Dict) -> Optional[float]:
-                """Return a numeric rhythm/stress alignment score for an entry."""
-
-                raw_value = entry.get("rhythm_score")
-                if raw_value is None:
-                    raw_value = entry.get("stress_alignment")
-                if raw_value is None:
-                    profile_obj = entry.get("feature_profile")
-                    if profile_obj is not None:
-                        if isinstance(profile_obj, dict):
-                            raw_value = profile_obj.get("stress_alignment")
-                        elif hasattr(profile_obj, "__dict__"):
-                            raw_value = vars(profile_obj).get("stress_alignment")
-                        else:
-                            try:
-                                raw_value = dict(profile_obj).get("stress_alignment")
-                            except Exception:
-                                raw_value = None
-                if raw_value is None:
-                    phonetic_features = entry.get("phonetic_features")
-                    if phonetic_features is not None:
-                        if isinstance(phonetic_features, dict):
-                            raw_value = phonetic_features.get("stress_alignment")
-                        elif hasattr(phonetic_features, "__dict__"):
-                            raw_value = vars(phonetic_features).get("stress_alignment")
-                        else:
-                            try:
-                                raw_value = dict(phonetic_features).get("stress_alignment")
-                            except Exception:
-                                raw_value = None
-                try:
-                    rhythm_float = float(raw_value)
-                except (TypeError, ValueError):
-                    return None
-
-                entry["rhythm_score"] = rhythm_float
-                entry["stress_alignment"] = rhythm_float
-                profile_dict = _ensure_feature_profile(entry)
-                profile_dict.setdefault("stress_alignment", rhythm_float)
-                return rhythm_float
-
-            def _filter_entry(entry: Dict) -> bool:
-                if not _passes_min_confidence(entry):
-                    return False
-
-                entry_rhyme = _extract_rhyme_category(entry)
-                rhythm_score = _extract_rhythm_score(entry)
-
-                if not filters_active:
-                    return True
-
-                if cultural_filters:
-                    sig = entry.get("cultural_sig")
-                    if sig is None or normalize_name(str(sig)) not in cultural_filters:
-                        return False
-                if genre_filters:
-                    genre_value = entry.get("genre")
-                    if genre_value is None or normalize_name(str(genre_value)) not in genre_filters:
-                        return False
-                if rhyme_type_filters:
-                    if not entry_rhyme or normalize_name(str(entry_rhyme)) not in rhyme_type_filters:
-                        return False
-                if bradley_filters:
-                    device_value = entry.get("bradley_device")
-                    if device_value is None and entry.get("feature_profile"):
-                        device_value = entry["feature_profile"].get("bradley_device")
-                    if device_value is None and entry.get("_bradley_device"):
-                        device_value = entry.get("_bradley_device")
-                    if (
-                        device_value is None
-                        or normalize_name(str(device_value)) not in bradley_filters
-                    ):
-                        return False
-                if min_rarity_threshold is not None:
-                    rarity_metric = entry.get("rarity_score")
-                    if rarity_metric is None:
-                        rarity_metric = entry.get("cultural_rarity")
-                    try:
-                        rarity_value = float(rarity_metric) if rarity_metric is not None else 0.0
-                    except (TypeError, ValueError):
-                        rarity_value = 0.0
-                    if rarity_value < min_rarity_threshold:
-                        return False
-                if min_stress_threshold is not None:
-                    if rhythm_score is None or rhythm_score < min_stress_threshold:
-                        return False
-                if cadence_focus_normalized:
-                    prosody = entry.get("prosody_profile") or {}
-                    cadence_value = prosody.get("complexity_tag") if isinstance(prosody, dict) else None
-                    if cadence_value is None:
-                        cadence_value = entry.get("feature_profile", {}).get("complexity_tag")
-                    if not cadence_value or normalize_name(str(cadence_value)) != cadence_focus_normalized:
-                        return False
-                if require_internal:
-                    internal_value = entry.get("internal_rhyme_score")
-                    if internal_value is None and entry.get("feature_profile"):
-                        internal_value = entry["feature_profile"].get("internal_rhyme_score")
-                    try:
-                        internal_float = float(internal_value) if internal_value is not None else 0.0
-                    except (TypeError, ValueError):
-                        internal_float = 0.0
-                    if internal_float < 0.4:
-                        return False
-                if min_syllable_threshold is not None or max_syllable_threshold is not None:
-                    syllable_span = entry.get("syllable_span")
-                    if not syllable_span and entry.get("feature_profile"):
-                        syllable_span = entry["feature_profile"].get("syllable_span")
-                    if isinstance(syllable_span, (list, tuple)) and len(syllable_span) == 2:
-                        try:
-                            target_syllables = int(syllable_span[1])
-                        except (TypeError, ValueError):
-                            target_syllables = None
-                    else:
-                        target_word = entry.get("target_word")
-                        try:
-                            estimator = getattr(self.phonetic_analyzer, "estimate_syllables", None)
-                            if callable(estimator):
-                                target_syllables = estimator(str(target_word)) if target_word else None
-                            else:
-                                target_syllables = self.phonetic_analyzer._count_syllables(str(target_word)) if target_word else None
-                        except Exception:
-                            target_syllables = None
-                    if min_syllable_threshold is not None and (target_syllables is None or target_syllables < min_syllable_threshold):
-                        return False
-                    if max_syllable_threshold is not None and (target_syllables is None or target_syllables > max_syllable_threshold):
-                        return False
-                if max_line_distance is not None:
-                    distance_value = entry.get("distance")
-                    if distance_value is None or distance_value > max_line_distance:
-                        return False
-
-                return True
-
-            def _rarity_value(entry: Dict) -> float:
-                rarity_metric = entry.get("rarity_score")
-                if rarity_metric is None:
-                    rarity_metric = entry.get("cultural_rarity")
-                try:
-                    return float(rarity_metric)
-                except (TypeError, ValueError):
-                    return 0.0
-
-            def _confidence_value(entry: Dict) -> float:
-                return _confidence_score(entry)
-
-            def _normalize_entry(entry: Dict, category_key: str) -> Dict:
-                entry["result_source"] = category_key
-                if not entry.get("source_phrase"):
-                    entry["source_phrase"] = entry.get("source_word", source_word)
-                entry.setdefault("source_anchor", source_anchor_word)
-                entry.setdefault("anchor_display", source_phonetic_profile.get("anchor_display"))
-                entry.setdefault("phrase_prefix", source_phonetic_profile.get("phrase_prefix"))
-                entry.setdefault("phrase_suffix", source_phonetic_profile.get("phrase_suffix"))
-
-                target_text = str(entry.get("target_word", ""))
-                is_multi = bool(entry.get("is_multi_word"))
-                if not is_multi and target_text:
-                    is_multi = " " in target_text.strip()
-                entry["is_multi_word"] = is_multi
-                if not entry.get("result_variant"):
-                    entry["result_variant"] = "multi_word" if is_multi else "single_word"
-
-                if target_text:
-                    source_value = str(entry.get("source_word", source_word))
-                    if entry.get("pattern"):
-                        entry["pattern"] = _compose_pattern(source_value, target_text, is_multi)
-                    else:
-                        entry["pattern"] = _compose_pattern(source_word, target_text, is_multi)
-                _prepare_confidence_defaults(entry)
-
-                feature_profile = entry.get("feature_profile")
-                if feature_profile is None:
-                    entry["feature_profile"] = {}
-                elif not isinstance(feature_profile, dict):
-                    try:
-                        entry["feature_profile"] = dict(feature_profile)
-                    except Exception:
-                        entry["feature_profile"] = {}
-                profile_dict = _sanitize_feature_profile(entry)
-                if isinstance(profile_dict, dict) and profile_dict:
-                    if not entry.get("rhyme_type") and profile_dict.get("rhyme_type"):
-                        entry["rhyme_type"] = profile_dict.get("rhyme_type")
-                    syllable_span = profile_dict.get("syllable_span")
-                    if (
-                        entry.get("syllable_span") is None
-                        and isinstance(syllable_span, (list, tuple))
-                        and len(syllable_span) == 2
-                    ):
-                        entry["syllable_span"] = [int(syllable_span[0]), int(syllable_span[1])]
-                    stress_alignment = profile_dict.get("stress_alignment")
-                    if entry.get("stress_alignment") is None and stress_alignment is not None:
-                        entry["stress_alignment"] = stress_alignment
-                    internal_score = profile_dict.get("internal_rhyme_score")
-                    if entry.get("internal_rhyme_score") is None and internal_score is not None:
-                        entry["internal_rhyme_score"] = internal_score
-                entry.pop("_feature_profile_sanitized", None)
-
-                prosody_profile = entry.get("prosody_profile")
-                if prosody_profile is None:
-                    entry["prosody_profile"] = {}
-
-                for field, default in {
-                    "rarity_score": None,
-                    "cultural_rarity": None,
-                    "phonetic_sim": None,
-                    "rhyme_type": None,
-                    "stress_alignment": None,
-                    "internal_rhyme_score": None,
-                    "cultural_context": None,
-                    "llm_weakness_type": None,
-                    "cultural_depth": None,
-                }.items():
-                    entry.setdefault(field, default)
-
-                entry.setdefault("cultural_sig", None)
-                entry.setdefault("genre", None)
-                entry.setdefault("source_context", None)
-                entry.setdefault("target_context", None)
-                entry.setdefault("distance", None)
-                _ensure_target_phonetics(entry)
-                entry.pop("_target_phonetics_ready", None)
-
-                bradley_value = entry.pop("_bradley_device", None)
-                if bradley_value is not None:
-                    entry.setdefault("bradley_device", bradley_value)
-
-                return entry
-
-            def _process_entries(entries: List[Dict], category_key: str) -> List[Dict]:
-                if not entries:
-                    return []
-
-                if category_key == "rap_db":
-                    grouped: "OrderedDict[Tuple[str, str], Dict[str, Any]]" = OrderedDict()
-                    for entry in entries:
-                        normalized_entry = _normalize_entry(entry, category_key)
-                        if not _filter_entry(normalized_entry):
-                            continue
-
-                        normalized_entry.pop("_confidence_cache", None)
-
-                        artist_key = str(normalized_entry.get("artist") or "").strip().lower()
-                        song_key = str(normalized_entry.get("song") or "").strip().lower()
-                        group_key = (artist_key, song_key)
-                        group = grouped.get(group_key)
-                        if group is None:
-                            group = {
-                                "artist": normalized_entry.get("artist"),
-                                "song": normalized_entry.get("song"),
-                                "genre": normalized_entry.get("genre"),
-                                "cultural_sig": normalized_entry.get("cultural_sig"),
-                                "cultural_context": normalized_entry.get("cultural_context"),
-                                "result_source": category_key,
-                                "grouped_targets": [],
-                                "max_confidence": 0.0,
-                                "max_phonetic_sim": 0.0,
-                                "max_cultural_rarity": None,
-                                "max_rarity_score": None,
-                                "is_multi_word": False,
-                                "pattern": None,
-                                "source_context": None,
-                                "target_context": None,
-                                "prosody_profile": None,
-                                "_rhyme_types": set(),
-                            }
-                            grouped[group_key] = group
-                        else:
-                            if not group.get("genre") and normalized_entry.get("genre"):
-                                group["genre"] = normalized_entry.get("genre")
-                            if not group.get("cultural_sig") and normalized_entry.get("cultural_sig"):
-                                group["cultural_sig"] = normalized_entry.get("cultural_sig")
-                            if not group.get("cultural_context") and normalized_entry.get("cultural_context"):
-                                group["cultural_context"] = normalized_entry.get("cultural_context")
-
-                        target_key = (
-                            str(normalized_entry.get("target_word") or "").strip().lower(),
-                            str(normalized_entry.get("pattern") or "").strip().lower(),
-                        )
-                        seen_targets = group.setdefault("_seen_targets", set())
-                        if target_key in seen_targets:
-                            continue
-                        seen_targets.add(target_key)
-
-                        target_payload = dict(normalized_entry)
-                        target_payload.pop("source_word", None)
-
-                        group["grouped_targets"].append(target_payload)
-                        group["target_word"] = group["grouped_targets"][0].get("target_word")
-                        if group.get("pattern") is None and target_payload.get("pattern"):
-                            group["pattern"] = target_payload.get("pattern")
-                        if group.get("source_context") is None and target_payload.get("source_context"):
-                            group["source_context"] = target_payload.get("source_context")
-                        if group.get("target_context") is None and target_payload.get("target_context"):
-                            group["target_context"] = target_payload.get("target_context")
-                        if target_payload.get("is_multi_word"):
-                            group["is_multi_word"] = True
-                        if group.get("prosody_profile") is None and target_payload.get("prosody_profile"):
-                            group["prosody_profile"] = target_payload.get("prosody_profile")
-                        rhythm_metric = target_payload.get("rhythm_score")
-                        if rhythm_metric is None:
-                            rhythm_metric = target_payload.get("stress_alignment")
-                        try:
-                            rhythm_float = float(rhythm_metric)
-                        except (TypeError, ValueError):
-                            rhythm_float = None
-                        if rhythm_float is not None:
-                            current_rhythm = group.get("rhythm_score")
-                            if current_rhythm is None or rhythm_float > float(current_rhythm):
-                                group["rhythm_score"] = rhythm_float
-                                group["stress_alignment"] = rhythm_float
-                        group["max_confidence"] = max(
-                            group["max_confidence"],
-                            _confidence_value(target_payload),
-                        )
-                        group["max_phonetic_sim"] = max(
-                            group["max_phonetic_sim"],
-                            float(target_payload.get("phonetic_sim") or 0.0),
-                        )
-                        rarity_metric = target_payload.get("cultural_rarity")
-                        if rarity_metric is None:
-                            rarity_metric = target_payload.get("rarity_score")
-                        try:
-                            rarity_float = float(rarity_metric)
-                        except (TypeError, ValueError):
-                            rarity_float = None
-                        if rarity_float is not None:
-                            current_cultural = group.get("max_cultural_rarity")
-                            if current_cultural is None or rarity_float > current_cultural:
-                                group["max_cultural_rarity"] = rarity_float
-                        rarity_score_metric = target_payload.get("rarity_score")
-                        try:
-                            rarity_score_float = float(rarity_score_metric)
-                        except (TypeError, ValueError):
-                            rarity_score_float = None
-                        if rarity_score_float is not None:
-                            current_score = group.get("max_rarity_score")
-                            if current_score is None or rarity_score_float > current_score:
-                                group["max_rarity_score"] = rarity_score_float
-                        target_rhyme_type = target_payload.get("rhyme_type")
-                        if target_rhyme_type:
-                            rhyme_set = group.setdefault("_rhyme_types", set())
-                            rhyme_set.add(target_rhyme_type)
-
-                    processed_groups: List[Dict[str, Any]] = []
-                    for group in grouped.values():
-                        targets = group.get("grouped_targets") or []
-                        if not targets:
-                            continue
-                        group["group_size"] = len(targets)
-                        group["confidence"] = group.get("max_confidence")
-                        group["combined_score"] = group.get("max_confidence")
-                        group["phonetic_sim"] = group.get("max_phonetic_sim")
-                        if group.get("max_cultural_rarity") is not None:
-                            group["cultural_rarity"] = group.get("max_cultural_rarity")
-                        if group.get("max_rarity_score") is not None:
-                            group["rarity_score"] = group.get("max_rarity_score")
-                        rhyme_types = group.pop("_rhyme_types", set())
-                        if len(rhyme_types) == 1:
-                            group["rhyme_type"] = next(iter(rhyme_types))
-                        elif not rhyme_types:
-                            group["rhyme_type"] = group.get("rhyme_type")
-                        else:
-                            group["rhyme_type"] = None
-                        group.pop("_seen_targets", None)
-                        group.pop("max_cultural_rarity", None)
-                        group.pop("max_rarity_score", None)
-                        processed_groups.append(group)
-
-                    return processed_groups
-
-                processed: List[Dict] = []
-                seen_pairs = set()
-                for entry in entries:
-                    target_value = entry.get("target_word")
-                    if not target_value:
-                        continue
-
-                    source_value = entry.get("source_word", source_word)
-                    pair = (
-                        str(source_value).strip().lower(),
-                        str(target_value).strip().lower(),
-                    )
-                    if pair in seen_pairs:
-                        continue
-                    seen_pairs.add(pair)
-
-                    normalized_entry = _normalize_entry(entry, category_key)
-                    if not _filter_entry(normalized_entry):
-                        continue
-
-                    normalized_entry.pop("_confidence_cache", None)
-
-                    normalized_entry.pop("source_word", None)
-                    processed.append(normalized_entry)
-
-                processed.sort(
-                    key=lambda entry: (
-                        _rarity_value(entry),
-                        _confidence_value(entry),
+        max_seed = max(3, min(6, limit))
+        seed_payload: List[Dict[str, Any]] = []
+        for entry in matches[:max_seed]:
+            seed_payload.append(
+                {
+                    'word': entry.get('target_word'),
+                    'rarity': entry.get('rarity_score', 0.0),
+                    'combined': entry.get('combined_score', entry.get('confidence', 0.0)),
+                    'signatures': list(
+                        entry.get('target_rhyme_signatures')
+                        or entry.get('matched_signatures')
+                        or self._build_spelling_signature(entry.get('target_word'))
                     ),
-                    reverse=True,
-                )
+                    'feature_profile': entry.get('feature_profile', {}),
+                    'prosody_profile': entry.get('prosody_profile', {}),
+                }
+            )
 
-                if limit is None:
-                    return processed
+        return matches, seed_payload, aggregated_signatures, delivered_words
 
+    def _collect_cultural_matches(
+        self,
+        source_word: str,
+        *,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        cultural_engine: Optional[CulturalIntelligenceEngine],
+        min_confidence: float,
+        context: Dict[str, Any],
+        cultural_filters: Set[str],
+        genre_filters: Set[str],
+        max_line_distance: Optional[int],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Return cultural database matches with optional enrichment."""
+
+        if not self.repository:
+            return []
+
+        try:
+            source_rows, target_rows = self.repository.fetch_cultural_matches(
+                source_word,
+                min_confidence=min_confidence,
+                phonetic_threshold=context.get('threshold'),
+                cultural_filters=sorted(cultural_filters),
+                genre_filters=sorted(genre_filters),
+                max_line_distance=max_line_distance,
+                limit=limit,
+            )
+        except Exception as exc:
+            self._logger.error(
+                'Cultural lookup failed',
+                context={'error': str(exc), 'source_word': source_word},
+            )
+            return []
+
+        def _row_to_entry(row: Tuple[Any, ...]) -> Dict[str, Any]:
+            (
+                source,
+                target,
+                artist,
+                song,
+                pattern,
+                genre,
+                distance,
+                confidence,
+                phonetic_similarity,
+                cultural_sig,
+                source_context,
+                target_context,
+            ) = row
+
+            source_clean = str(source or '').strip()
+            target_clean = str(target or '').strip()
+            query_word = str(source_word).strip().lower()
+            if target_clean.lower() == query_word and source_clean.lower() != query_word:
+                source, target = target, source
+                source_context, target_context = target_context, source_context
+                source_clean, target_clean = target_clean, source_clean
+
+            entry = {
+                'source_word': source,
+                'target_word': target,
+                'artist': artist,
+                'song': song,
+                'pattern': self._compose_pattern(source, target),
+                'genre': genre,
+                'distance': distance,
+                'confidence': confidence,
+                'combined_score': confidence,
+                'phonetic_sim': phonetic_similarity,
+                'cultural_sig': cultural_sig,
+                'source_context': source_context,
+                'target_context': target_context,
+                'result_source': 'cultural',
+                'source_phonetic_profile': context.get('profile'),
+                'source_rhyme_signatures': list(context.get('signature_set') or []),
+                'phonetic_threshold': context.get('threshold'),
+                'is_multi_word': bool(target_clean and ' ' in target_clean),
+            }
+            if analyzer is not None:
+                entry['target_phonetics'] = self._describe_word(analyzer, target)
+            else:
+                entry['target_phonetics'] = self._describe_word(None, target)
+            return entry
+
+        entries = [_row_to_entry(row) for row in source_rows + target_rows]
+
+        if cultural_engine:
+            for entry in entries:
                 try:
-                    capped_limit = max(int(limit), 0)
+                    context_payload = {
+                        'artist': entry.get('artist'),
+                        'song': entry.get('song'),
+                        'source_word': entry.get('source_word'),
+                        'target_word': entry.get('target_word'),
+                        'pattern': entry.get('pattern'),
+                        'cultural_significance': entry.get('cultural_sig'),
+                    }
+                    cultural_context = cultural_engine.get_cultural_context(context_payload)
+                except Exception:
+                    cultural_context = None
+                if cultural_context is not None:
+                    if not isinstance(cultural_context, dict):
+                        try:
+                            cultural_context = dict(vars(cultural_context))
+                        except Exception:
+                            cultural_context = {'value': cultural_context}
+                    entry['cultural_context'] = cultural_context
+                    try:
+                        rarity = cultural_engine.get_cultural_rarity_score(cultural_context)
+                    except Exception:
+                        rarity = None
+                    if rarity is not None:
+                        entry['cultural_rarity'] = rarity
+                try:
+                    alignment = cultural_engine.evaluate_rhyme_alignment(
+                        source_word,
+                        entry.get('target_word'),
+                        threshold=context.get('threshold'),
+                        rhyme_signatures=context.get('signature_set'),
+                        source_context=entry.get('source_context'),
+                        target_context=entry.get('target_context'),
+                    )
+                except Exception:
+                    alignment = None
+                if isinstance(alignment, dict):
+                    if alignment.get('combined') is not None:
+                        entry['combined_score'] = alignment['combined']
+                        entry['confidence'] = alignment['combined']
+                    if alignment.get('similarity') is not None:
+                        entry['phonetic_sim'] = alignment['similarity']
+                    if alignment.get('rarity') is not None:
+                        entry['rarity_score'] = alignment['rarity']
+                    if alignment.get('rhyme_type'):
+                        entry['rhyme_type'] = alignment['rhyme_type']
+                    if alignment.get('feature_profile'):
+                        entry['feature_profile'] = alignment['feature_profile']
+                    if alignment.get('prosody_profile'):
+                        entry['prosody_profile'] = alignment['prosody_profile']
+                    if alignment.get('stress_alignment') is not None:
+                        entry['stress_alignment'] = alignment['stress_alignment']
+                        entry['rhythm_score'] = alignment['stress_alignment']
+                    if alignment.get('target_signatures'):
+                        entry['target_rhyme_signatures'] = alignment['target_signatures']
+                self._ensure_rhythm_score(entry)
+        return entries
+
+    def _collect_anti_llm_matches(
+        self,
+        source_word: str,
+        *,
+        analyzer: Optional[EnhancedPhoneticAnalyzer],
+        anti_llm_engine: Optional[AntiLLMRhymeEngine],
+        limit: int,
+        min_confidence: float,
+        module1_seeds: Optional[List[Dict[str, Any]]],
+        seed_signatures: Optional[Set[str]],
+        delivered_words: Optional[Set[str]],
+    ) -> List[Dict[str, Any]]:
+        """Generate anti-LLM patterns with consistent dictionaries."""
+
+        if anti_llm_engine is None:
+            return []
+
+        try:
+            raw_patterns = anti_llm_engine.generate_anti_llm_patterns(
+                source_word,
+                limit=limit,
+                module1_seeds=module1_seeds or [],
+                seed_signatures=seed_signatures or set(),
+                delivered_words=delivered_words or set(),
+            )
+        except Exception as exc:
+            self._logger.error(
+                'Anti-LLM pattern generation failed',
+                context={'error': str(exc), 'source_word': source_word},
+            )
+            return []
+
+        entries: List[Dict[str, Any]] = []
+        for pattern in raw_patterns:
+            if isinstance(pattern, dict):
+                data = dict(pattern)
+            else:
+                data = {}
+                for attr in (
+                    'source_word',
+                    'target_word',
+                    'confidence',
+                    'combined',
+                    'combined_score',
+                    'rarity_score',
+                    'stress_alignment',
+                    'prosody_profile',
+                    'feature_profile',
+                    'llm_weakness_type',
+                    'cultural_depth',
+                    'bradley_device',
+                ):
+                    if hasattr(pattern, attr):
+                        data[attr] = getattr(pattern, attr)
+            target_word = str(data.get('target_word', '') or '').strip()
+            if not target_word:
+                continue
+            confidence_val = data.get('combined_score')
+            if confidence_val is None:
+                confidence_val = data.get('combined')
+            if confidence_val is None:
+                confidence_val = data.get('confidence')
+            try:
+                confidence_val = float(confidence_val) if confidence_val is not None else 0.0
+            except (TypeError, ValueError):
+                confidence_val = 0.0
+            entry = {
+                'source_word': data.get('source_word', source_word),
+                'target_word': target_word,
+                'pattern': self._compose_pattern(source_word, target_word),
+                'confidence': confidence_val,
+                'combined_score': confidence_val,
+                'rarity_score': data.get('rarity_score'),
+                'stress_alignment': data.get('stress_alignment'),
+                'prosody_profile': data.get('prosody_profile'),
+                'feature_profile': data.get('feature_profile'),
+                'llm_weakness_type': data.get('llm_weakness_type'),
+                'cultural_depth': data.get('cultural_depth'),
+                'bradley_device': data.get('bradley_device'),
+                'result_source': 'anti_llm',
+                'is_multi_word': bool(' ' in target_word),
+            }
+            if analyzer is not None:
+                entry['target_phonetics'] = self._describe_word(analyzer, target_word)
+            else:
+                entry['target_phonetics'] = self._describe_word(None, target_word)
+            self._ensure_rhythm_score(entry)
+            entries.append(entry)
+        return entries
+
+    def _normalise_filters(
+        self,
+        cultural_significance: Optional[List[str] | str],
+        genres: Optional[List[str] | str],
+        allowed_rhyme_types: Optional[List[str] | str],
+        bradley_devices: Optional[List[str] | str],
+    ) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+        def _to_set(value: Optional[List[str] | str]) -> Set[str]:
+            if value is None:
+                return set()
+            if isinstance(value, str):
+                items = [value]
+            else:
+                items = list(value)
+            cleaned = set()
+            for item in items:
+                if item is None:
+                    continue
+                label = self.normalize_filter_label(str(item))
+                if label:
+                    cleaned.add(label)
+            return cleaned
+
+        return (
+            _to_set(cultural_significance),
+            _to_set(genres),
+            _to_set(allowed_rhyme_types),
+            _to_set(bradley_devices),
+        )
+
+    def _confidence_value(self, entry: Dict[str, Any]) -> float:
+        for key in ('combined_score', 'combined', 'confidence'):
+            value = entry.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    def _rarity_value(self, entry: Dict[str, Any]) -> float:
+        for key in ('rarity_score', 'cultural_rarity'):
+            value = entry.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    def _stress_value(self, entry: Dict[str, Any]) -> Optional[float]:
+        candidates = [
+            entry.get('stress_alignment'),
+        ]
+        prosody = entry.get('prosody_profile')
+        if isinstance(prosody, dict):
+            candidates.append(prosody.get('stress_alignment'))
+        feature = entry.get('feature_profile')
+        if isinstance(feature, dict):
+            candidates.append(feature.get('stress_alignment'))
+        for value in candidates:
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _ensure_rhythm_score(self, entry: Dict[str, Any]) -> None:
+        stress_alignment = entry.get('stress_alignment')
+        if stress_alignment is None:
+            for key in ('feature_profile', 'prosody_profile', 'features'):
+                profile = entry.get(key)
+                if isinstance(profile, dict):
+                    candidate = profile.get('stress_alignment')
+                    if candidate is not None:
+                        stress_alignment = candidate
+                        break
+        if stress_alignment is not None:
+            entry.setdefault('stress_alignment', stress_alignment)
+            if entry.get('rhythm_score') is None:
+                entry['rhythm_score'] = stress_alignment
+
+    def _cadence_tag(self, entry: Dict[str, Any]) -> Optional[str]:
+        prosody = entry.get('prosody_profile')
+        if isinstance(prosody, dict):
+            tag = prosody.get('complexity_tag')
+            if tag:
+                return self.normalize_filter_label(str(tag))
+        feature = entry.get('feature_profile')
+        if isinstance(feature, dict):
+            tag = feature.get('complexity_tag') or feature.get('cadence_tag')
+            if tag:
+                return self.normalize_filter_label(str(tag))
+        return None
+
+    def _entry_rhyme_type(self, entry: Dict[str, Any]) -> Optional[str]:
+        candidate = entry.get('rhyme_type')
+        if not candidate and isinstance(entry.get('feature_profile'), dict):
+            candidate = entry['feature_profile'].get('rhyme_type')
+        if candidate:
+            return self.normalize_filter_label(str(candidate))
+        return None
+
+    def _syllable_count(self, entry: Dict[str, Any]) -> Optional[int]:
+        syllable_span = entry.get('syllable_span')
+        if isinstance(syllable_span, (list, tuple)) and len(syllable_span) >= 2:
+            try:
+                return int(syllable_span[1])
+            except (TypeError, ValueError):
+                return None
+        phonetics = entry.get('target_phonetics')
+        if isinstance(phonetics, dict) and phonetics.get('syllables') is not None:
+            try:
+                return int(phonetics['syllables'])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _apply_filters(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        limit: int,
+        min_confidence: float,
+        min_rarity: Optional[float],
+        min_stress_alignment: Optional[float],
+        cadence_focus: Optional[str],
+        allowed_rhyme_types: Set[str],
+        bradley_devices: Set[str],
+        require_internal: bool,
+        min_syllables: Optional[int],
+        max_syllables: Optional[int],
+        max_line_distance: Optional[int],
+        cultural_filters: Set[str],
+        genre_filters: Set[str],
+    ) -> List[Dict[str, Any]]:
+        cadence_focus_label = self.normalize_filter_label(cadence_focus) if cadence_focus else ''
+        filtered: List[Dict[str, Any]] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        for entry in entries:
+            confidence_value = self._confidence_value(entry)
+            if confidence_value < min_confidence:
+                continue
+
+            if cultural_filters:
+                label = self.normalize_filter_label(entry.get('cultural_sig'))
+                if label not in cultural_filters:
+                    continue
+
+            if genre_filters:
+                genre_label = self.normalize_filter_label(entry.get('genre'))
+                if genre_label not in genre_filters:
+                    continue
+
+            if max_line_distance is not None:
+                distance = entry.get('distance')
+                if distance is None or distance > max_line_distance:
+                    continue
+
+            if min_rarity is not None and self._rarity_value(entry) < min_rarity:
+                continue
+
+            stress_value = self._stress_value(entry)
+            if min_stress_alignment is not None and (
+                stress_value is None or stress_value < min_stress_alignment
+            ):
+                continue
+
+            if cadence_focus_label:
+                cadence_tag = self._cadence_tag(entry)
+                if cadence_tag != cadence_focus_label:
+                    continue
+
+            if allowed_rhyme_types:
+                rhyme_type = self._entry_rhyme_type(entry)
+                if rhyme_type not in allowed_rhyme_types:
+                    continue
+
+            if bradley_devices:
+                device = entry.get('bradley_device')
+                if device is None and isinstance(entry.get('feature_profile'), dict):
+                    device = entry['feature_profile'].get('bradley_device')
+                device_label = self.normalize_filter_label(device) if device else ''
+                if device_label not in bradley_devices:
+                    continue
+
+            if require_internal:
+                internal_score = entry.get('internal_rhyme_score')
+                if internal_score is None and isinstance(entry.get('feature_profile'), dict):
+                    internal_score = entry['feature_profile'].get('internal_rhyme_score')
+                try:
+                    internal_value = float(internal_score) if internal_score is not None else 0.0
                 except (TypeError, ValueError):
-                    capped_limit = len(processed)
+                    internal_value = 0.0
+                if internal_value < 0.4:
+                    continue
 
-                return processed[:capped_limit]
+            syllable_count = self._syllable_count(entry)
+            if min_syllables is not None and (
+                syllable_count is None or syllable_count < min_syllables
+            ):
+                continue
+            if max_syllables is not None and (
+                syllable_count is None or syllable_count > max_syllables
+            ):
+                continue
 
-            return finalize({
-                "source_profile": source_phonetic_profile,
-                "cmu": _process_entries(phonetic_entries if include_phonetic else [], "cmu"),
-                "anti_llm": _process_entries(anti_llm_entries if include_anti_llm else [], "anti_llm"),
-                "rap_db": _process_entries(cultural_entries if include_cultural else [], "rap_db"),
-            })
+            key = (str(entry.get('target_word')).lower(), str(entry.get('result_source')))
+            if key in seen:
+                continue
+            seen.add(key)
+            filtered.append(entry)
 
+        filtered.sort(
+            key=lambda item: (
+                self._confidence_value(item),
+                self._rarity_value(item),
+            ),
+            reverse=True,
+        )
+
+        if limit <= 0:
+            return []
+        return filtered[:limit]
+
+    def _finalize_results(
+        self,
+        context: Dict[str, Any],
+        *,
+        phonetic: List[Dict[str, Any]],
+        cultural: List[Dict[str, Any]],
+        anti_llm: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        profile = context.get('profile', {})
+        if isinstance(profile, dict):
+            profile.setdefault('signatures', sorted(context.get('signature_set', [])))
+            profile.setdefault('threshold', context.get('threshold'))
+            profile.setdefault('reference_similarity', context.get('reference_similarity'))
+        return {
+            'source_profile': profile,
+            'cmu': phonetic,
+            'rap_db': cultural,
+            'anti_llm': anti_llm,
+        }
+
+    def _search_rhymes_internal(
+        self,
+        source_word: str,
+        limit: int = 20,
+        min_confidence: float = 0.7,
+        cultural_significance: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        result_sources: Optional[List[str]] = None,
+        max_line_distance: Optional[int] = None,
+        min_syllables: Optional[int] = None,
+        max_syllables: Optional[int] = None,
+        allowed_rhyme_types: Optional[List[str]] = None,
+        bradley_devices: Optional[List[str]] = None,
+        require_internal: bool = False,
+        min_rarity: Optional[float] = None,
+        min_stress_alignment: Optional[float] = None,
+        cadence_focus: Optional[str] = None,
+    ) -> Dict[str, List[Dict]]:
+        """Search for rhymes without external coordination plumbing."""
+
+        if not source_word or not str(source_word).strip():
+            return {'cmu': [], 'anti_llm': [], 'rap_db': []}
+
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 0
+        if limit_value <= 0:
+            return {'cmu': [], 'anti_llm': [], 'rap_db': []}
+        limit = limit_value
+
+        try:
+            min_confidence = float(min_confidence)
+        except (TypeError, ValueError):
+            min_confidence = 0.0
+
+        cultural_filters, genre_filters, rhyme_filters, bradley_filters = self._normalise_filters(
+            cultural_significance,
+            genres,
+            allowed_rhyme_types,
+            bradley_devices,
+        )
+
+        cadence_focus_label = self.normalize_filter_label(cadence_focus) if cadence_focus else ''
+
+        try:
+            min_syllable_threshold = max(1, int(min_syllables)) if min_syllables else None
+        except (TypeError, ValueError):
+            min_syllable_threshold = None
+        try:
+            max_syllable_threshold = max(1, int(max_syllables)) if max_syllables else None
+        except (TypeError, ValueError):
+            max_syllable_threshold = None
+        try:
+            min_rarity_threshold = float(min_rarity) if min_rarity is not None else None
+        except (TypeError, ValueError):
+            min_rarity_threshold = None
+        try:
+            min_stress_threshold = (
+                float(min_stress_alignment) if min_stress_alignment is not None else None
+            )
+        except (TypeError, ValueError):
+            min_stress_threshold = None
+
+        selected_sources = self._normalise_filters(result_sources, None, None, None)[0]
+        if not selected_sources:
+            selected_sources = {'phonetic', 'cultural', 'anti-llm'}
+
+        analyzer = getattr(self, 'phonetic_analyzer', None)
+        cultural_engine = getattr(self, 'cultural_engine', None)
+        anti_llm_engine = getattr(self, 'anti_llm_engine', None)
+        include_phonetic = 'phonetic' in selected_sources
+        include_cultural = 'cultural' in selected_sources
+        include_anti = 'anti-llm' in selected_sources or 'anti_llm' in selected_sources
+        cmu_loader = getattr(analyzer, 'cmu_loader', None) or getattr(self, 'cmu_loader', None)
+
+        context = self._build_source_context(source_word, analyzer, cmu_loader, cultural_engine)
+
+        telemetry = getattr(self, 'telemetry', None)
+
+        phonetic_matches: List[Dict[str, Any]] = []
+        module1_seeds: List[Dict[str, Any]] = []
+        seed_signatures: Set[str] = set(context.get('signature_set') or [])
+        delivered_words: Set[str] = set()
+
+        if include_phonetic:
+            timer = telemetry.timer('search.branch.phonetic') if telemetry else nullcontext()
+            with timer as payload:
+                (
+                    phonetic_matches,
+                    module1_seeds,
+                    new_signatures,
+                    delivered_words,
+                ) = self._collect_phonetic_matches(
+                    source_word,
+                    max(limit, 1),
+                    analyzer=analyzer,
+                    cultural_engine=cultural_engine,
+                    cmu_loader=cmu_loader,
+                    context=context,
+                    min_confidence=min_confidence,
+                )
+                seed_signatures.update(new_signatures)
+                if payload is not None:
+                    payload['result_count'] = len(phonetic_matches)
+        else:
+            if telemetry:
+                telemetry.increment('search.branch.phonetic.skipped')
+
+        cultural_matches: List[Dict[str, Any]] = []
+        if include_cultural:
+            timer = telemetry.timer('search.branch.cultural') if telemetry else nullcontext()
+            with timer as payload:
+                if cultural_engine is not None:
+                    cultural_matches = self._collect_cultural_matches(
+                        source_word,
+                        analyzer=analyzer,
+                        cultural_engine=cultural_engine,
+                        min_confidence=min_confidence,
+                        context=context,
+                        cultural_filters=cultural_filters,
+                        genre_filters=genre_filters,
+                        max_line_distance=max_line_distance,
+                        limit=max(limit, 1),
+                    )
+                else:
+                    cultural_matches = []
+                if payload is not None:
+                    payload['result_count'] = len(cultural_matches)
+        elif telemetry:
+            telemetry.increment('search.branch.cultural.skipped')
+
+        anti_llm_matches: List[Dict[str, Any]] = []
+        if include_anti and anti_llm_engine is not None:
+            timer = telemetry.timer('search.branch.anti_llm') if telemetry else nullcontext()
+            with timer as payload:
+                anti_llm_matches = self._collect_anti_llm_matches(
+                    source_word,
+                    analyzer=analyzer,
+                    anti_llm_engine=anti_llm_engine,
+                    limit=max(limit, 1),
+                    min_confidence=min_confidence,
+                    module1_seeds=module1_seeds,
+                    seed_signatures=seed_signatures,
+                    delivered_words=delivered_words,
+                )
+                if payload is not None:
+                    payload['result_count'] = len(anti_llm_matches)
+        elif telemetry:
+            telemetry.increment('search.branch.anti_llm.skipped')
+
+        phonetic_filtered = self._apply_filters(
+            phonetic_matches,
+            limit=limit,
+            min_confidence=min_confidence,
+            min_rarity=min_rarity_threshold,
+            min_stress_alignment=min_stress_threshold,
+            cadence_focus=cadence_focus_label,
+            allowed_rhyme_types=rhyme_filters,
+            bradley_devices=bradley_filters,
+            require_internal=require_internal,
+            min_syllables=min_syllable_threshold,
+            max_syllables=max_syllable_threshold,
+            max_line_distance=max_line_distance,
+            cultural_filters=set(),
+            genre_filters=set(),
+        ) if phonetic_matches else []
+
+        cultural_filtered = self._apply_filters(
+            cultural_matches,
+            limit=limit,
+            min_confidence=min_confidence,
+            min_rarity=min_rarity_threshold,
+            min_stress_alignment=min_stress_threshold,
+            cadence_focus=cadence_focus_label,
+            allowed_rhyme_types=rhyme_filters,
+            bradley_devices=bradley_filters,
+            require_internal=require_internal,
+            min_syllables=min_syllable_threshold,
+            max_syllables=max_syllable_threshold,
+            max_line_distance=max_line_distance,
+            cultural_filters=cultural_filters,
+            genre_filters=genre_filters,
+        ) if cultural_matches else []
+
+        anti_llm_filtered = self._apply_filters(
+            anti_llm_matches,
+            limit=limit,
+            min_confidence=min_confidence,
+            min_rarity=min_rarity_threshold,
+            min_stress_alignment=min_stress_threshold,
+            cadence_focus=cadence_focus_label,
+            allowed_rhyme_types=rhyme_filters,
+            bradley_devices=bradley_filters,
+            require_internal=require_internal,
+            min_syllables=min_syllable_threshold,
+            max_syllables=max_syllable_threshold,
+            max_line_distance=max_line_distance,
+            cultural_filters=set(),
+            genre_filters=set(),
+        ) if anti_llm_matches else []
+
+        return self._finalize_results(
+            context,
+            phonetic=phonetic_filtered,
+            cultural=cultural_filtered,
+            anti_llm=anti_llm_filtered,
+        )
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
 
@@ -2240,181 +1658,92 @@ class RhymeResultFormatter:
         """Render grouped rhyme results with shared phonetic context."""
 
         category_order: List[Tuple[str, str]] = [
-            ("cmu", "📚 CMU — Uncommon Rhymes"),
-            ("anti_llm", "🧠 Anti-LLM — Uncommon Patterns"),
-            ("rap_db", "🎤 Rap & Cultural Matches"),
+            ("cmu", "📚 CMU Matches"),
+            ("anti_llm", "🧠 Anti-LLM Patterns"),
+            ("rap_db", "🎤 Cultural Archive"),
         ]
-
-        def _normalize_source_key(value: Optional[str]) -> str:
-            mapping = {
-                "phonetic": "cmu",
-                "cultural": "rap_db",
-                "anti_llm": "anti_llm",
-                "anti-llm": "anti_llm",
-                "multi_word": "anti_llm",
-            }
-            if value is None:
-                return ""
-            return mapping.get(str(value), str(value))
 
         if not rhymes:
             return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
 
-        has_entries = any(rhymes.get(key) for key, _ in category_order)
-        if not has_entries:
+        has_results = any(rhymes.get(key) for key, _ in category_order)
+        if not has_results:
             return f"❌ No rhymes found for '{source_word}'. Try another word or adjust your filters."
 
-        def _resolve_rhyme_type(entry: Dict[str, Any]) -> Optional[str]:
-            candidate = entry.get("rhyme_type")
-            if not candidate:
-                for attr in ("feature_profile", "phonetic_features"):
-                    obj = entry.get(attr)
-                    if obj is None:
-                        continue
-                    if isinstance(obj, dict):
-                        candidate = obj.get("rhyme_type")
-                    elif hasattr(obj, "__dict__"):
-                        candidate = vars(obj).get("rhyme_type")
-                    else:
-                        try:
-                            candidate = dict(obj).get("rhyme_type")
-                        except Exception:
-                            candidate = None
-                    if candidate:
-                        break
-            if not candidate:
-                return None
-            return str(candidate).replace("_", " ").title()
-
-        def _as_dict(value: Any) -> Dict[str, Any]:
-            if isinstance(value, dict):
-                return value
-            if hasattr(value, "__dict__"):
-                try:
-                    return dict(vars(value))
-                except Exception:
-                    return {}
-            return {}
-
-        def _format_float(value: Any) -> Optional[str]:
-            try:
-                return f"{float(value):.2f}"
-            except (TypeError, ValueError):
-                return None
-
-        def _format_phonetics_line(phonetics: Any) -> Optional[str]:
-            if not isinstance(phonetics, dict):
-                return None
+        def _format_phonetics(phonetics: Dict[str, Any]) -> Optional[str]:
             parts: List[str] = []
             syllables = phonetics.get("syllables")
             if isinstance(syllables, (int, float)):
                 parts.append(f"Syllables: {int(syllables)}")
-            stress_display = phonetics.get("stress_pattern_display") or phonetics.get(
-                "stress_pattern"
-            )
-            if stress_display:
-                parts.append(f"Stress: {stress_display}")
-            meter_hint = phonetics.get("meter_hint")
-            foot = phonetics.get("metrical_foot")
-            if meter_hint:
-                parts.append(f"Meter: {meter_hint}")
-            elif foot:
-                parts.append(f"Meter: {str(foot).title()}")
-            if not parts:
-                return None
-            return f"Phonetics: {' | '.join(parts)}"
+            stress = phonetics.get("stress_pattern_display") or phonetics.get("stress_pattern")
+            if stress:
+                parts.append(f"Stress: {stress}")
+            meter = phonetics.get("meter_hint") or phonetics.get("metrical_foot")
+            if meter:
+                parts.append(f"Meter: {meter}")
+            return " | ".join(parts) if parts else None
 
-        def _resolve_source_label(
-            source_key: str,
-            entry: Dict[str, Any],
-            parent: Optional[Dict[str, Any]] = None,
-        ) -> Optional[str]:
-            explicit_source = entry.get("result_source")
-            if explicit_source is None and parent is not None:
-                explicit_source = parent.get("result_source")
-            normalized_source = _normalize_source_key(explicit_source) or source_key
-            mapping = {
-                "cmu": "CMU Pronouncing Dictionary",
-                "anti_llm": "Anti-LLM Pattern Library",
-                "rap_db": "Rap & Cultural Archive",
-            }
-            if normalized_source in mapping:
-                return mapping[normalized_source]
-            if explicit_source:
-                return str(explicit_source)
-            return mapping.get(source_key, source_key.replace("_", " ").title())
+        def _format_entry(entry: Dict[str, Any]) -> List[str]:
+            details: List[str] = []
+            rarity = entry.get("rarity_score") or entry.get("cultural_rarity")
+            confidence = entry.get("combined_score", entry.get("confidence"))
+            phonetics = entry.get("target_phonetics") or {}
+            phonetics_line = _format_phonetics(phonetics)
 
-        def _standard_info_segments(
-            subject: Dict[str, Any],
-            source_key: str,
-            parent: Optional[Dict[str, Any]] = None,
-        ) -> List[str]:
-            segments: List[str] = []
-            rhyme_category = "Phrase" if subject.get("is_multi_word") else "Word"
-            segments.append(f"Rhyme Type: {rhyme_category}")
-
-            phonetics_line = _format_phonetics_line(subject.get("target_phonetics") or {})
+            if rarity is not None:
+                try:
+                    details.append(f"• Rarity: {float(rarity):.2f}")
+                except (TypeError, ValueError):
+                    pass
+            if confidence is not None:
+                try:
+                    details.append(f"• Confidence: {float(confidence):.2f}")
+                except (TypeError, ValueError):
+                    pass
             if phonetics_line:
-                segments.append(phonetics_line)
+                details.append(f"• Phonetics: {phonetics_line}")
 
-            rarity_value = subject.get("rarity_score")
-            if rarity_value is None:
-                rarity_value = subject.get("cultural_rarity")
-            if rarity_value is None and parent is not None:
-                rarity_value = parent.get("rarity_score") or parent.get("cultural_rarity")
-            rarity_formatted = _format_float(rarity_value)
-            if rarity_formatted:
-                segments.append(f"Rarity: {rarity_formatted}")
+            rhyme_type = entry.get("rhyme_type")
+            feature_profile = entry.get("feature_profile")
+            if not rhyme_type and isinstance(feature_profile, dict):
+                rhyme_type = feature_profile.get("rhyme_type")
+            if rhyme_type:
+                details.append(f"• Rhyme type: {str(rhyme_type).replace('_', ' ').title()}")
 
-            rhyme_label = _resolve_rhyme_type(subject) or (
-                _resolve_rhyme_type(parent) if parent is not None else None
-            )
-            if rhyme_label:
-                segments.append(f"Rhyme type: {rhyme_label}")
+            cadence_value = None
+            prosody_profile = entry.get("prosody_profile")
+            if isinstance(prosody_profile, dict):
+                cadence_value = (
+                    prosody_profile.get("complexity_tag")
+                    or prosody_profile.get("cadence_tag")
+                )
+            if cadence_value is None and isinstance(feature_profile, dict):
+                cadence_value = (
+                    feature_profile.get("complexity_tag")
+                    or feature_profile.get("cadence_tag")
+                )
+            if cadence_value:
+                details.append(f"• Cadence: {str(cadence_value).replace('_', ' ').title()}")
 
-            confidence_value = subject.get("combined_score")
-            if confidence_value is None:
-                confidence_value = subject.get("confidence")
-            if confidence_value is None and parent is not None:
-                confidence_value = parent.get("combined_score") or parent.get("confidence")
-            confidence_formatted = _format_float(confidence_value)
-            if confidence_formatted:
-                segments.append(f"Confidence: {confidence_formatted}")
+            stress_alignment = entry.get("stress_alignment")
+            if stress_alignment is None and isinstance(feature_profile, dict):
+                stress_alignment = feature_profile.get("stress_alignment")
+            if stress_alignment is not None:
+                try:
+                    details.append(f"• Rhythm score: {float(stress_alignment):.2f}")
+                except (TypeError, ValueError):
+                    pass
 
-            source_label = _resolve_source_label(source_key, subject, parent)
-            if source_label:
-                segments.append(f"Source: {source_label}")
+            return details
 
-            return [segment for segment in segments if segment]
-
-        lines: List[str] = [
-            f"🎯 **TARGET RHYMES for '{source_word.upper()}':**",
-            "=" * 50,
-            "",
-        ]
+        lines: List[str] = [f"### Rhymes for {source_word.upper()}"]
 
         source_profile = rhymes.get("source_profile") or {}
-        source_phonetics = source_profile.get("phonetics") or {}
-        lines.append("🔎 Source profile")
-        lines.append(f"   • Word: {source_profile.get('word', source_word)}")
-
-        basic_parts: List[str] = []
-        syllables = source_phonetics.get("syllables")
-        if isinstance(syllables, (int, float)):
-            basic_parts.append(f"Syllables: {int(syllables)}")
-        stress_display = source_phonetics.get("stress_pattern_display") or source_phonetics.get(
-            "stress_pattern"
-        )
-        if stress_display:
-            basic_parts.append(f"Stress: {stress_display}")
-        meter_hint = source_phonetics.get("meter_hint")
-        foot = source_phonetics.get("metrical_foot")
-        if meter_hint:
-            basic_parts.append(f"Meter: {meter_hint}")
-        elif foot:
-            basic_parts.append(f"Meter: {str(foot).title()}")
-        if basic_parts:
-            lines.append(f"   • Basic: {' | '.join(basic_parts)}")
+        phonetics = source_profile.get("phonetics") or {}
+        source_meta = _format_phonetics(phonetics)
+        lines.append(f"Source: {source_profile.get('word', source_word)}")
+        if source_meta:
+            lines.append(f"• {source_meta}")
         lines.append("")
 
         for key, header in category_order:
@@ -2423,145 +1752,58 @@ class RhymeResultFormatter:
                 continue
 
             lines.append(header)
-            lines.append("-" * len(header))
-
-            if key == "rap_db":
-                for entry in entries:
-                    targets = entry.get("grouped_targets") or []
-                    if not targets:
-                        continue
-
-                    artist = entry.get("artist")
-                    song = entry.get("song")
-                    if artist and song:
-                        artist_segment = f"{artist} — {song}"
-                    elif artist:
-                        artist_segment = str(artist)
-                    elif song:
-                        artist_segment = str(song)
-                    else:
-                        artist_segment = None
-
-                    genre_bits: List[str] = []
-                    genre_value = entry.get("genre")
-                    if genre_value:
-                        genre_bits.append(f"Genre: {genre_value}")
-                    group_size = entry.get("group_size")
-                    if group_size:
-                        try:
-                            genre_bits.append(f"Targets: {int(group_size)}")
-                        except (TypeError, ValueError):
-                            genre_bits.append(f"Targets: {group_size}")
-
-                    for target in targets:
-                        pattern_text = target.get("pattern") or target.get("target_word") or "(unknown)"
-                        subject_label = f"Pattern: {pattern_text}"
-
-                        line_segments = [subject_label]
-                        line_segments.extend(
-                            _standard_info_segments(target, key, parent=entry)
-                        )
-
-                        metadata_segments: List[str] = []
-                        if artist_segment:
-                            metadata_segments.append(artist_segment)
-                        if genre_bits:
-                            metadata_segments.append(" | ".join(genre_bits))
-
-                        hidden_segments: List[str] = []
-                        context_info = _as_dict(entry.get("cultural_context"))
-                        cultural_bits: List[str] = []
-                        for key_name, label in (
-                            ("era", "Era"),
-                            ("regional_origin", "Region"),
-                            ("cultural_significance", "Significance"),
-                        ):
-                            value = context_info.get(key_name)
-                            if not value and key_name == "cultural_significance":
-                                value = entry.get("cultural_sig")
-                            if value:
-                                cultural_bits.append(
-                                    f"{label}: {str(value).replace('_', ' ').title()}"
-                                )
-                        if cultural_bits:
-                            hidden_segments.append(
-                                f"<!-- • Cultural: {' | '.join(cultural_bits)} -->"
-                            )
-
-                        styles = context_info.get("style_characteristics")
-                        if isinstance(styles, (list, tuple)) and styles:
-                            formatted_styles = ", ".join(
-                                str(style).replace("_", " ").title() for style in styles if style
-                            )
-                            if formatted_styles:
-                                hidden_segments.append(
-                                    f"<!-- • Styles: {formatted_styles} -->"
-                                )
-
-                        context_parts: List[str] = []
-                        for value in (
-                            target.get("source_context"),
-                            target.get("target_context"),
-                        ):
-                            if value:
-                                context_parts.append(str(value))
-                        if context_parts:
-                            metadata_segments.append(f"Context: {' | '.join(context_parts)}")
-
-                        if metadata_segments:
-                            line_segments.extend(metadata_segments)
-
-                        prosody = target.get("prosody_profile")
-                        if isinstance(prosody, dict):
-                            cadence = prosody.get("complexity_tag")
-                            if cadence:
-                                hidden_segments.append(
-                                    f"<!-- • Cadence: {str(cadence).replace('_', ' ').title()} -->"
-                                )
-
-                        if hidden_segments:
-                            line_segments.extend(hidden_segments)
-
-                        formatted_line = " • ".join(
-                            segment for segment in line_segments if segment
-                        )
-                        if formatted_line:
-                            lines.append(formatted_line)
-                            lines.append("")
-
-                lines.append("")
-                continue
-
             for entry in entries:
-                target_word = entry.get("target_word") or "(unknown)"
-                subject_label = f"**{str(target_word).upper()}**"
-
-                line_segments = [subject_label]
-                line_segments.extend(_standard_info_segments(entry, key))
-
+                target = str(entry.get("target_word") or "?")
+                pattern = entry.get("pattern") or f"{source_word} / {target}"
+                lines.append(f"- **{target.upper()}** — {pattern}")
+                for detail in _format_entry(entry):
+                    lines.append(f"  {detail}")
                 if key == "anti_llm":
-                    hidden_segments: List[str] = []
                     weakness = entry.get("llm_weakness_type")
                     if weakness:
-                        hidden_segments.append(
-                            f"<!-- • LLM weakness: {str(weakness).replace('_', ' ').title()} -->"
+                        lines.append(
+                            f"  • LLM weakness: {str(weakness).replace('_', ' ').title()}"
                         )
-                    cultural_depth = entry.get("cultural_depth")
-                    if cultural_depth:
-                        hidden_segments.append(
-                            f"<!-- • Cultural depth: {cultural_depth} -->"
-                        )
-                    if hidden_segments:
-                        line_segments.extend(hidden_segments)
+                    depth = entry.get("cultural_depth")
+                    if depth:
+                        lines.append(f"  • Cultural depth: {depth}")
+                if key == "rap_db":
+                    artist = entry.get("artist")
+                    song = entry.get("song")
+                    if artist or song:
+                        lines.append(f"  • Source: {artist or 'Unknown'} — {song or 'Unknown'}")
+                    cultural_context = entry.get("cultural_context")
+                    if isinstance(cultural_context, dict):
+                        for label, value in cultural_context.items():
+                            if value:
+                                label_text = str(label).replace('_', ' ').title()
+                                if isinstance(value, (list, tuple, set)):
+                                    items: List[str] = []
+                                    for item in value:
+                                        if not item:
+                                            continue
+                                        text = str(item)
+                                        if isinstance(item, str):
+                                            text = text.replace('_', ' ').title()
+                                        items.append(text)
+                                    value_text = ", ".join(items)
+                                else:
+                                    value_text = str(value)
+                                    if isinstance(value, str):
+                                        value_text = value_text.replace('_', ' ').title()
+                                key_normalized = str(label).lower()
+                                if key_normalized == 'regional_origin':
+                                    lines.append(f"  • Region: {value_text}")
+                                elif key_normalized == 'style_characteristics':
+                                    lines.append(f"  • Styles: {value_text}")
+                                elif key_normalized == 'era':
+                                    lines.append(f"  • Cultural: Era: {value_text}")
+                                else:
+                                    lines.append(f"  • Cultural: {label_text}: {value_text}")
+                lines.append("")
 
-                formatted_line = " • ".join(segment for segment in line_segments if segment)
-                if formatted_line:
-                    lines.append(formatted_line)
-                    lines.append("")
+        return "\n".join(lines).strip()
 
-            lines.append("")
-
-        return "\n".join(lines).strip() + "\n"
 
 class SearchService:
     """Thin facade that delegates to the orchestrator and formatter."""

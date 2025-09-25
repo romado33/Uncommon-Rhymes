@@ -1033,24 +1033,37 @@ def get_cmu_rhymes(
     scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
     return scored_candidates[:limit]
 
-# Example usage and testing
-if __name__ == "__main__":
+def run_demo() -> List[Dict[str, Any]]:
+    """Execute a structured logging demo of the phonetic analyzer."""
+
     analyzer = EnhancedPhoneticAnalyzer()
-    
-    # Test some rhyme pairs
-    test_pairs = [
+    logger = get_logger(__name__).bind(component="phonetic_demo")
+    logger.info("Starting Enhanced Phonetic Analyzer demo")
+
+    demo_pairs = [
         ("love", "above"),
         ("mind", "find"),
         ("flow", "go"),
         ("money", "honey"),
-        ("time", "rhyme")
+        ("time", "rhyme"),
     ]
-    
-    print("🎵 Testing Enhanced Phonetic Analyzer:")
-    print("=" * 50)
-    
-    for word1, word2 in test_pairs:
-        match = analyzer.analyze_rhyme_pattern(word1, word2)
-        print(f"'{word1}' / '{word2}': {match.similarity_score:.3f} ({match.rhyme_type})")
-        
-    print("\n✅ Module 1 Enhanced Core Phonetic ready for integration")
+
+    results: List[Dict[str, Any]] = []
+    for source, target in demo_pairs:
+        match = analyzer.analyze_rhyme_pattern(source, target)
+        payload = {
+            "source": source,
+            "target": target,
+            "similarity": match.similarity_score,
+            "rhyme_type": match.rhyme_type,
+            "syllable_span": match.syllable_span,
+        }
+        results.append(payload)
+        logger.info("Demo rhyme analysed", context=payload)
+
+    logger.info("Enhanced phonetic analyzer demo completed", context={"pair_count": len(results)})
+    return results
+
+
+if __name__ == "__main__":  # pragma: no cover - manual demo entry
+    run_demo()
