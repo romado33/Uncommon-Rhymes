@@ -1936,7 +1936,17 @@ class RhymeQueryOrchestrator:
         include_anti = 'anti-llm' in selected_sources or 'anti_llm' in selected_sources
         cmu_loader = getattr(analyzer, 'cmu_loader', None) or getattr(self, 'cmu_loader', None)
 
-        context = self._build_source_context(source_word, analyzer, cmu_loader, cultural_engine)
+        # When callers only request phonetic results we can skip the expensive
+        # cultural context derivation and alignment checks.  Those steps invoke
+        # the cultural intelligence engine which performs several database
+        # queries per request; avoiding that work keeps the fast path light.
+        cultural_for_context = (
+            cultural_engine if (include_cultural or include_anti) else None
+        )
+
+        context = self._build_source_context(
+            source_word, analyzer, cmu_loader, cultural_for_context
+        )
 
         telemetry = getattr(self, 'telemetry', None)
 
@@ -1972,7 +1982,9 @@ class RhymeQueryOrchestrator:
                     source_word,
                     max(limit, 1),
                     analyzer=analyzer,
-                    cultural_engine=cultural_engine,
+                    cultural_engine=(
+                        cultural_engine if (include_cultural or include_anti) else None
+                    ),
                     cmu_loader=cmu_loader,
                     context=context,
                     min_confidence=min_confidence,

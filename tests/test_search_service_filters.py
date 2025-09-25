@@ -73,6 +73,42 @@ class DummyAntiEngine:
         return list(self._patterns)
 
 
+class RecordingCulturalEngine:
+    """Cultural engine stub that tracks alignment invocations."""
+
+    def __init__(self) -> None:
+        self.align_calls: int = 0
+
+    def derive_rhyme_signatures(self, source_word: str) -> list[str]:
+        # Provide a deterministic signature so phonetic context building succeeds.
+        return [f"sig::{source_word.lower()}"]
+
+    def evaluate_rhyme_alignment(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.align_calls += 1
+        return {"combined": 0.9, "rarity": 0.5}
+
+
+class RichCmuRepository(DummyCmuRepository):
+    """CMU repository stub that returns a single high-quality rhyme."""
+
+    def lookup(
+        self,
+        source_word: str,
+        limit: int,
+        *,
+        analyzer: Any | None = None,
+        cmu_loader: Any | None = None,
+    ) -> list[Any]:
+        return [
+            {
+                "word": "cove",
+                "similarity": 0.92,
+                "rarity": 0.4,
+                "combined": 0.88,
+            }
+        ]
+
+
 @pytest.fixture(autouse=True)
 def _patch_search_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     """Provide lightweight core helpers for the search service."""
@@ -189,3 +225,38 @@ def test_cadence_focus_matches_normalised_complexity_tag() -> None:
     assert _targets(result) == ["Alpha"]
     anti_entry = _first_anti_entry(result)
     assert anti_entry["prosody_profile"]["complexity_tag"] == "Smooth Flow"
+
+
+def test_phonetic_only_search_skips_cultural_alignment() -> None:
+    repo = DummyRepository()
+    cultural_engine = RecordingCulturalEngine()
+    cmu_repo = RichCmuRepository()
+    service = SearchService(
+        repository=repo,
+        cultural_engine=cultural_engine,
+        cmu_repository=cmu_repo,
+    )
+
+    result = service.search_rhymes("Echo", result_sources=["phonetic"], limit=5)
+
+    assert cultural_engine.align_calls == 0
+    assert any(entry["result_source"] == "phonetic" for entry in result["uncommon"])
+
+
+def test_phonetic_with_cultural_results_triggers_alignment() -> None:
+    repo = DummyRepository()
+    cultural_engine = RecordingCulturalEngine()
+    cmu_repo = RichCmuRepository()
+    service = SearchService(
+        repository=repo,
+        cultural_engine=cultural_engine,
+        cmu_repository=cmu_repo,
+    )
+
+    service.search_rhymes(
+        "Echo",
+        result_sources=["phonetic", "cultural"],
+        limit=5,
+    )
+
+    assert cultural_engine.align_calls >= 1
