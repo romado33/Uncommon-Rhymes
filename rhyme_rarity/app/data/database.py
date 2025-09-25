@@ -35,11 +35,24 @@ _CULTURAL_NORMALIZED_EXPR = (
 )
 
 
-def _normalise_genre(value: str) -> Optional[str]:
+def _normalized_text_expr(column: str) -> str:
+    return (
+        "CASE "
+        "WHEN {column} IS NULL OR TRIM({column}) = '' THEN NULL "
+        "ELSE LOWER(TRIM({column})) "
+        "END"
+    ).format(column=column)
+
+
+def _normalise_text(value: str) -> Optional[str]:
     cleaned = str(value or "").strip()
     if not cleaned:
         return None
     return cleaned.lower()
+
+
+def _normalise_genre(value: str) -> Optional[str]:
+    return _normalise_text(value)
 
 
 def _normalise_cultural_significance(value: str) -> Optional[str]:
@@ -164,8 +177,11 @@ class SQLiteRhymeRepository:
                 id INTEGER PRIMARY KEY,
                 pattern TEXT,
                 source_word TEXT,
+                source_word_normalized TEXT,
                 target_word TEXT,
+                target_word_normalized TEXT,
                 artist TEXT,
+                artist_normalized TEXT,
                 song_title TEXT,
                 genre TEXT,
                 line_distance INTEGER,
@@ -202,16 +218,42 @@ class SQLiteRhymeRepository:
                 """
             )
 
+        if "source_word_normalized" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN source_word_normalized TEXT
+                """
+            )
+
+        if "target_word_normalized" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN target_word_normalized TEXT
+                """
+            )
+
+        if "artist_normalized" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN artist_normalized TEXT
+                """
+            )
+
         self._refresh_normalized_columns(connection)
 
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_rhyme_source_lookup
             ON song_rhyme_patterns (
-                source_word,
-                line_distance,
+                source_word_normalized,
                 confidence_score DESC,
-                phonetic_similarity DESC
+                phonetic_similarity DESC,
+                target_word_normalized,
+                target_word,
+                artist
             )
             """
         )
@@ -219,10 +261,12 @@ class SQLiteRhymeRepository:
             """
             CREATE INDEX IF NOT EXISTS idx_rhyme_target_lookup
             ON song_rhyme_patterns (
-                target_word,
-                line_distance,
+                target_word_normalized,
                 confidence_score DESC,
-                phonetic_similarity DESC
+                phonetic_similarity DESC,
+                source_word_normalized,
+                source_word,
+                artist
             )
             """
         )
@@ -236,6 +280,17 @@ class SQLiteRhymeRepository:
             """
             CREATE INDEX IF NOT EXISTS idx_rhyme_cultural_normalized
             ON song_rhyme_patterns (cultural_significance_normalized)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_artist_normalized
+            ON song_rhyme_patterns (
+                artist_normalized,
+                confidence_score DESC,
+                source_word_normalized,
+                target_word_normalized
+            )
             """
         )
         connection.commit()
@@ -254,6 +309,27 @@ class SQLiteRhymeRepository:
             UPDATE song_rhyme_patterns
             SET cultural_significance_normalized = {_CULTURAL_NORMALIZED_EXPR}
             WHERE COALESCE(cultural_significance_normalized, '') != COALESCE({_CULTURAL_NORMALIZED_EXPR}, '')
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE song_rhyme_patterns
+            SET source_word_normalized = {_normalized_text_expr('source_word')}
+            WHERE COALESCE(source_word_normalized, '') != COALESCE({_normalized_text_expr('source_word')}, '')
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE song_rhyme_patterns
+            SET target_word_normalized = {_normalized_text_expr('target_word')}
+            WHERE COALESCE(target_word_normalized, '') != COALESCE({_normalized_text_expr('target_word')}, '')
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE song_rhyme_patterns
+            SET artist_normalized = {_normalized_text_expr('artist')}
+            WHERE COALESCE(artist_normalized, '') != COALESCE({_normalized_text_expr('artist')}, '')
             """
         )
 
@@ -304,7 +380,7 @@ class SQLiteRhymeRepository:
         return row_count
 
     def fetch_related_words(self, lookup_terms: Iterable[str]) -> Set[str]:
-        terms = {str(term or "").strip().lower() for term in lookup_terms if term}
+        terms = {term for term in (_normalise_text(t) for t in lookup_terms) if term}
         if not terms:
             return set()
 
@@ -328,33 +404,35 @@ class SQLiteRhymeRepository:
                 f"""
                 SELECT target_word
                 FROM song_rhyme_patterns
-                WHERE source_word IN ({placeholders})
-                  AND target_word IS NOT NULL
+                WHERE source_word_normalized IN ({placeholders})
+                  AND target_word_normalized IS NOT NULL
                 LIMIT ?
                 """,
                 (*normalized_terms, limit_hint),
             )
-            related.update(
-                str(row[0]).strip().lower()
-                for row in cursor.fetchall()
-                if row and row[0]
-            )
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                normalized = _normalise_text(row[0])
+                if normalized:
+                    related.add(normalized)
 
             cursor.execute(
                 f"""
                 SELECT source_word
                 FROM song_rhyme_patterns
-                WHERE target_word IN ({placeholders})
-                  AND source_word IS NOT NULL
+                WHERE target_word_normalized IN ({placeholders})
+                  AND source_word_normalized IS NOT NULL
                 LIMIT ?
                 """,
                 (*normalized_terms, limit_hint),
             )
-            related.update(
-                str(row[0]).strip().lower()
-                for row in cursor.fetchall()
-                if row and row[0]
-            )
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                normalized = _normalise_text(row[0])
+                if normalized:
+                    related.add(normalized)
 
         self._logger.info(
             "Related words fetched",

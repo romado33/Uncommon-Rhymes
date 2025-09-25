@@ -70,48 +70,78 @@ class SQLitePatternRepository:
     def _row_to_dict(row: sqlite3.Row) -> Row:
         return {key: row[key] for key in row.keys()}
 
+    @staticmethod
+    def _normalize_term(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        return normalized or None
+
     def fetch_rare_combinations(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = self._normalize_term(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score, cultural_significance
             FROM song_rhyme_patterns
-            WHERE source_word = ?
-              AND source_word != target_word
+            WHERE source_word_normalized = ?
+              AND target_word_normalized IS NOT NULL
+              AND target_word_normalized != ?
               AND length(target_word) >= 4
               AND confidence_score >= 0.7
-            ORDER BY RANDOM()
+            ORDER BY confidence_score DESC, phonetic_similarity DESC, target_word_normalized
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(
+            query,
+            (normalized_source, normalized_source, max(1, limit)),
+        )
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_phonological_challenges(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = self._normalize_term(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score, phonetic_similarity
             FROM song_rhyme_patterns
-            WHERE source_word = ?
-              AND source_word != target_word
+            WHERE source_word_normalized = ?
+              AND target_word_normalized IS NOT NULL
+              AND target_word_normalized != ?
               AND confidence_score BETWEEN 0.7 AND 0.9
               AND phonetic_similarity >= 0.8
-            ORDER BY phonetic_similarity DESC
+            ORDER BY phonetic_similarity DESC, confidence_score DESC, target_word_normalized
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(
+            query,
+            (normalized_source, normalized_source, max(1, limit)),
+        )
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_cultural_depth_patterns(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = self._normalize_term(source_word)
+        if not normalized_source:
+            return []
+
         categories = self._get_cultural_significance_labels()
         conditions = [
-            "source_word = ?",
-            "source_word != target_word",
+            "source_word_normalized = ?",
+            "target_word_normalized IS NOT NULL",
+            "target_word_normalized != ?",
         ]
-        params: List[Any] = [source_word]
+        params: List[Any] = [normalized_source, normalized_source]
 
         if categories:
             placeholders = ", ".join("?" for _ in categories)
-            conditions.append(f"TRIM(cultural_significance) IN ({placeholders})")
+            conditions.append(
+                f"cultural_significance_normalized IN ({placeholders})"
+            )
             params.extend(categories)
         else:
-            conditions.append("TRIM(COALESCE(cultural_significance, '')) != ''")
+            conditions.append("cultural_significance_normalized IS NOT NULL")
 
         query = f"""
             SELECT target_word, artist, song_title, confidence_score, cultural_significance
@@ -130,10 +160,9 @@ class SQLitePatternRepository:
             return self._cultural_significance_labels
 
         query = """
-            SELECT DISTINCT TRIM(cultural_significance) AS label
+            SELECT DISTINCT cultural_significance_normalized AS label
             FROM song_rhyme_patterns
-            WHERE cultural_significance IS NOT NULL
-              AND TRIM(cultural_significance) != ''
+            WHERE cultural_significance_normalized IS NOT NULL
             ORDER BY label
         """
         rows = self._execute(query, ())
@@ -147,21 +176,30 @@ class SQLitePatternRepository:
         return labels
 
     def fetch_complex_syllable_patterns(self, source_word: str, limit: int) -> List[Row]:
+        normalized_source = self._normalize_term(source_word)
+        if not normalized_source:
+            return []
+
         query = """
             SELECT target_word, artist, song_title, confidence_score
             FROM song_rhyme_patterns
-            WHERE source_word = ?
-              AND source_word != target_word
+            WHERE source_word_normalized = ?
+              AND target_word_normalized IS NOT NULL
+              AND target_word_normalized != ?
               AND length(target_word) >= 6
               AND confidence_score >= 0.75
-            ORDER BY length(target_word) DESC
+            ORDER BY length(target_word) DESC, confidence_score DESC
             LIMIT ?
         """
-        rows = self._execute(query, (source_word, max(1, limit)))
+        rows = self._execute(
+            query,
+            (normalized_source, normalized_source, max(1, limit)),
+        )
         return [self._row_to_dict(row) for row in rows]
 
     def fetch_seed_neighbors(self, seed_word: str, limit: int) -> List[Row]:
-        if not seed_word:
+        normalized_seed = self._normalize_term(seed_word)
+        if not normalized_seed:
             return []
 
         results: List[Row] = []
@@ -170,13 +208,16 @@ class SQLitePatternRepository:
         query_source = """
             SELECT target_word, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
             FROM song_rhyme_patterns
-            WHERE LOWER(source_word) = ?
-              AND target_word IS NOT NULL
-              AND LOWER(target_word) != ?
-            ORDER BY confidence_score DESC
+            WHERE source_word_normalized = ?
+              AND target_word_normalized IS NOT NULL
+              AND target_word_normalized != ?
+            ORDER BY confidence_score DESC, phonetic_similarity DESC, target_word_normalized
             LIMIT ?
         """
-        for row in self._execute(query_source, (seed_word.lower(), seed_word.lower(), max(1, limit))):
+        for row in self._execute(
+            query_source,
+            (normalized_seed, normalized_seed, max(1, limit)),
+        ):
             candidate = str(row["target_word"]).strip()
             lowered = candidate.lower()
             if not candidate or lowered in seen:
@@ -197,13 +238,16 @@ class SQLitePatternRepository:
         query_target = """
             SELECT source_word, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
             FROM song_rhyme_patterns
-            WHERE LOWER(target_word) = ?
-              AND source_word IS NOT NULL
-              AND LOWER(source_word) != ?
-            ORDER BY confidence_score DESC
+            WHERE target_word_normalized = ?
+              AND source_word_normalized IS NOT NULL
+              AND source_word_normalized != ?
+            ORDER BY confidence_score DESC, phonetic_similarity DESC, source_word_normalized
             LIMIT ?
         """
-        for row in self._execute(query_target, (seed_word.lower(), seed_word.lower(), max(1, limit))):
+        for row in self._execute(
+            query_target,
+            (normalized_seed, normalized_seed, max(1, limit)),
+        ):
             candidate = str(row["source_word"]).strip()
             lowered = candidate.lower()
             if not candidate or lowered in seen:
@@ -227,16 +271,23 @@ class SQLitePatternRepository:
         if not suffix:
             return []
 
-        like_pattern = f"%{suffix}"
+        normalized_suffix = self._normalize_term(suffix)
+        if not normalized_suffix:
+            return []
+
+        like_pattern = f"%{normalized_suffix}"
         results: List[Row] = []
         seen: Set[str] = set()
 
-        for column in ("target_word", "source_word"):
+        for column, normalized_column in (
+            ("target_word", "target_word_normalized"),
+            ("source_word", "source_word_normalized"),
+        ):
             query = f"""
                 SELECT {column} as candidate, artist, song_title, confidence_score, phonetic_similarity, cultural_significance
                 FROM song_rhyme_patterns
-                WHERE LOWER({column}) LIKE ?
-                ORDER BY confidence_score DESC
+                WHERE {normalized_column} LIKE ?
+                ORDER BY confidence_score DESC, phonetic_similarity DESC, {normalized_column}
                 LIMIT ?
             """
             for row in self._execute(query, (like_pattern, max(1, limit))):
