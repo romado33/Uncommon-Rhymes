@@ -702,7 +702,7 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
         "love",
         limit=2,
         min_confidence=0.0,
-        result_sources=["phonetic"],
+        result_sources=["phonetic", "cultural"],
     )
 
     uncommon_results = results["uncommon"]
