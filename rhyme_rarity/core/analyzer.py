@@ -1118,49 +1118,39 @@ def get_cmu_rhymes(
                     base_prons = []
 
             generated = 0
-            seen_pairs: Set[Tuple[str, str]] = set()
 
             for phones in base_prons:
                 if not phones or len(phones) < 2:
                     continue
-                for split_index in range(1, len(phones)):
-                    prefix_candidates = loader.find_words_by_phonemes(
-                        phones[:split_index],
-                        limit=4,
-                    )
-                    suffix_candidates = loader.find_words_by_phonemes(
-                        phones[split_index:],
-                        limit=6,
-                    )
-                    if not prefix_candidates or not suffix_candidates:
+
+                max_pairs = max_variants - generated if max_variants else None
+                split_pairs = loader.split_pronunciation_into_words(
+                    phones,
+                    max_pairs=max_pairs,
+                    prefix_limit=4,
+                    suffix_limit=6,
+                )
+
+                for prefix_word, suffix_word, split_index in split_pairs:
+                    phrase = f"{prefix_word} {suffix_word}".strip()
+                    if not phrase or phrase.lower() == base_candidate.lower():
                         continue
 
-                    for prefix_word in prefix_candidates:
-                        for suffix_word in suffix_candidates:
-                            key = (prefix_word, suffix_word)
-                            if key in seen_pairs:
-                                continue
-                            seen_pairs.add(key)
-
-                            phrase = f"{prefix_word} {suffix_word}".strip()
-                            if not phrase or phrase.lower() == base_candidate.lower():
-                                continue
-
-                            metadata = {
-                                "multi_source": "phoneme_split",
-                                "phoneme_split": split_index,
-                            }
-                            result = _score_variant(
-                                phrase,
-                                is_multi=True,
-                                base_candidate=base_candidate,
-                                base_metrics=base_metrics,
-                                metadata=metadata,
-                            )
-                            if result:
-                                generated += 1
-                            if generated >= max_variants:
-                                return generated
+                    metadata = {
+                        "multi_source": "phoneme_split",
+                        "phoneme_split": split_index,
+                    }
+                    result = _score_variant(
+                        phrase,
+                        is_multi=True,
+                        base_candidate=base_candidate,
+                        base_metrics=base_metrics,
+                        metadata=metadata,
+                    )
+                    if result:
+                        generated += 1
+                    if max_variants and generated >= max_variants:
+                        return generated
             return generated
 
         if generated_multi < max_multi_variants:
