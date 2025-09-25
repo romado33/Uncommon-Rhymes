@@ -2175,18 +2175,6 @@ class RhymeResultFormatter:
                 )
                 details.append(f"• Context signatures: {context_text}")
 
-            gate_mode = entry.get("threshold_gate")
-            if gate_mode:
-                details.append(
-                    f"• Threshold gate: {str(gate_mode).replace('_', ' ').title()}"
-                )
-                gate_threshold = entry.get("phonetic_threshold")
-                if gate_threshold is not None:
-                    try:
-                        details.append(f"• Gate threshold: {float(gate_threshold):.2f}")
-                    except (TypeError, ValueError):
-                        pass
-
             return details
 
         source_profile = rhymes.get("source_profile") or {}
@@ -2252,14 +2240,6 @@ class RhymeResultFormatter:
 
         def _collect_details(entry: Dict[str, Any], key: str) -> List[str]:
             details = list(_format_entry(entry))
-            weakness = entry.get("llm_weakness_type")
-            if weakness:
-                details.append(
-                    f"• LLM weakness: {str(weakness).replace('_', ' ').title()}"
-                )
-            depth = entry.get("cultural_depth")
-            if depth:
-                details.append(f"• Cultural depth: {depth}")
             if key == "rap_db":
                 artist = entry.get("artist")
                 song = entry.get("song")
