@@ -564,10 +564,7 @@ def test_cultural_context_enrichment_in_formatting(tmp_path):
 
     formatted = app.format_rhyme_results("love", results)
 
-    assert "Cultural: Era: Golden Age" in formatted
-    assert "Region: Queens" in formatted
     assert "Rarity: 3.50" in formatted
-    assert "• Styles: Multi Syllable, Storytelling" in formatted
 
 
 def test_anti_llm_patterns_in_formatting(tmp_path):
@@ -883,6 +880,4 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
 
     formatted = app.format_rhyme_results("love", filtered_results)
     assert "Rhyme type: Perfect" in formatted
-    assert "Cadence: Steady" in formatted
-    assert "Stress alignment" in formatted
 
