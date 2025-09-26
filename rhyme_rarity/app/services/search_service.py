@@ -1118,6 +1118,7 @@ class RhymeQueryOrchestrator:
                 target,
                 artist,
                 song,
+                release_year,
                 pattern,
                 genre,
                 distance,
@@ -1126,6 +1127,7 @@ class RhymeQueryOrchestrator:
                 cultural_sig,
                 source_context,
                 target_context,
+                lyrical_context,
             ) = row
 
             source_clean = str(source or '').strip()
@@ -1136,11 +1138,26 @@ class RhymeQueryOrchestrator:
                 source_context, target_context = target_context, source_context
                 source_clean, target_clean = target_clean, source_clean
 
+            combined_context: Optional[str]
+            parts = [
+                str(part).strip()
+                for part in (source_context, target_context)
+                if part and str(part).strip()
+            ]
+            if parts:
+                combined_context = " // ".join(parts)
+            elif lyrical_context:
+                combined_context = str(lyrical_context)
+            else:
+                combined_context = None
+
             entry = {
                 'source_word': source,
                 'target_word': target,
                 'artist': artist,
                 'song': song,
+                'year': release_year,
+                'release_year': release_year,
                 'pattern': self._compose_pattern(source, target),
                 'genre': genre,
                 'distance': distance,
@@ -1150,6 +1167,7 @@ class RhymeQueryOrchestrator:
                 'cultural_sig': cultural_sig,
                 'source_context': source_context,
                 'target_context': target_context,
+                'lyrical_context': combined_context,
                 'result_source': 'cultural',
                 'source_phonetic_profile': context.get('profile'),
                 'source_rhyme_signatures': list(context.get('signature_set') or []),

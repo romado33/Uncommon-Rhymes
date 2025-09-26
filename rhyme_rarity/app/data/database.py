@@ -183,6 +183,7 @@ class SQLiteRhymeRepository:
                 artist TEXT,
                 artist_normalized TEXT,
                 song_title TEXT,
+                release_year INTEGER,
                 genre TEXT,
                 line_distance INTEGER,
                 confidence_score REAL,
@@ -190,6 +191,7 @@ class SQLiteRhymeRepository:
                 cultural_significance TEXT,
                 source_context TEXT,
                 target_context TEXT,
+                lyrical_context TEXT,
                 genre_normalized TEXT,
                 cultural_significance_normalized TEXT
             )
@@ -215,6 +217,22 @@ class SQLiteRhymeRepository:
                 """
                 ALTER TABLE song_rhyme_patterns
                 ADD COLUMN cultural_significance_normalized TEXT
+                """
+            )
+
+        if "release_year" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN release_year INTEGER
+                """
+            )
+
+        if "lyrical_context" not in existing_columns:
+            cursor.execute(
+                """
+                ALTER TABLE song_rhyme_patterns
+                ADD COLUMN lyrical_context TEXT
                 """
             )
 
@@ -357,15 +375,17 @@ class SQLiteRhymeRepository:
                     target_word,
                     artist,
                     song_title,
+                    release_year,
                     genre,
                     line_distance,
                     confidence_score,
                     phonetic_similarity,
                     cultural_significance,
                     source_context,
-                    target_context
+                    target_context,
+                    lyrical_context
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 iter_demo_rhyme_rows(),
             )
@@ -467,6 +487,7 @@ class SQLiteRhymeRepository:
                 target_word,
                 artist,
                 song_title,
+                release_year,
                 pattern,
                 genre,
                 line_distance,
@@ -474,7 +495,8 @@ class SQLiteRhymeRepository:
                 phonetic_similarity,
                 cultural_significance,
                 source_context,
-                target_context
+                target_context,
+                lyrical_context
             FROM song_rhyme_patterns
         """
 

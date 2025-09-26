@@ -70,6 +70,7 @@ def create_test_database(db_path):
             artist TEXT,
             artist_normalized TEXT,
             song_title TEXT,
+            release_year INTEGER,
             genre TEXT,
             line_distance INTEGER,
             confidence_score REAL,
@@ -77,6 +78,7 @@ def create_test_database(db_path):
             cultural_significance TEXT,
             source_context TEXT,
             target_context TEXT,
+            lyrical_context TEXT,
             genre_normalized TEXT,
             cultural_significance_normalized TEXT
         )
@@ -94,6 +96,7 @@ def create_test_database(db_path):
             "Artist A",
             "artist a",
             "Song A",
+            2001,
             "hip-hop",
             1,
             0.95,
@@ -101,6 +104,7 @@ def create_test_database(db_path):
             "mainstream",
             "Love in the verse",
             "Above in the hook",
+            "Love in the verse // Above in the hook",
             "hip-hop",
             "mainstream",
         ),
@@ -114,6 +118,7 @@ def create_test_database(db_path):
             "Artist B",
             "artist b",
             "Song B",
+            2002,
             "hip-hop",
             1,
             0.80,
@@ -121,6 +126,7 @@ def create_test_database(db_path):
             "mainstream",
             "Above in the verse",
             "Love in the hook",
+            "Above in the verse // Love in the hook",
             "hip-hop",
             "mainstream",
         ),
@@ -134,6 +140,7 @@ def create_test_database(db_path):
             "Artist C",
             "artist c",
             "Song C",
+            1998,
             "soul",
             1,
             0.88,
@@ -141,6 +148,7 @@ def create_test_database(db_path):
             "legendary",
             "Love in the bridge",
             "Glove in the chorus",
+            "Love in the bridge // Glove in the chorus",
             "soul",
             "legendary",
         ),
@@ -154,6 +162,7 @@ def create_test_database(db_path):
             "Artist D",
             "artist d",
             "Song D",
+            2005,
             "hip-hop",
             3,
             0.70,
@@ -161,6 +170,7 @@ def create_test_database(db_path):
             "underground",
             "Love in the intro",
             "Shove in the outro",
+            "Love in the intro // Shove in the outro",
             "hip-hop",
             "underground",
         ),
@@ -174,6 +184,7 @@ def create_test_database(db_path):
             "Artist E",
             "artist e",
             "Song E",
+            2010,
             "hip-hop",
             1,
             0.88,
@@ -181,6 +192,7 @@ def create_test_database(db_path):
             "legendary",
             "Paper trail in the verse",
             "Major fail in the hook",
+            "Paper trail in the verse // Major fail in the hook",
             "hip-hop",
             "legendary",
         ),
@@ -198,6 +210,7 @@ def create_test_database(db_path):
             artist,
             artist_normalized,
             song_title,
+            release_year,
             genre,
             line_distance,
             confidence_score,
@@ -205,10 +218,11 @@ def create_test_database(db_path):
             cultural_significance,
             source_context,
             target_context,
+            lyrical_context,
             genre_normalized,
             cultural_significance_normalized
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -245,6 +259,10 @@ def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
     assert first["pattern"] == "glove / love"
     assert first["source_context"] == "Glove in the chorus"
     assert first["target_context"] == "Love in the bridge"
+    assert first["artist"] == "Artist C"
+    assert first["song"] == "Song C"
+    assert first["year"] == 1998
+    assert first["lyrical_context"] == "Glove in the chorus // Love in the bridge"
     assert all(result["target_word"] == "love" for result in rap_results)
 
 
