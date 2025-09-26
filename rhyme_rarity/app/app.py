@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-import torch
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore[assignment]
 import spaces  # 👈 added
 
 from rhyme_rarity.core import (
@@ -161,6 +164,8 @@ def _should_share_interface() -> bool:
 @spaces.GPU
 def warmup_gpu() -> str:
     """Simple GPU warmup so Hugging Face Spaces detects usage."""
+    if torch is None:
+        return "Torch not installed"
     if torch.cuda.is_available():
         x = torch.rand(1000, 1000, device="cuda")
         _ = torch.matmul(x, x)
