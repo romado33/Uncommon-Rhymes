@@ -211,3 +211,30 @@ def test_fetch_cultural_matches_applies_all_filters(seeded_repository: SQLiteRhy
 
     assert [(row[0], row[1]) for row in source_rows] == [("sun", "fun")]
     assert [(row[0], row[1]) for row in target_rows] == [("fun", "sun")]
+
+
+def test_fetch_cultural_matches_is_case_insensitive(
+    seeded_repository: SQLiteRhymeRepository,
+) -> None:
+    base_source_rows, base_target_rows = seeded_repository.fetch_cultural_matches(
+        "sun",
+        min_confidence=0.8,
+        phonetic_threshold=0.9,
+        cultural_filters=["high-impact"],
+        genre_filters=["hip-hop"],
+        max_line_distance=None,
+        limit=None,
+    )
+
+    mixed_source_rows, mixed_target_rows = seeded_repository.fetch_cultural_matches(
+        "SuN",
+        min_confidence=0.8,
+        phonetic_threshold=0.9,
+        cultural_filters=["high-impact"],
+        genre_filters=["hip-hop"],
+        max_line_distance=None,
+        limit=None,
+    )
+
+    assert mixed_source_rows == base_source_rows
+    assert mixed_target_rows == base_target_rows
