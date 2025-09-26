@@ -74,3 +74,23 @@ def test_single_word_queries_produce_phoneme_split_multi_words():
     ]
 
     assert multi_variants, "Expected phoneme-split multi-word variants for single-word input"
+
+
+def test_multi_word_variants_survive_large_single_candidate_lists():
+    class LongListLoader(DummyLoader):
+        def get_rhyming_words(self, word):
+            super().get_rhyming_words(word)
+            return [f"option{i}" for i in range(40)] + ["fail", "mail"]
+
+    loader = LongListLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("paper trail", analyzer=analyzer, cmu_loader=loader, limit=5)
+
+    multi_variants = [
+        entry["word"]
+        for entry in results
+        if entry.get("is_multi_word") and " " in str(entry.get("word", ""))
+    ]
+
+    assert multi_variants, "Expected multi-word variants to survive limit slicing"

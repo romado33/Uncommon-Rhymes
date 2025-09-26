@@ -1157,7 +1157,37 @@ def get_cmu_rhymes(
             generated_multi += _generate_phoneme_splits(max_multi_variants - generated_multi)
 
     scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
-    return scored_candidates[:limit]
+
+    if limit >= len(scored_candidates):
+        return scored_candidates[:limit]
+
+    multi_candidates = [
+        candidate for candidate in scored_candidates if candidate.get("is_multi_word")
+    ]
+
+    if not multi_candidates:
+        return scored_candidates[:limit]
+
+    if limit <= 3:
+        base_reserve = 1
+    else:
+        base_reserve = max(2, math.ceil(limit * 0.25))
+
+    reserve_count = min(len(multi_candidates), min(limit, base_reserve))
+
+    if reserve_count <= 0:
+        return scored_candidates[:limit]
+
+    reserved_multi: List[Dict[str, Any]] = multi_candidates[:reserve_count]
+    reserved_ids = {id(candidate) for candidate in reserved_multi}
+
+    remaining_candidates = [
+        candidate for candidate in scored_candidates if id(candidate) not in reserved_ids
+    ]
+
+    final_pool = reserved_multi + remaining_candidates[: max(0, limit - len(reserved_multi))]
+    final_pool.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
+    return final_pool
 
 def run_demo() -> List[Dict[str, Any]]:
     """Execute a structured logging demo of the phonetic analyzer."""
