@@ -457,6 +457,10 @@ class SQLiteRhymeRepository:
     ) -> Tuple[List[Tuple], List[Tuple]]:
         """Return rhyme matches treating the word as both source and target."""
 
+        normalised_source_word = _normalise_text(source_word)
+        if normalised_source_word is None:
+            return [], []
+
         base_query = """
             SELECT DISTINCT
                 source_word,
@@ -491,7 +495,7 @@ class SQLiteRhymeRepository:
                 "confidence_score >= ?",
                 "source_word != target_word",
             ]
-            params: List = [source_word, min_confidence]
+            params: List = [normalised_source_word, min_confidence]
 
             if phonetic_threshold is not None:
                 conditions.append("phonetic_similarity >= ?")
@@ -526,11 +530,11 @@ class SQLiteRhymeRepository:
             self._refresh_normalized_columns(conn)
             conn.commit()
             cursor = conn.cursor()
-            query, params = build_query("source_word")
+            query, params = build_query("source_word_normalized")
             cursor.execute(query, params)
             source_rows = cursor.fetchall()
 
-            query, params = build_query("target_word")
+            query, params = build_query("target_word_normalized")
             cursor.execute(query, params)
             target_rows = cursor.fetchall()
 
