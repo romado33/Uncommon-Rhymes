@@ -107,7 +107,7 @@ def create_interface(
         with gr.Column(elem_classes=["rr-container"]):
             gr.Markdown(
                 "<h2>🎵 RhymeRarity</h2>\n"
-                "<p>Discover uncommon CMU patterns, LLM-proof multi-word phrases, and rap-inspired cultural rhymes.</p>",
+                "<p>Discover perfect matches, slant surprises, and rap-inspired multi-word rhymes.</p>",
                 elem_classes=["rr-hero"],
             )
             gr.Markdown(
@@ -181,7 +181,7 @@ def create_interface(
                         elem_classes=["rr-button"],
                     )
                     gr.Markdown(
-                        "💡 Enter a word, tune the filters, and click **Find Rhymes** to surface uncommon pairings.",
+                        "💡 Enter a word, tune the filters, and click **Find Rhymes** to surface perfect, slant, and multi-word pairings.",
                         elem_classes=["rr-tip"],
                     )
 

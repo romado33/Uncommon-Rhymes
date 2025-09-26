@@ -139,7 +139,7 @@ def make_service(patterns: Iterable[DummyPattern]) -> SearchService:
 
 def _targets(result: dict[str, list[dict]]) -> list[str]:
     entries: list[dict] = []
-    for bucket in ("uncommon", "multi_word"):
+    for bucket in ("perfect", "slant", "multi_word"):
         entries.extend(result.get(bucket, []))
     return [
         entry["target_word"]
@@ -149,7 +149,7 @@ def _targets(result: dict[str, list[dict]]) -> list[str]:
 
 
 def _first_anti_entry(result: dict[str, list[dict]]) -> dict:
-    for bucket in ("uncommon", "multi_word"):
+    for bucket in ("perfect", "slant", "multi_word"):
         for entry in result.get(bucket, []):
             if entry.get("result_source") == "anti_llm":
                 return entry
@@ -240,7 +240,8 @@ def test_phonetic_only_search_skips_cultural_alignment() -> None:
     result = service.search_rhymes("Echo", result_sources=["phonetic"], limit=5)
 
     assert cultural_engine.align_calls == 0
-    assert any(entry["result_source"] == "phonetic" for entry in result["uncommon"])
+    single_results = list(result.get("perfect", [])) + list(result.get("slant", []))
+    assert any(entry["result_source"] == "phonetic" for entry in single_results)
 
 
 def test_phonetic_with_cultural_results_triggers_alignment() -> None:
