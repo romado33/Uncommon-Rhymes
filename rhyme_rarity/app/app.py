@@ -52,9 +52,9 @@ from rhyme_rarity.utils.observability import get_logger
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
-from .data.database import SQLiteRhymeRepository
-from .services.search_service import SearchService
-from .ui.gradio import create_interface
+from rhyme_rarity.app.data.database import SQLiteRhymeRepository
+from rhyme_rarity.app.services.search_service import SearchService
+from rhyme_rarity.app.ui.gradio import create_interface
 
 
 class RhymeRarityApp:
