@@ -2266,12 +2266,12 @@ class RhymeResultFormatter:
             details = list(_format_entry(entry))
 
             weakness = entry.get("llm_weakness_type")
-            if weakness:
+            if weakness and entry.get("result_source") != "anti_llm":
                 details.append(
                     f"LLM weakness: {str(weakness).replace('_', ' ').title()}"
                 )
             depth = entry.get("cultural_depth")
-            if depth:
+            if depth and entry.get("result_source") != "anti_llm":
                 details.append(f"Cultural depth: {depth}")
 
             if key == "rap_db":

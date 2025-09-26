@@ -3,13 +3,36 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import torch
 except ImportError:  # pragma: no cover - optional dependency
     torch = None  # type: ignore[assignment]
-import spaces  # 👈 added
+try:
+    import spaces
+except ImportError:  # pragma: no cover - optional dependency
+    class _SpacesStub:
+        """Fallback stub emulating the Hugging Face ``spaces`` module."""
+
+        @staticmethod
+        def GPU(
+            func: Optional[Callable] = None,
+            /,
+            *decorator_args: Any,
+            **decorator_kwargs: Any,
+        ) -> Callable:
+            """No-op decorator matching ``spaces.GPU`` signature."""
+
+            if func is None:
+                def _wrapper(inner: Callable) -> Callable:
+                    return inner
+
+                return _wrapper
+
+            return func
+
+    spaces = _SpacesStub()  # type: ignore[assignment]
 
 from rhyme_rarity.core import (
     CMUDictLoader,
