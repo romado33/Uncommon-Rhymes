@@ -110,7 +110,7 @@ class DummyCmuRepository:
 
 def _anti_entries(result: dict[str, list[dict]]) -> list[dict]:
     entries: list[dict] = []
-    for bucket in ("uncommon", "multi_word"):
+    for bucket in ("perfect", "slant", "multi_word"):
         entries.extend(result.get(bucket, []))
     return [entry for entry in entries if entry.get("result_source") == "anti_llm"]
 
@@ -154,7 +154,7 @@ def test_search_service_records_branch_timings() -> None:
     )
 
     result = service.search_rhymes("Echo", limit=5, result_sources=["phonetic", "cultural", "anti_llm"])
-    assert result["uncommon"] or result["multi_word"] or result["rap_db"]
+    assert result["perfect"] or result["slant"] or result["multi_word"] or result["rap_db"]
 
     metrics = service.get_latest_telemetry()
     assert metrics["counters"]["search.completed"] == 1
@@ -162,7 +162,7 @@ def test_search_service_records_branch_timings() -> None:
     assert "search.branch.cultural" in metrics["timings"]
     assert "search.branch.anti_llm" in metrics["timings"]
     counts = metrics["metadata"]["result.counts"]
-    assert set(counts.keys()) == {"uncommon", "multi_word", "rap_db"}
+    assert set(counts.keys()) == {"perfect", "slant", "multi_word", "rap_db"}
 
 
 def test_filter_telemetry_tracks_rejections() -> None:
@@ -259,7 +259,7 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
             },
             "signature_set": ["v:eh|e:cho"],
         },
-        "uncommon": [
+        "perfect": [
             {
                 "target_word": "Echo",
                 "pattern": "echo / echo",
@@ -275,6 +275,7 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
                 "phonetic_threshold": 0.86,
             }
         ],
+        "slant": [],
         "multi_word": [],
         "rap_db": [],
     }

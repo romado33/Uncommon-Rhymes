@@ -216,9 +216,13 @@ def create_test_database(db_path):
     conn.close()
 
 
+def _single_word_entries(result: dict[str, list[dict]]) -> list[dict]:
+    return list(result.get("perfect", [])) + list(result.get("slant", []))
+
+
 def _anti_entries(result: dict[str, list[dict]]) -> list[dict]:
     entries: list[dict] = []
-    for bucket in ("uncommon", "multi_word"):
+    for bucket in ("perfect", "slant", "multi_word"):
         entries.extend(result.get(bucket, []))
     return [entry for entry in entries if entry.get("result_source") == "anti_llm"]
 
@@ -487,13 +491,13 @@ def test_search_rhymes_phonetic_rhyme_cases(
     source_profile = results["source_profile"]
     assert source_profile["phonetics"]["syllables"] == expected_syllables
 
-    uncommon_results = results["uncommon"]
+    single_results = _single_word_entries(results)
     multi_results = results["multi_word"]
-    assert uncommon_results or multi_results, f"Expected phonetic results for '{source_word}'"
+    assert single_results or multi_results, f"Expected phonetic results for '{source_word}'"
 
     for expectation in expectations:
         target = expectation["target"]
-        search_pool = multi_results if expectation.get("is_multi") else uncommon_results
+        search_pool = multi_results if expectation.get("is_multi") else single_results
         entry = next(
             (
                 candidate
@@ -506,7 +510,7 @@ def test_search_rhymes_phonetic_rhyme_cases(
             entry = next(
                 (
                     candidate
-                    for candidate in uncommon_results
+                    for candidate in single_results
                     if candidate["target_word"] == target
                 ),
                 None,
@@ -640,15 +644,15 @@ def test_min_confidence_filters_phonetic_candidates(monkeypatch, tmp_path):
         result_sources=["phonetic"],
     )
 
-    uncommon_results = results["uncommon"]
+    single_results = _single_word_entries(results)
 
-    assert uncommon_results, "Expected high-confidence phonetic suggestions"
-    targets = {entry["target_word"] for entry in uncommon_results}
+    assert single_results, "Expected high-confidence phonetic suggestions"
+    targets = {entry["target_word"] for entry in single_results}
     assert "alpha" in targets
     assert "beta" not in targets
     assert all(
         float(entry.get("combined_score", entry.get("confidence", 0.0))) >= 0.9
-        for entry in uncommon_results
+        for entry in single_results
     )
 
 
@@ -705,11 +709,11 @@ def test_phonetic_candidates_extend_beyond_limit(monkeypatch, tmp_path):
         result_sources=["phonetic", "cultural"],
     )
 
-    uncommon_results = results["uncommon"]
+    single_results = _single_word_entries(results)
 
-    assert uncommon_results, "Expected phonetic matches when candidates are available"
-    assert len(uncommon_results) == 2, "Results should still be capped by the requested limit"
-    targets = [entry["target_word"] for entry in uncommon_results]
+    assert single_results, "Expected phonetic matches when candidates are available"
+    assert len(single_results) == 2, "Results should still be capped by the requested limit"
+    targets = [entry["target_word"] for entry in single_results]
     assert "beta" not in targets
     assert "gamma" in targets, "Candidate beyond the initial limit should be retained"
 
@@ -879,5 +883,5 @@ def test_search_rhymes_respects_rhyme_type_and_rhythm_filters(tmp_path):
     )
 
     formatted = app.format_rhyme_results("love", filtered_results)
-    assert "Rhyme type: Perfect" in formatted
+    assert "🎯 Perfect Rhymes" in formatted
 

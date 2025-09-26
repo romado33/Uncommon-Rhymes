@@ -1813,6 +1813,18 @@ class RhymeQueryOrchestrator:
         rap_results, seen_keys = self._dedupe_and_truncate(cultural, rap_cap)
 
         multi_results: List[Dict[str, Any]] = []
+        single_results: List[Dict[str, Any]] = []
+
+        def _split_single_results(entries: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            perfect: List[Dict[str, Any]] = []
+            slant: List[Dict[str, Any]] = []
+            for entry in entries:
+                rhyme_type = (self._entry_rhyme_type(entry) or "").strip().lower()
+                if rhyme_type == "perfect":
+                    perfect.append(entry)
+                else:
+                    slant.append(entry)
+            return perfect, slant
 
         if single_syllable:
             uncommon_cap = min(limit_value, 20)
@@ -1820,8 +1832,9 @@ class RhymeQueryOrchestrator:
                 entry
                 for entry in uncommon_candidates
                 if self._result_identity(entry) not in seen_keys
+                and not self._is_multi_word_entry(entry)
             ]
-            uncommon_results, seen_keys = self._dedupe_and_truncate(
+            single_results, seen_keys = self._dedupe_and_truncate(
                 single_candidates,
                 uncommon_cap,
                 seen=seen_keys,
@@ -1846,15 +1859,18 @@ class RhymeQueryOrchestrator:
                 if not self._is_multi_word_entry(entry)
                 and self._result_identity(entry) not in seen_keys
             ]
-            uncommon_results, seen_keys = self._dedupe_and_truncate(
+            single_results, seen_keys = self._dedupe_and_truncate(
                 single_candidates,
                 uncommon_cap,
                 seen=seen_keys,
             )
 
+        perfect_results, slant_results = _split_single_results(single_results)
+
         return {
             'source_profile': profile,
-            'uncommon': uncommon_results,
+            'perfect': perfect_results,
+            'slant': slant_results,
             'multi_word': multi_results,
             'rap_db': rap_results,
             'filters': filters or {},
@@ -1881,14 +1897,14 @@ class RhymeQueryOrchestrator:
         """Search for rhymes without external coordination plumbing."""
 
         if not source_word or not str(source_word).strip():
-            return {'uncommon': [], 'multi_word': [], 'rap_db': []}
+            return {'perfect': [], 'slant': [], 'multi_word': [], 'rap_db': []}
 
         try:
             limit_value = int(limit)
         except (TypeError, ValueError):
             limit_value = 0
         if limit_value <= 0:
-            return {'uncommon': [], 'multi_word': [], 'rap_db': []}
+            return {'perfect': [], 'slant': [], 'multi_word': [], 'rap_db': []}
         limit = limit_value
 
         try:
@@ -2118,7 +2134,8 @@ class RhymeResultFormatter:
         """Render grouped rhyme results with shared phonetic context."""
 
         section_headers: Dict[str, str] = {
-            "uncommon": "🧠 Uncommon Rhymes",
+            "perfect": "🎯 Perfect Rhymes",
+            "slant": "🌗 Slant Rhymes",
             "multi_word": "🧩 Multi-Word Rhymes",
             "rap_db": "🎤 Rap Database Patterns",
         }
@@ -2266,7 +2283,7 @@ class RhymeResultFormatter:
 
         grid: List[str] = ["<div class='rr-results-grid'>"]
         first_row: List[str] = ["<div class='rr-result-row'>"]
-        for key in ("uncommon", "multi_word"):
+        for key in ("perfect", "slant", "multi_word"):
             first_row.append(_render_section(key))
         first_row.append("</div>")
         grid.extend(first_row)
