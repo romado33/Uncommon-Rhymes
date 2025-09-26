@@ -1867,6 +1867,25 @@ class RhymeQueryOrchestrator:
 
         perfect_results, slant_results = _split_single_results(single_results)
 
+        def _attach_stress_metadata(entries: List[Dict[str, Any]]) -> None:
+            """Expose stress patterns from nested phonetic metadata."""
+
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                phonetics = entry.get('target_phonetics')
+                if not isinstance(phonetics, dict):
+                    continue
+                stress_pattern = (
+                    phonetics.get('stress_pattern_display')
+                    or phonetics.get('stress_pattern')
+                )
+                if stress_pattern and 'stress_pattern' not in entry:
+                    entry['stress_pattern'] = stress_pattern
+
+        for bucket in (perfect_results, slant_results, multi_results):
+            _attach_stress_metadata(bucket)
+
         return {
             'source_profile': profile,
             'perfect': perfect_results,

@@ -261,3 +261,61 @@ def test_phonetic_with_cultural_results_triggers_alignment() -> None:
     )
 
     assert cultural_engine.align_calls >= 1
+
+
+def test_stress_pattern_metadata_included_for_slant_and_multi_word() -> None:
+    repo = DummyRepository()
+    service = SearchService(repository=repo)
+
+    orchestrator = service.orchestrator
+    context = {
+        "profile": {
+            "phonetics": {"syllables": 2},
+            "is_multi_word": False,
+        }
+    }
+
+    phonetic_entries = [
+        {
+            "target_word": "echo",
+            "pattern": "love / echo",
+            "rhyme_type": "perfect",
+            "result_source": "phonetic",
+            "target_phonetics": {"stress_pattern_display": "1-0"},
+        },
+        {
+            "target_word": "mecho",
+            "pattern": "love / mecho",
+            "rhyme_type": "slant",
+            "result_source": "phonetic",
+            "target_phonetics": {"stress_pattern_display": "0-1"},
+        },
+    ]
+
+    anti_entries = [
+        {
+            "target_word": "new echo",
+            "pattern": "love / new echo",
+            "result_source": "anti_llm",
+            "is_multi_word": True,
+            "target_phonetics": {"stress_pattern_display": "1-1"},
+        }
+    ]
+
+    result = orchestrator._finalize_results(
+        context,
+        phonetic=phonetic_entries,
+        cultural=[],
+        anti_llm=anti_entries,
+        filters={},
+        limit=5,
+    )
+
+    assert result["slant"], "Expected slant bucket to contain a result"
+    assert result["multi_word"], "Expected multi-word bucket to contain a result"
+
+    slant_entry = result["slant"][0]
+    multi_entry = result["multi_word"][0]
+
+    assert slant_entry["stress_pattern"] == "0-1"
+    assert multi_entry["stress_pattern"] == "1-1"
