@@ -26,13 +26,31 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
     repository = SQLiteRhymeRepository(str(db_path))
     repository.ensure_database()
 
-    base_rows: List[Tuple[str, str, str, str, str, str, int, float, float, str, str, str]] = [
+    base_rows: List[
+        Tuple[
+            str,
+            str,
+            str,
+            str,
+            str,
+            int,
+            str,
+            int,
+            float,
+            float,
+            str,
+            str,
+            str,
+            str,
+        ]
+    ] = [
         (
             "pattern-accepted-source",
             "sun",
             "fun",
             "Artist One",
             "Solar Rhymes",
+            1999,
             "hip-hop",
             1,
             0.95,
@@ -40,6 +58,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "the sun is shining",
             "bring the fun again",
+            "the sun is shining // bring the fun again",
         ),
         (
             "pattern-low-confidence",
@@ -47,6 +66,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "done",
             "Artist One",
             "Solar Rhymes",
+            1999,
             "hip-hop",
             1,
             0.6,
@@ -54,6 +74,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "confidence too low",
             "confidence too low",
+            "confidence too low // confidence too low",
         ),
         (
             "pattern-low-phonetic",
@@ -61,6 +82,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "moon",
             "Artist Two",
             "Lunar Rhymes",
+            2005,
             "hip-hop",
             1,
             0.92,
@@ -68,6 +90,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "phonetics too low",
             "phonetics too low",
+            "phonetics too low // phonetics too low",
         ),
         (
             "pattern-wrong-genre",
@@ -75,6 +98,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "pun",
             "Artist Three",
             "Comedy Rhymes",
+            2010,
             "jazz",
             1,
             0.96,
@@ -82,6 +106,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "genre mismatch",
             "genre mismatch",
+            "genre mismatch // genre mismatch",
         ),
         (
             "pattern-wrong-culture",
@@ -89,6 +114,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "bun",
             "Artist Four",
             "Bakery Rhymes",
+            2001,
             "hip-hop",
             1,
             0.97,
@@ -96,6 +122,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "low_impact",
             "culture mismatch",
             "culture mismatch",
+            "culture mismatch // culture mismatch",
         ),
         (
             "pattern-accepted-target",
@@ -103,6 +130,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "sun",
             "Artist Five",
             "Return Rhymes",
+            1998,
             "hip-hop",
             1,
             0.94,
@@ -110,6 +138,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "source flip works",
             "source flip works",
+            "source flip works // source flip works",
         ),
         (
             "pattern-target-low-confidence",
@@ -117,6 +146,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "sun",
             "Artist Six",
             "Runner Rhymes",
+            1998,
             "hip-hop",
             1,
             0.65,
@@ -124,9 +154,9 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             "high_impact",
             "target confidence low",
             "target confidence low",
+            "target confidence low // target confidence low",
         ),
     ]
-
     rows: List[Tuple] = []
     for entry in base_rows:
         (
@@ -135,6 +165,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             target_word,
             artist,
             song_title,
+            release_year,
             genre,
             line_distance,
             confidence,
@@ -142,6 +173,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
             cultural_significance,
             source_context,
             target_context,
+            lyrical_context,
         ) = entry
         rows.append(
             (
@@ -153,6 +185,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
                 artist,
                 _normalize_text(artist),
                 song_title,
+                release_year,
                 genre,
                 line_distance,
                 confidence,
@@ -160,6 +193,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
                 cultural_significance,
                 source_context,
                 target_context,
+                lyrical_context,
                 _normalize_text(genre),
                 _normalize_cultural(cultural_significance),
             )
@@ -179,6 +213,7 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
                 artist,
                 artist_normalized,
                 song_title,
+                release_year,
                 genre,
                 line_distance,
                 confidence_score,
@@ -186,10 +221,11 @@ def seeded_repository(tmp_path) -> SQLiteRhymeRepository:
                 cultural_significance,
                 source_context,
                 target_context,
+                lyrical_context,
                 genre_normalized,
                 cultural_significance_normalized
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

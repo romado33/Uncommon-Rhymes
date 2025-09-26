@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -15,6 +15,8 @@ class CulturalContext:
     cultural_significance: str
     regional_origin: str
     style_characteristics: List[str]
+    release_year: Optional[int] = None
+    lyrical_context: Optional[str] = None
 
 
 @dataclass

@@ -249,6 +249,14 @@ class CulturalIntelligenceEngine:
         # Determine regional origin
         regional_origin = profile.regional_influence
         
+        release_year = pattern_data.get('year') or pattern_data.get('release_year')
+        try:
+            release_year_value = int(release_year) if release_year is not None else None
+        except (TypeError, ValueError):
+            release_year_value = None
+
+        lyrical_context = pattern_data.get('lyrical_context')
+
         context = CulturalContext(
             artist=profile.name,
             song=song,
@@ -256,7 +264,9 @@ class CulturalIntelligenceEngine:
             era=era,
             cultural_significance=cultural_significance,
             regional_origin=regional_origin,
-            style_characteristics=profile.signature_styles
+            style_characteristics=profile.signature_styles,
+            release_year=release_year_value,
+            lyrical_context=lyrical_context,
         )
         
         self.cultural_stats['cultural_contexts_generated'] += 1
@@ -278,7 +288,14 @@ class CulturalIntelligenceEngine:
 
             with self._cursor() as cursor:
                 query = """
-                SELECT target_word, artist, song_title, confidence_score, cultural_significance
+                SELECT
+                    target_word,
+                    artist,
+                    song_title,
+                    release_year,
+                    confidence_score,
+                    cultural_significance,
+                    lyrical_context
                 FROM song_rhyme_patterns
                 WHERE source_word_normalized = ?
                   AND target_word_normalized IS NOT NULL
@@ -300,16 +317,18 @@ class CulturalIntelligenceEngine:
                 results = cursor.fetchall()
 
             cultural_patterns = []
-            for target, artist, song, confidence, cultural_sig in results:
+            for target, artist, song, year, confidence, cultural_sig, lyrical_context in results:
                 pattern_data = {
                     'source_word': source_word,
                     'target_word': target,
                     'artist': artist,
                     'song': song,
+                    'year': year,
+                    'lyrical_context': lyrical_context,
                     'confidence': confidence,
                     'cultural_significance': cultural_sig
                 }
-                
+
                 context = self.get_cultural_context(pattern_data)
                 rarity_score = self.get_cultural_rarity_score(context)
                 
