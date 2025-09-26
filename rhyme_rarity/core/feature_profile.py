@@ -137,10 +137,17 @@ class RhymeFeatureProfile:
     vowel_skeleton_target: str
     consonant_tail_source: str
     consonant_tail_target: str
+    last_vowel_sound_source: str
+    last_vowel_sound_target: str
+    consonant_coda_source: str
+    consonant_coda_target: str
+    consonant_onset_source: str
+    consonant_onset_target: str
     assonance_score: float
     consonance_score: float
     internal_rhyme_score: float
     bradley_device: str
+    rhyme_type: str
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -154,10 +161,17 @@ class RhymeFeatureProfile:
             "vowel_skeleton_target": self.vowel_skeleton_target,
             "consonant_tail_source": self.consonant_tail_source,
             "consonant_tail_target": self.consonant_tail_target,
+            "last_vowel_sound_source": self.last_vowel_sound_source,
+            "last_vowel_sound_target": self.last_vowel_sound_target,
+            "consonant_coda_source": self.consonant_coda_source,
+            "consonant_coda_target": self.consonant_coda_target,
+            "consonant_onset_source": self.consonant_onset_source,
+            "consonant_onset_target": self.consonant_onset_target,
             "assonance_score": self.assonance_score,
             "consonance_score": self.consonance_score,
             "internal_rhyme_score": self.internal_rhyme_score,
             "bradley_device": self.bradley_device,
+            "rhyme_type": self.rhyme_type,
         }
 
 

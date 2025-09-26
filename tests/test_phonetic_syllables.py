@@ -94,3 +94,29 @@ def test_multi_word_variants_survive_large_single_candidate_lists():
     ]
 
     assert multi_variants, "Expected multi-word variants to survive limit slicing"
+
+
+def test_derive_rhyme_profile_returns_rhyme_type_metadata():
+    analyzer = EnhancedPhoneticAnalyzer()
+
+    profile = analyzer.derive_rhyme_profile("money", "honey")
+
+    assert isinstance(profile, dict)
+    assert profile["rhyme_type"] == "perfect"
+    assert profile["last_vowel_sound_source"] == profile["last_vowel_sound_target"]
+    assert profile["consonant_onset_source"] == profile["consonant_onset_target"]
+    assert profile["consonant_coda_source"] == profile["consonant_coda_target"]
+
+
+def test_slant_rhyme_requires_shared_vowel_and_varied_consonants():
+    analyzer = EnhancedPhoneticAnalyzer()
+
+    profile = analyzer.derive_rhyme_profile("money", "lusty")
+
+    assert profile["rhyme_type"] == "slant"
+    assert profile["last_vowel_sound_source"] == profile["last_vowel_sound_target"]
+    differs = (
+        profile["consonant_onset_source"] != profile["consonant_onset_target"]
+        or profile["consonant_coda_source"] != profile["consonant_coda_target"]
+    )
+    assert differs, "Expected consonant context to differ for slant rhymes"
