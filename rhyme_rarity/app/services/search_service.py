@@ -2201,6 +2201,32 @@ class RhymeResultFormatter:
 
             return details
 
+        def _format_primary_entry(entry: Dict[str, Any]) -> List[str]:
+            """Format the first result row with a concise detail set."""
+
+            details: List[str] = []
+
+            rarity = entry.get("rarity_score") or entry.get("cultural_rarity")
+            if rarity is not None:
+                try:
+                    details.append(f"Rarity: {float(rarity):.2f}")
+                except (TypeError, ValueError):
+                    pass
+
+            phonetics = entry.get("target_phonetics") or {}
+            syllables = phonetics.get("syllables")
+            if isinstance(syllables, (int, float)):
+                details.append(f"Syllables: {int(syllables)}")
+
+            stress_pattern = (
+                phonetics.get("stress_pattern_display")
+                or phonetics.get("stress_pattern")
+            )
+            if stress_pattern:
+                details.append(f"Stress Pattern: {stress_pattern}")
+
+            return details
+
         source_profile = rhymes.get("source_profile") or {}
         phonetics = source_profile.get("phonetics") or {}
         source_meta = _format_phonetics(phonetics)
@@ -2298,7 +2324,10 @@ class RhymeResultFormatter:
                     details.append("Lyrics: " + " | ".join(lyric_segments))
             return details
 
+        primary_row_rendered = False
+
         def _render_section(key: str, *, span_full: bool = False) -> str:
+            nonlocal primary_row_rendered
             entries = rhymes.get(key) or []
             classes = ["rr-result-card"]
             if span_full:
@@ -2320,7 +2349,11 @@ class RhymeResultFormatter:
                     card.append(
                         f"<span class='rr-rhyme-term'>{escape(target.upper())}</span>"
                     )
-                    details = _collect_details(entry, key)
+                    if not primary_row_rendered:
+                        details = _format_primary_entry(entry)
+                        primary_row_rendered = True
+                    else:
+                        details = _collect_details(entry, key)
                     if details:
                         detail_text = " • ".join(details)
                         card.append(
