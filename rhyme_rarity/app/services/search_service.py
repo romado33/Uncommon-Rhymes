@@ -2144,65 +2144,7 @@ class RhymeResultFormatter:
             return " | ".join(parts) if parts else None
 
         def _format_entry(entry: Dict[str, Any]) -> List[str]:
-            details: List[str] = []
-            rarity = entry.get("rarity_score") or entry.get("cultural_rarity")
-            confidence = entry.get("combined_score", entry.get("confidence"))
-            phonetics = entry.get("target_phonetics") or {}
-            phonetics_line = _format_phonetics(phonetics)
-
-            if rarity is not None:
-                try:
-                    details.append(f"Rarity: {float(rarity):.2f}")
-                except (TypeError, ValueError):
-                    pass
-            if confidence is not None:
-                try:
-                    details.append(f"Confidence: {float(confidence):.2f}")
-                except (TypeError, ValueError):
-                    pass
-            if phonetics_line:
-                details.append(f"Phonetics: {phonetics_line}")
-
-            rhyme_type = entry.get("rhyme_type")
-            feature_profile = entry.get("feature_profile")
-            if not rhyme_type and isinstance(feature_profile, dict):
-                rhyme_type = feature_profile.get("rhyme_type")
-            if rhyme_type:
-                details.append(f"Rhyme type: {str(rhyme_type).replace('_', ' ').title()}")
-
-            stress_alignment = entry.get("stress_alignment")
-            if stress_alignment is None and isinstance(feature_profile, dict):
-                stress_alignment = feature_profile.get("stress_alignment")
-            rhythm_score = entry.get("rhythm_score")
-            if rhythm_score is not None and rhythm_score != stress_alignment:
-                try:
-                    details.append(f"Rhythm score: {float(rhythm_score):.2f}")
-                except (TypeError, ValueError):
-                    pass
-
-            context_matches = entry.get("signature_context_matches")
-            if context_matches:
-                context_text = ", ".join(
-                    sorted(str(src).replace('_', ' ').title() for src in context_matches)
-                )
-                details.append(f"Context signatures: {context_text}")
-
-            gate_mode = entry.get("threshold_gate")
-            if gate_mode:
-                details.append(
-                    f"Threshold gate: {str(gate_mode).replace('_', ' ').title()}"
-                )
-                gate_threshold = entry.get("phonetic_threshold")
-                if gate_threshold is not None:
-                    try:
-                        details.append(f"Gate threshold: {float(gate_threshold):.2f}")
-                    except (TypeError, ValueError):
-                        pass
-
-            return details
-
-        def _format_primary_entry(entry: Dict[str, Any]) -> List[str]:
-            """Format the first result row with a concise detail set."""
+            """Limit inline metadata to rarity, syllables, and stress pattern."""
 
             details: List[str] = []
 
@@ -2288,46 +2230,7 @@ class RhymeResultFormatter:
             summary_lines.append("</ul>")
         summary_lines.append("</div>")
 
-        def _collect_details(entry: Dict[str, Any], key: str) -> List[str]:
-            details = list(_format_entry(entry))
-
-            weakness = entry.get("llm_weakness_type")
-            if weakness and entry.get("result_source") != "anti_llm":
-                details.append(
-                    f"LLM weakness: {str(weakness).replace('_', ' ').title()}"
-                )
-            depth = entry.get("cultural_depth")
-            if depth and entry.get("result_source") != "anti_llm":
-                details.append(f"Cultural depth: {depth}")
-
-            if key == "rap_db":
-                artist = entry.get("artist")
-                song = entry.get("song")
-                if artist or song:
-                    details.append(
-                        f"Source: {artist or 'Unknown'} — {song or 'Unknown'}"
-                    )
-                source_context_raw = entry.get("source_context")
-                target_context_raw = entry.get("target_context")
-                source_context = (
-                    str(source_context_raw).strip() if source_context_raw else ""
-                )
-                target_context = (
-                    str(target_context_raw).strip() if target_context_raw else ""
-                )
-                lyric_segments: List[str] = []
-                if source_context:
-                    lyric_segments.append(f"source: {source_context}")
-                if target_context and target_context.lower() != source_context.lower():
-                    lyric_segments.append(f"target: {target_context}")
-                if lyric_segments:
-                    details.append("Lyrics: " + " | ".join(lyric_segments))
-            return details
-
-        primary_row_rendered = False
-
         def _render_section(key: str, *, span_full: bool = False) -> str:
-            nonlocal primary_row_rendered
             entries = rhymes.get(key) or []
             classes = ["rr-result-card"]
             if span_full:
@@ -2349,11 +2252,7 @@ class RhymeResultFormatter:
                     card.append(
                         f"<span class='rr-rhyme-term'>{escape(target.upper())}</span>"
                     )
-                    if not primary_row_rendered:
-                        details = _format_primary_entry(entry)
-                        primary_row_rendered = True
-                    else:
-                        details = _collect_details(entry, key)
+                    details = _format_entry(entry)
                     if details:
                         detail_text = " • ".join(details)
                         card.append(
