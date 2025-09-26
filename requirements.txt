@@ -1,5 +1,8 @@
 # Core interactive application
 gradio>=4.36.1,<5.0
 
+# Audio processing helper required by pydub on Python 3.13+
+pyaudioop>=0.2.0
+
 # Phonetic fallback when the CMU dictionary misses a word
 pronouncing>=0.2.0,<0.3
