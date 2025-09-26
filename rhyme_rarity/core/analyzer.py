@@ -410,6 +410,89 @@ class EnhancedPhoneticAnalyzer:
 
         return sequence[anchor_index:]
 
+    @staticmethod
+    def _last_vowel_sound(
+        pronunciations: List[List[str]],
+        fallback_word: str,
+    ) -> str:
+        """Return the final vowel phoneme (stress stripped) for a word."""
+
+        for phones in pronunciations:
+            for phone in reversed(phones):
+                base = re.sub(r"\d", "", phone).upper()
+                if base in VOWEL_PHONEMES:
+                    return base
+
+        vowels = re.findall(r"[aeiou]+", fallback_word.lower())
+        return vowels[-1] if vowels else ""
+
+    @staticmethod
+    def _consonant_coda_signature(
+        pronunciations: List[List[str]],
+        fallback_word: str,
+    ) -> str:
+        """Return a compact representation of the terminal consonant sounds."""
+
+        for phones in pronunciations:
+            consonants: List[str] = []
+            encountered_vowel = False
+            for phone in reversed(phones):
+                base = re.sub(r"\d", "", phone).upper()
+                if base in VOWEL_PHONEMES:
+                    encountered_vowel = True
+                    break
+                if base:
+                    consonants.append(base)
+
+            if encountered_vowel:
+                if consonants:
+                    consonants.reverse()
+                    return "-".join(consonants)
+                return ""
+
+        fallback_tail = re.sub(r"[aeiou]", "", fallback_word.lower())
+        return fallback_tail[-2:] if fallback_tail else ""
+
+    @staticmethod
+    def _consonant_onset_signature(
+        pronunciations: List[List[str]],
+        fallback_word: str,
+    ) -> str:
+        """Return consonant sounds that directly precede the final vowel."""
+
+        for phones in pronunciations:
+            last_vowel_index: Optional[int] = None
+            for index, phone in enumerate(phones):
+                base = re.sub(r"\d", "", phone).upper()
+                if base in VOWEL_PHONEMES:
+                    last_vowel_index = index
+            if last_vowel_index is None:
+                continue
+
+            onset: List[str] = []
+            for index in range(last_vowel_index - 1, -1, -1):
+                base = re.sub(r"\d", "", phones[index]).upper()
+                if base in VOWEL_PHONEMES:
+                    break
+                if base:
+                    onset.append(base)
+                else:
+                    break
+
+            if onset:
+                onset.reverse()
+                return "-".join(onset)
+            return ""
+
+        fallback_lower = fallback_word.lower()
+        vowel_matches = list(re.finditer(r"[aeiou]+", fallback_lower))
+        if not vowel_matches:
+            return ""
+        last_match = vowel_matches[-1]
+        prefix = fallback_lower[: last_match.start()]
+        consonant_match = re.search(r"[bcdfghjklmnpqrstvwxyz]+$", prefix)
+        return consonant_match.group(0) if consonant_match else ""
+
     def _get_rhyme_tails(
         self,
         word: str,
@@ -617,6 +700,21 @@ class EnhancedPhoneticAnalyzer:
         if pronunciations_target:
             stress_target = self._stress_signature_from_phones(pronunciations_target[0])
 
+        last_vowel_source = self._last_vowel_sound(pronunciations_source, normalized_source)
+        last_vowel_target = self._last_vowel_sound(pronunciations_target, normalized_target)
+        consonant_coda_source = self._consonant_coda_signature(
+            pronunciations_source, normalized_source
+        )
+        consonant_coda_target = self._consonant_coda_signature(
+            pronunciations_target, normalized_target
+        )
+        consonant_onset_source = self._consonant_onset_signature(
+            pronunciations_source, normalized_source
+        )
+        consonant_onset_target = self._consonant_onset_signature(
+            pronunciations_target, normalized_target
+        )
+
         stress_alignment = 0.0
         if stress_source and stress_target:
             matches = sum(1 for a, b in zip(stress_source, stress_target) if a == b)
@@ -641,6 +739,19 @@ class EnhancedPhoneticAnalyzer:
             similarity or self.get_phonetic_similarity(normalized_source, normalized_target),
         )
 
+        vowel_match = bool(
+            last_vowel_source
+            and last_vowel_target
+            and last_vowel_source == last_vowel_target
+        )
+        coda_match = consonant_coda_source == consonant_coda_target
+        onset_match = consonant_onset_source == consonant_onset_target
+        if vowel_match:
+            if coda_match and onset_match:
+                resolved_rhyme_type = "perfect"
+            else:
+                resolved_rhyme_type = "slant"
+
         bradley_device = self._derive_bradley_device(
             similarity or 0.0,
             resolved_rhyme_type,
@@ -660,10 +771,17 @@ class EnhancedPhoneticAnalyzer:
             vowel_skeleton_target=vowel_skeleton_target,
             consonant_tail_source=consonant_tail_source,
             consonant_tail_target=consonant_tail_target,
+            last_vowel_sound_source=last_vowel_source,
+            last_vowel_sound_target=last_vowel_target,
+            consonant_coda_source=consonant_coda_source,
+            consonant_coda_target=consonant_coda_target,
+            consonant_onset_source=consonant_onset_source,
+            consonant_onset_target=consonant_onset_target,
             assonance_score=assonance,
             consonance_score=consonance_value,
             internal_rhyme_score=internal_rhyme_score,
             bradley_device=bradley_device,
+            rhyme_type=resolved_rhyme_type,
         )
 
     def describe_word(self, word: str) -> Dict[str, Any]:
@@ -734,12 +852,15 @@ class EnhancedPhoneticAnalyzer:
     ) -> Optional[RhymeFeatureProfile]:
         """Public wrapper for compatibility with downstream modules."""
 
-        return self.build_feature_profile(
+        profile = self.build_feature_profile(
             source_word,
             target_word,
             similarity=similarity,
             rhyme_type=rhyme_type,
         )
+        if profile is None:
+            return None
+        return profile.as_dict()
     
     def classify_rhyme_type(self, word1: str, word2: str, similarity: float) -> str:
         """Classify the type of rhyme based on similarity score"""
@@ -786,6 +907,8 @@ class EnhancedPhoneticAnalyzer:
                     'internal_rhyme_score': profile.internal_rhyme_score,
                 }
             )
+            if profile.rhyme_type:
+                rhyme_type = profile.rhyme_type
 
         return PhoneticMatch(
             word1=word1,
