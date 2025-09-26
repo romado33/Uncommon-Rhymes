@@ -95,6 +95,7 @@ def create_interface(
     .rr-rhyme-line {display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;}
     .rr-rhyme-term {font-weight: 700; letter-spacing: 0.04em; color: #0f172a;}
     .rr-rhyme-details-inline {color: #475569; font-size: 0.95rem;}
+    .rr-rhyme-context {margin-top: 6px; color: #1e293b; font-size: 0.92rem; line-height: 1.35;}
     .rr-empty {margin: 0; color: #94a3b8; font-style: italic;}
     .rr-accordion .gr-accordion-label {font-weight: 600;}
     """

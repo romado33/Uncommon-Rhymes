@@ -1833,6 +1833,19 @@ class RhymeQueryOrchestrator:
         multi_results: List[Dict[str, Any]] = []
         single_results: List[Dict[str, Any]] = []
 
+        multi_cap = min(limit_value, 10)
+        multi_candidates = [
+            entry
+            for entry in uncommon_candidates
+            if self._is_multi_word_entry(entry)
+        ]
+        if multi_candidates:
+            multi_results, seen_keys = self._dedupe_and_truncate(
+                multi_candidates,
+                multi_cap,
+                seen=seen_keys,
+            )
+
         def _split_single_results(entries: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
             perfect: List[Dict[str, Any]] = []
             slant: List[Dict[str, Any]] = []
@@ -1858,18 +1871,6 @@ class RhymeQueryOrchestrator:
                 seen=seen_keys,
             )
         else:
-            multi_cap = min(limit_value, 10)
-            multi_candidates = [
-                entry
-                for entry in uncommon_candidates
-                if self._is_multi_word_entry(entry)
-            ]
-            multi_results, seen_keys = self._dedupe_and_truncate(
-                multi_candidates,
-                multi_cap,
-                seen=seen_keys,
-            )
-
             uncommon_cap = min(limit_value, 10)
             single_candidates = [
                 entry
@@ -2218,8 +2219,12 @@ class RhymeResultFormatter:
                 phonetics.get("stress_pattern_display")
                 or phonetics.get("stress_pattern")
             )
+            if (not stress_pattern) and entry.get("stress_pattern"):
+                stress_pattern = entry.get("stress_pattern")
             if stress_pattern:
-                details.append(f"Stress Pattern: {stress_pattern}")
+                stress_text = str(stress_pattern).strip()
+                if stress_text and stress_text not in {"?", "??"}:
+                    details.append(f"Stress Pattern: {stress_text}")
 
             return details
 
@@ -2313,6 +2318,24 @@ class RhymeResultFormatter:
                             f"<span class='rr-rhyme-details-inline'> • {escape(detail_text)}</span>"
                         )
                     card.append("</div>")
+
+                    if key == "rap_db":
+                        context_value = entry.get("lyrical_context")
+                        if not context_value:
+                            context_parts = [
+                                str(part).strip()
+                                for part in (
+                                    entry.get("source_context"),
+                                    entry.get("target_context"),
+                                )
+                                if part and str(part).strip()
+                            ]
+                            if context_parts:
+                                context_value = " // ".join(context_parts)
+                        if context_value:
+                            card.append(
+                                f"<div class='rr-rhyme-context'>{escape(str(context_value))}</div>"
+                            )
                     card.append("</li>")
                 card.append("</ul>")
             card.append("</div>")
