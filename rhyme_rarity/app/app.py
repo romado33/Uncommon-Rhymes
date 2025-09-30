@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 try:
     import torch
@@ -54,7 +54,8 @@ from cultural.engine import CulturalIntelligenceEngine
 
 from rhyme_rarity.app.data.database import SQLiteRhymeRepository
 from rhyme_rarity.app.services.search_service import SearchService
-from rhyme_rarity.app.ui.gradio import create_interface
+if TYPE_CHECKING:  # pragma: no cover - optional dependency for type checkers only
+    import gradio as gr  # noqa: F401  # Imported for type hints
 
 
 class RhymeRarityApp:
@@ -159,6 +160,17 @@ class RhymeRarityApp:
         return self.search_service.format_rhyme_results(source_word, rhymes)
 
     def create_gradio_interface(self):
+        try:
+            from rhyme_rarity.app.ui.gradio import create_interface
+        except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+            missing_module = exc.name or "gradio"
+            message = (
+                "Gradio interface requested but optional dependency could not be imported: "
+                f"{missing_module!r}. Install the Gradio UI extras (for example via `pip install gradio`)."
+            )
+            self._logger.error("Failed to load Gradio UI module", context={"missing": missing_module})
+            raise RuntimeError(message) from exc
+
         return create_interface(self.search_service, self.repository)
 
     # Internal helpers ------------------------------------------------------
