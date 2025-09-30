@@ -192,9 +192,9 @@ def _should_share_interface() -> bool:
 
 
 # 👇 Add a GPU-marked function so HF knows GPU is used
-@spaces.GPU
-def warmup_gpu() -> str:
-    """Simple GPU warmup so Hugging Face Spaces detects usage."""
+def _run_gpu_warmup() -> str:
+    """Perform the actual GPU warmup logic."""
+
     if torch is None:
         return "Torch not installed"
     if torch.cuda.is_available():
@@ -204,10 +204,17 @@ def warmup_gpu() -> str:
     return "No GPU available"
 
 
+@spaces.GPU
+def warmup_gpu() -> str:
+    """Simple GPU warmup so Hugging Face Spaces detects usage."""
+
+    return _run_gpu_warmup()
+
+
 def main() -> None:
     # Call warmup just to satisfy HF's runtime check
     try:
-        warmup_gpu()
+        _run_gpu_warmup()
     except Exception:
         pass
 
