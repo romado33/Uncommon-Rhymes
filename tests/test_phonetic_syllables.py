@@ -190,3 +190,27 @@ def test_passes_gate_enforces_tier_thresholds():
         score = score_pair(analyzer, base, candidate)
         assert score.tier == expected_tier
         assert passes_gate(score) is expected_gate
+
+
+def test_compound_rhyme_keys_expand_candidate_pool():
+    loader = CMUDictLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("him so", analyzer=analyzer, cmu_loader=loader, limit=25)
+
+    words = {entry["word"] for entry in results if entry.get("word")}
+    assert "window" in words, "Expected single-word slant driven by compound backoff"
+
+    compound_entries = [
+        entry
+        for entry in results
+        if entry.get("is_multi_word")
+        and "matched_rhyme_keys" in entry
+        and "compound" in entry["matched_rhyme_keys"]
+        and "IH M OW" in entry["matched_rhyme_keys"]["compound"]
+    ]
+
+    assert compound_entries, "Expected multi-word variant seeded by /IH M OW/ compound key"
+    assert any(
+        "compound" in entry.get("matched_rhyme_key_types", []) for entry in compound_entries
+    )
