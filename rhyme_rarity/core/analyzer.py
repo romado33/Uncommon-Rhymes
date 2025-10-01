@@ -23,6 +23,7 @@ from .feature_profile import (
 )
 from .phrase_corpus import lookup_ngram_phrases, lookup_template_words
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
+from .scorer import SlantScore, passes_gate, score_pair
 
 RARITY_SIMILARITY_WEIGHT: float = 0.65
 RARITY_NOVELTY_WEIGHT: float = 0.35
@@ -162,7 +163,7 @@ class EnhancedPhoneticAnalyzer:
         self._rhyme_tail_cache: OrderedDict[
             Tuple[str, Tuple[Tuple[str, ...], ...]], Tuple[Tuple[str, ...], ...]
         ] = OrderedDict()
-        self._similarity_cache: OrderedDict[Tuple[str, str], float] = OrderedDict()
+        self._similarity_cache: OrderedDict[Tuple[str, str], SlantScore] = OrderedDict()
         self._phrase_component_cache: OrderedDict[
             Tuple[str, Optional[int]], PhraseComponents
         ] = OrderedDict()
@@ -363,103 +364,54 @@ class EnhancedPhoneticAnalyzer:
             self._similarity_cache.clear()
             self._phrase_component_cache.clear()
     
-    def get_phonetic_similarity(self, word1: str, word2: str) -> float:
-        """
-        Calculate phonetic similarity between two words
-        Returns score from 0.0 to 1.0
-        """
+    def get_slant_score(self, word1: str, word2: str) -> SlantScore:
+        """Return a cached ``SlantScore`` for ``word1`` and ``word2``."""
+
         if not word1 or not word2:
-            return 0.0
+            return SlantScore.empty()
 
         clean1 = self._clean_word(word1)
         clean2 = self._clean_word(word2)
 
         if not clean1 or not clean2:
-            return 0.0
+            return SlantScore.empty()
 
         cache_key = (clean1, clean2) if clean1 <= clean2 else (clean2, clean1)
         with self._cache_lock:
             cached = self._similarity_cache.get(cache_key)
             if cached is not None:
                 self._similarity_cache.move_to_end(cache_key)
-                return float(cached)
-
-        if clean1 == clean2:
-            with self._cache_lock:
-                self._similarity_cache[cache_key] = 1.0
-                self._trim_cache(self._similarity_cache)
-            return 1.0
+                return cached
 
         pronunciations1 = self._get_pronunciation_variants(clean1)
         pronunciations2 = self._get_pronunciation_variants(clean2)
 
-        tail_similarity: Optional[float] = None
-        rhyme_tails1: List[List[str]] = []
-        rhyme_tails2: List[List[str]] = []
+        if pronunciations1:
+            try:
+                self._get_rhyme_tails(clean1, pronunciations1)
+            except Exception:
+                pass
+        if pronunciations2:
+            try:
+                self._get_rhyme_tails(clean2, pronunciations2)
+            except Exception:
+                pass
 
-        if pronunciations1 and pronunciations2:
-            rhyme_tails1 = self._get_rhyme_tails(clean1, pronunciations1)
-            rhyme_tails2 = self._get_rhyme_tails(clean2, pronunciations2)
-
-            phoneme_scores = [
-                self._phoneme_tail_similarity(tail1, tail2)
-                for tail1 in rhyme_tails1
-                for tail2 in rhyme_tails2
-            ]
-
-            if phoneme_scores:
-                tail_similarity = max(phoneme_scores)
-
-        # Calculate multiple phonetic features
-        ending_sim = self._calculate_ending_similarity(clean1, clean2)
-        vowel_sim = self._calculate_vowel_similarity(
-            clean1,
-            clean2,
-            pronunciations1=pronunciations1,
-            pronunciations2=pronunciations2,
-            rhyme_tails1=rhyme_tails1,
-            rhyme_tails2=rhyme_tails2,
-        )
-        consonant_sim = self._calculate_consonant_similarity(
-            clean1,
-            clean2,
-            pronunciations1=pronunciations1,
-            pronunciations2=pronunciations2,
-            rhyme_tails1=rhyme_tails1,
-            rhyme_tails2=rhyme_tails2,
-        )
-        syllable_sim = self._calculate_syllable_similarity(clean1, clean2)
-
-        # Weight the similarities
-        weights = self.phonetic_weights
-        weighted_total = 0.0
-        total_weight = 0.0
-
-        components = {
-            'rhyme_tail': tail_similarity,
-            'ending_sounds': ending_sim,
-            'vowel_sounds': vowel_sim,
-            'consonant_clusters': consonant_sim,
-            'syllable_structure': syllable_sim,
-        }
-
-        for key, value in components.items():
-            if value is None:
-                continue
-            weight = weights.get(key, 0.0)
-            if weight <= 0:
-                continue
-            weighted_total += value * weight
-            total_weight += weight
-
-        similarity = weighted_total / total_weight if total_weight else 0.0
-        similarity = min(max(similarity, 0.0), 1.0)
+        slant = score_pair(self, clean1, clean2)
 
         with self._cache_lock:
-            self._similarity_cache[cache_key] = similarity
+            self._similarity_cache[cache_key] = slant
             self._trim_cache(self._similarity_cache)
 
-        return similarity
+        return slant
+
+    def get_phonetic_similarity(self, word1: str, word2: str) -> float:
+        """
+        Calculate phonetic similarity between two words
+        Returns score from 0.0 to 1.0
+        """
+
+        return float(self.get_slant_score(word1, word2).total)
     
     def _phrase_components(self, word: str) -> PhraseComponents:
         loader = getattr(self, "cmu_loader", None)
@@ -1202,7 +1154,8 @@ class EnhancedPhoneticAnalyzer:
     
     def analyze_rhyme_pattern(self, word1: str, word2: str) -> PhoneticMatch:
         """Comprehensive analysis of rhyme pattern between two words"""
-        similarity = self.get_phonetic_similarity(word1, word2)
+        slant = self.get_slant_score(word1, word2)
+        similarity = slant.total
         rhyme_type = self.classify_rhyme_type(word1, word2, similarity)
 
         # Normalize words once for feature calculations to ensure consistent scoring
@@ -1221,7 +1174,12 @@ class EnhancedPhoneticAnalyzer:
             'ending_similarity': self._calculate_ending_similarity(clean_word1, clean_word2),
             'vowel_similarity': self._calculate_vowel_similarity(clean_word1, clean_word2),
             'consonant_similarity': self._calculate_consonant_similarity(clean_word1, clean_word2),
-            'syllable_similarity': self._calculate_syllable_similarity(clean_word1, clean_word2)
+            'syllable_similarity': self._calculate_syllable_similarity(clean_word1, clean_word2),
+            'slant_rime': slant.rime,
+            'slant_vowel': slant.vowel,
+            'slant_coda': slant.coda,
+            'slant_penalty_stress': slant.stress_penalty,
+            'slant_penalty_syllables': slant.syllable_penalty,
         }
 
         if profile is not None:
@@ -1242,6 +1200,8 @@ class EnhancedPhoneticAnalyzer:
             phonetic_features=features,
             rhyme_type=rhyme_type,
             feature_profile=profile,
+            slant_score=slant,
+            slant_tier=slant.tier,
         )
 
     def get_rhyme_candidates(self, target_word: str, word_list: List[str],
@@ -1252,6 +1212,8 @@ class EnhancedPhoneticAnalyzer:
         for word in word_list:
             if word.lower() != target_word.lower():
                 match = self.analyze_rhyme_pattern(target_word, word)
+                if match.slant_score and not passes_gate(match.slant_score):
+                    continue
                 if match.similarity_score >= min_similarity:
                     rarity = self.get_rarity_score(word)
                     combined = self.combine_similarity_and_rarity(match.similarity_score, rarity)
@@ -1669,10 +1631,24 @@ def get_cmu_rhymes(
             return None
         seen_variants.add(normalized_key)
 
+        slant_result: Optional[SlantScore] = None
         try:
-            score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
+            slant_result = scoring_analyzer.get_slant_score(base_phrase, suggestion)
+        except AttributeError:
+            slant_result = None
         except Exception:
-            score = 0.0
+            slant_result = None
+
+        if slant_result is not None:
+            score = float(slant_result.total)
+            if not passes_gate(slant_result) and not is_multi:
+                return None
+        else:
+            try:
+                score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
+            except Exception:
+                score = 0.0
+            slant_result = None
 
         if (
             not is_multi
@@ -1916,6 +1892,20 @@ def get_cmu_rhymes(
             "legacy_combined": float(raw_combined),
         }
 
+        if slant_result is not None:
+            entry["slant_tier"] = slant_result.tier
+            entry["slant_score"] = {
+                "total": slant_result.total,
+                "rime": slant_result.rime,
+                "vowel": slant_result.vowel,
+                "coda": slant_result.coda,
+                "stress_penalty": slant_result.stress_penalty,
+                "syllable_penalty": slant_result.syllable_penalty,
+                "tie_breaker": slant_result.tie_breaker,
+                "used_spelling": slant_result.used_spelling_backoff,
+            }
+            entry["slant_tie_breaker"] = slant_result.tie_breaker
+
         if is_multi and base_metrics:
             entry.setdefault("parent_candidate", base_candidate)
             entry.setdefault("raw_multi_similarity", raw_similarity)
@@ -2100,6 +2090,7 @@ def get_cmu_rhymes(
             item.get("combined", 0.0),
             1 if not item.get("is_multi_word") else 0,
             item.get("similarity", 0.0),
+            item.get("slant_tie_breaker", 0.0),
         ),
         reverse=True,
     )
