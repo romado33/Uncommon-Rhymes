@@ -3,6 +3,8 @@ from rhyme_rarity.core import (
     EnhancedPhoneticAnalyzer,
     extract_phrase_components,
     get_cmu_rhymes,
+    passes_gate,
+    score_pair,
 )
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
@@ -168,3 +170,23 @@ def test_slant_rhyme_requires_shared_vowel_and_varied_consonants():
         or profile["consonant_coda_source"] != profile["consonant_coda_target"]
     )
     assert differs, "Expected consonant context to differ for slant rhymes"
+
+
+def test_passes_gate_enforces_tier_thresholds():
+    analyzer = EnhancedPhoneticAnalyzer()
+
+    base = "window"
+    expectations = {
+        "window": ("perfect", True),
+        "bingo": ("very_close", True),
+        "widow": ("strong", True),
+        "pillow": ("strong", True),
+        "hello": ("strong", True),
+        "yellow": ("loose", True),
+        "caper": ("weak", False),
+    }
+
+    for candidate, (expected_tier, expected_gate) in expectations.items():
+        score = score_pair(analyzer, base, candidate)
+        assert score.tier == expected_tier
+        assert passes_gate(score) is expected_gate
