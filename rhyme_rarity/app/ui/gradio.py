@@ -8,6 +8,7 @@ import gradio as gr
 
 from ..data.database import SQLiteRhymeRepository
 from ..services.search_service import SearchService
+from src.reverse import rhyme_from_phrase
 
 
 def _ensure_list(value) -> List:
@@ -48,6 +49,52 @@ def create_interface(
             slant_strength=slant_strength,
         )
         return search_service.format_rhyme_results(word, rhymes)
+
+    def _phrase_query(
+        phrase: str,
+        slant_value: float,
+        allow_propers: bool,
+        db_path: str,
+    ):
+        singles, phrases = rhyme_from_phrase(
+            phrase,
+            db_path=db_path,
+            slant_strength=slant_value,
+            allow_propers=allow_propers,
+            limit=100,
+        )
+        single_rows = [
+            {
+                "word": entry.word,
+                "tier": entry.tier,
+                "score": round(entry.score, 4),
+            }
+            for entry in singles
+        ]
+        phrase_rows = [
+            {
+                "phrase": entry.phrase,
+                "last_word": entry.last_word,
+                "tier": entry.tier,
+                "score": round(entry.final_score, 4),
+                "freq": entry.freq,
+            }
+            for entry in phrases
+        ]
+        explanation = ""
+        if singles:
+            top = singles[0]
+            detail = top.explanation
+            explanation = (
+                f"**Top single-word**: `{top.word}`\n\n"
+                f"- Tier: **{getattr(detail, 'tier', 'slant')}**\n"
+                f"- Rime: `{getattr(detail, 'rime', '')}`\n"
+                f"- Vowel match: {getattr(detail, 'vowel_match', '')}\n"
+                f"- Coda match: {getattr(detail, 'coda_match', '')}\n"
+                f"- Stress: {getattr(detail, 'stress_note', '')}\n"
+                f"- Score: {getattr(detail, 'score', 0.0):.3f}"
+            )
+        return single_rows, phrase_rows, explanation
 
     normalized_cultural_labels: Set[str] = set()
     cultural_engine = getattr(search_service, "cultural_engine", None)
@@ -121,94 +168,128 @@ def create_interface(
                 elem_classes=["rr-tip"],
             )
 
-            with gr.Column(elem_classes=["rr-section"]):
-                with gr.Group(elem_classes=["rr-panel", "rr-input-panel", "rr-search-panel"]):
-                    gr.Markdown("### Search settings")
-                    word_input = gr.Textbox(
-                        label="Word to Find Rhymes For",
-                        placeholder="Enter a word (e.g., love, mind, flow, money)",
-                        lines=1,
-                    )
-
-                    with gr.Accordion(
-                        "Advanced filters",
-                        open=False,
-                        elem_classes=["rr-accordion"],
-                    ):
-                        with gr.Row():
-                            max_results = gr.Slider(
-                                minimum=5,
-                                maximum=50,
-                                value=15,
-                                step=1,
-                                label="Max Results",
+            with gr.Tabs():
+                with gr.Tab("Word → Rhymes"):
+                    with gr.Column(elem_classes=["rr-section"]):
+                        with gr.Group(elem_classes=["rr-panel", "rr-input-panel", "rr-search-panel"]):
+                            gr.Markdown("### Search settings")
+                            word_input = gr.Textbox(
+                                label="Word to Find Rhymes For",
+                                placeholder="Enter a word (e.g., love, mind, flow, money)",
+                                lines=1,
                             )
 
-                            min_confidence = gr.Slider(
-                                minimum=0.5,
-                                maximum=1.0,
-                                value=0.7,
-                                step=0.05,
-                                label="Min Confidence",
+                            with gr.Accordion(
+                                "Advanced filters",
+                                open=False,
+                                elem_classes=["rr-accordion"],
+                            ):
+                                with gr.Row():
+                                    max_results = gr.Slider(
+                                        minimum=5,
+                                        maximum=50,
+                                        value=15,
+                                        step=1,
+                                        label="Max Results",
+                                    )
+
+                                    min_confidence = gr.Slider(
+                                        minimum=0.5,
+                                        maximum=1.0,
+                                        value=0.7,
+                                        step=0.05,
+                                        label="Min Confidence",
+                                    )
+
+                                    slant_strength = gr.Slider(
+                                        minimum=0.0,
+                                        maximum=1.0,
+                                        value=1.0,
+                                        step=0.05,
+                                        label="Slant Strength",
+                                        info=(
+                                            "1.0 favours the tightest matches; lower values admit looser"
+                                            " slant pairs."
+                                        ),
+                                    )
+
+                                with gr.Row():
+                                    with gr.Column(scale=1, min_width=160):
+                                        cultural_dropdown = gr.Dropdown(
+                                            choices=cultural_options,
+                                            multiselect=True,
+                                            label="Cultural Significance",
+                                            info="Highlight results by their cultural weight",
+                                            value=[],
+                                        )
+
+                                        genre_dropdown = gr.Dropdown(
+                                            choices=genre_options,
+                                            multiselect=True,
+                                            label="Genre",
+                                            info="Limit to specific genres",
+                                            value=[],
+                                        )
+
+                                    with gr.Column(scale=1, min_width=160):
+                                        rhyme_type_dropdown = gr.Dropdown(
+                                            choices=["perfect", "near", "slant", "eye", "weak"],
+                                            multiselect=True,
+                                            label="Rhyme Type",
+                                            info="Limit to specific rhyme categories",
+                                            value=[],
+                                        )
+
+                            search_btn = gr.Button(
+                                "🔍 Find Rhymes",
+                                variant="primary",
+                                size="lg",
+                                elem_classes=["rr-button"],
+                            )
+                            gr.Markdown(
+                                "💡 Enter a word, tune the filters, and click **Find Rhymes** to surface perfect, slant, and multi-word pairings.",
+                                elem_classes=["rr-tip"],
                             )
 
-                            slant_strength = gr.Slider(
+                    with gr.Column(elem_classes=["rr-section"]):
+                        with gr.Group(elem_classes=["rr-panel", "rr-results-panel"]):
+                            gr.Markdown("### Rhyme results")
+                            output = gr.Markdown(
+                                value="Start by entering a word on the left and click **Find Rhymes**.",
+                                elem_classes=["rr-results-markdown"],
+                            )
+
+                with gr.Tab("Phrase → Rhymes"):
+                    with gr.Column(elem_classes=["rr-section"]):
+                        with gr.Group(elem_classes=["rr-panel", "rr-input-panel", "rr-search-panel"]):
+                            gr.Markdown("### Phrase settings")
+                            phrase_in = gr.Textbox(
+                                label="Input phrase",
+                                placeholder="e.g., him so",
+                                lines=1,
+                            )
+                            slant_ph = gr.Slider(
                                 minimum=0.0,
                                 maximum=1.0,
-                                value=1.0,
+                                value=0.6,
                                 step=0.05,
-                                label="Slant Strength",
-                                info=(
-                                    "1.0 favours the tightest matches; lower values admit looser"
-                                    " slant pairs."
-                                ),
+                                label="Slant strength (tight → loose)",
                             )
+                            allow_prop_ph = gr.Checkbox(
+                                value=True,
+                                label="Allow proper nouns",
+                            )
+                            db_path_in = gr.Textbox(
+                                value="patterns.db",
+                                label="DB path",
+                            )
+                            run_rev = gr.Button("Find rhymes")
 
-                        with gr.Row():
-                            with gr.Column(scale=1, min_width=160):
-                                cultural_dropdown = gr.Dropdown(
-                                    choices=cultural_options,
-                                    multiselect=True,
-                                    label="Cultural Significance",
-                                    info="Highlight results by their cultural weight",
-                                    value=[],
-                                )
-
-                                genre_dropdown = gr.Dropdown(
-                                    choices=genre_options,
-                                    multiselect=True,
-                                    label="Genre",
-                                    info="Limit to specific genres",
-                                    value=[],
-                                )
-
-                            with gr.Column(scale=1, min_width=160):
-                                rhyme_type_dropdown = gr.Dropdown(
-                                    choices=["perfect", "near", "slant", "eye", "weak"],
-                                    multiselect=True,
-                                    label="Rhyme Type",
-                                    info="Limit to specific rhyme categories",
-                                    value=[],
-                                )
-
-                    search_btn = gr.Button(
-                        "🔍 Find Rhymes",
-                        variant="primary",
-                        size="lg",
-                        elem_classes=["rr-button"],
-                    )
-                    gr.Markdown(
-                        "💡 Enter a word, tune the filters, and click **Find Rhymes** to surface perfect, slant, and multi-word pairings.",
-                        elem_classes=["rr-tip"],
-                    )
-
-            with gr.Column(elem_classes=["rr-section"]):
-                with gr.Group(elem_classes=["rr-panel", "rr-results-panel"]):
-                    gr.Markdown("### Rhyme results")
-                    output = gr.Markdown(
-                        value="Start by entering a word on the left and click **Find Rhymes**.",
-                        elem_classes=["rr-results-markdown"],
-                    )
+                    with gr.Column(elem_classes=["rr-section"]):
+                        with gr.Group(elem_classes=["rr-panel", "rr-results-panel"]):
+                            singles_df = gr.Dataframe(label="Single-word rhymes", wrap=True)
+                            phrases_df = gr.Dataframe(label="Multi-word rhymes (DB)", wrap=True)
+                            why_md = gr.Markdown(label="Why this rhymes")
 
         search_btn.click(
             fn=search_interface,
@@ -236,6 +317,12 @@ def create_interface(
                 rhyme_type_dropdown,
             ],
             outputs=output,
+        )
+
+        run_rev.click(
+            _phrase_query,
+            [phrase_in, slant_ph, allow_prop_ph, db_path_in],
+            [singles_df, phrases_df, why_md],
         )
 
     return interface

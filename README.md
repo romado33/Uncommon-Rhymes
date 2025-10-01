@@ -20,6 +20,15 @@ Even though the Gradio demo displays separate "CMU" and "Anti-LLM" columns, both
 
 The project ships with a Gradio interface (`app.py`) that ties the modules together and exposes an interactive search workflow. When the bundled `patterns.db` file is missing the app automatically creates a demo database populated with sample rhyme patterns so you can explore the workflow immediately.
 
+### Reverse search (NEW)
+- **Phrase → Rhymes**: enter a multi-word input and get both:
+  - **Single-word** rhymes (phonetics-first, tier-gated)
+  - **Multi-word** rhymes retrieved from the bundled `patterns.db`
+- Internals:
+  - K1: final-word rime; K2: cross-word compound rime (penultimate last syllable + final rime)
+  - DB is indexed on `last_word_rime_key` and `last_two_syllables_key` for fast lookups
+- UI: new tab with a **Slant strength** slider and a compact **Why this rhymes** panel
+
 ### Research-driven rhyme metrics
 
 The refreshed release integrates insights from contemporary rap-poetics scholarship and popular rhyme dictionaries:
