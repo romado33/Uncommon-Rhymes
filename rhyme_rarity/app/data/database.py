@@ -7,7 +7,7 @@ import queue
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Generator, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Generator, Iterable, List, Optional, Sequence, Set, Tuple
 
 from rhyme_rarity.utils.observability import get_logger
 
@@ -463,6 +463,93 @@ class SQLiteRhymeRepository:
         )
 
         return related
+
+    def fetch_phrases_for_word(
+        self,
+        end_word: str,
+        *,
+        limit: int = 40,
+        min_tokens: int = 2,
+        max_tokens: int = 5,
+        rhyme_backoffs: Sequence[str] = (),
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Return phrase snippets whose terminal word matches ``end_word``."""
+
+        normalized_end = _normalise_text(end_word)
+        if normalized_end is None:
+            return []
+
+        phrases: List[Tuple[str, Dict[str, Any]]] = []
+        seen: Set[str] = set()
+
+        def _register(value: Optional[str], source: str, context_meta: Optional[Dict[str, Any]] = None) -> None:
+            if not value:
+                return
+            cleaned = " ".join(part for part in value.split() if part).strip()
+            if not cleaned:
+                return
+            normalized = _normalise_text(cleaned)
+            if not normalized or normalized in seen:
+                return
+            tokens = normalized.split()
+            if not tokens or tokens[-1] != normalized_end:
+                return
+            if not (min_tokens <= len(tokens) <= max_tokens):
+                return
+            seen.add(normalized)
+            metadata: Dict[str, Any] = {"source": source}
+            if context_meta:
+                for key, value in context_meta.items():
+                    if key not in metadata:
+                        metadata[key] = value
+            phrases.append((cleaned, metadata))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT source_context, target_context, lyrical_context,
+                           source_word_normalized, target_word_normalized,
+                           confidence_score
+                    FROM song_rhyme_patterns
+                    WHERE target_word_normalized = ? OR source_word_normalized = ?
+                    ORDER BY confidence_score DESC
+                    LIMIT ?
+                    """,
+                    (normalized_end, normalized_end, limit * 2),
+                )
+            except sqlite3.Error:
+                return []
+
+            rows = cursor.fetchall()
+
+        for row in rows:
+            if not row:
+                continue
+            (
+                source_context,
+                target_context,
+                lyrical_context,
+                source_norm,
+                target_norm,
+                confidence,
+            ) = row
+
+            context_meta = {
+                "confidence": float(confidence) if confidence is not None else None,
+                "row_source": "target" if target_norm == normalized_end else "source",
+            }
+
+            _register(target_context, "db_target", context_meta)
+            _register(source_context, "db_source", context_meta)
+
+            if lyrical_context:
+                parts = [part.strip() for part in str(lyrical_context).split("//") if part]
+                for part in parts:
+                    _register(part, "db_lyric", context_meta)
+
+        return phrases[:limit] if limit > 0 else phrases
 
     def fetch_cultural_matches(
         self,
