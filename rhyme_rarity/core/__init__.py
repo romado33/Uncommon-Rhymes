@@ -14,6 +14,7 @@ from .feature_profile import (
     RhymeFeatureProfile,
     extract_phrase_components,
 )
+from .scorer import SlantScore, passes_gate, score_pair
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
 
 __all__ = [
@@ -31,4 +32,7 @@ __all__ = [
     "DefaultCmuRhymeRepository",
     "RARITY_SIMILARITY_WEIGHT",
     "RARITY_NOVELTY_WEIGHT",
+    "SlantScore",
+    "score_pair",
+    "passes_gate",
 ]

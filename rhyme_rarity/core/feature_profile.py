@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .scorer import SlantScore
+
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
 try:  # pragma: no cover - optional dependency
@@ -187,6 +189,8 @@ class PhoneticMatch:
     rarity_score: float = 0.0
     combined_score: float = 0.0
     feature_profile: Optional[RhymeFeatureProfile] = None
+    slant_score: Optional[SlantScore] = None
+    slant_tier: Optional[str] = None
 
 
 __all__ = [
