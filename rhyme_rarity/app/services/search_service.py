@@ -16,7 +16,9 @@ from rhyme_rarity.core import (
     DefaultCmuRhymeRepository,
     EnhancedPhoneticAnalyzer,
     PhraseComponents,
+    SlantScore,
     extract_phrase_components,
+    passes_gate,
 )
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
@@ -34,6 +36,9 @@ from ...utils.telemetry import StructuredTelemetry
 
 
 RELAXED_BUCKET_CONFIDENCE_FLOOR = 0.35
+
+BASE_SLANT_TOTAL_FLOOR = 0.55
+BASE_SLANT_RIME_FLOOR = 0.4
 
 
 
@@ -547,6 +552,7 @@ class RhymeQueryOrchestrator:
         min_rarity: Optional[float] = None,
         min_stress_alignment: Optional[float] = None,
         cadence_focus: Optional[str] = None,
+        slant_strength: float = 1.0,
     ) -> Dict[str, List[Dict]]:
         """Search for rhymes while applying optional concurrency backpressure."""
         telemetry = getattr(self, "telemetry", None)
@@ -554,6 +560,7 @@ class RhymeQueryOrchestrator:
             "source_word": source_word,
             "limit": limit,
             "min_confidence": min_confidence,
+            "slant_strength": slant_strength,
         }
         if result_sources:
             request_context["result_sources"] = list(result_sources)
@@ -571,6 +578,7 @@ class RhymeQueryOrchestrator:
             telemetry.annotate("input.result_sources", result_sources)
             telemetry.annotate("input.cultural_significance", cultural_significance)
             telemetry.annotate("input.genres", genres)
+            telemetry.annotate("input.slant_strength", slant_strength)
 
         self._metric_request_total.inc()
         self._logger.info("Search request received", context=request_context)
@@ -595,6 +603,7 @@ class RhymeQueryOrchestrator:
                             min_rarity=min_rarity,
                             min_stress_alignment=min_stress_alignment,
                             cadence_focus=cadence_focus,
+                            slant_strength=slant_strength,
                         )
             except Exception as exc:
                 failure_context = dict(request_context)
@@ -1283,6 +1292,9 @@ class RhymeQueryOrchestrator:
         module1_seeds: Optional[List[Dict[str, Any]]],
         seed_signatures: Optional[Set[str]],
         delivered_words: Optional[Set[str]],
+        allowed_end_words: Optional[Set[str]] = None,
+        enforce_gate: bool = False,
+        strength: float = 1.0,
     ) -> List[Dict[str, Any]]:
         """Generate anti-LLM patterns with consistent dictionaries."""
 
@@ -1303,6 +1315,8 @@ class RhymeQueryOrchestrator:
         fallback_floor = max(float(min_confidence), threshold - 0.05)
         if not delivered_words:
             fallback_floor = float(min_confidence)
+
+        allowed_norm = {word for word in (allowed_end_words or set()) if word}
 
         try:
             raw_patterns = anti_llm_engine.generate_anti_llm_patterns(
@@ -1353,6 +1367,18 @@ class RhymeQueryOrchestrator:
                 confidence_val = float(confidence_val) if confidence_val is not None else 0.0
             except (TypeError, ValueError):
                 confidence_val = 0.0
+
+            terminal_word = self._normalize_terminal(target_word)
+            if allowed_norm:
+                if terminal_word not in allowed_norm:
+                    if enforce_gate and strength > 0:
+                        if telemetry:
+                            telemetry.increment('search.anti_llm.slant_gate_block')
+                        continue
+            elif enforce_gate and strength > 0:
+                if telemetry:
+                    telemetry.increment('search.anti_llm.slant_gate_block')
+                continue
 
             gate_mode = 'strict'
             if confidence_val < threshold:
@@ -1784,6 +1810,178 @@ class RhymeQueryOrchestrator:
             merged.append(entry)
         return merged
 
+    def _normalize_word(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = " ".join(str(value).split()).strip().lower()
+        return text or None
+
+    def _normalize_terminal(self, value: Any) -> Optional[str]:
+        word = self._normalize_word(value)
+        if not word:
+            return None
+        return word.split()[-1]
+
+    def _extract_target_word(self, entry: Dict[str, Any]) -> str:
+        for key in ("target_word", "target", "word"):
+            candidate = entry.get(key)
+            if candidate is None:
+                continue
+            cleaned = " ".join(str(candidate).split()).strip()
+            if cleaned:
+                return cleaned
+        return ""
+
+    def _reconstruct_slant_score(self, entry: Dict[str, Any]) -> Optional[SlantScore]:
+        score_payload = entry.get("slant_score")
+        if isinstance(score_payload, SlantScore):
+            return score_payload
+        if not isinstance(score_payload, dict):
+            return None
+
+        def _as_float(key: str, default: float = 0.0) -> float:
+            value = score_payload.get(key)
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _as_tuple(key: str) -> Tuple[str, ...]:
+            value = score_payload.get(key)
+            if isinstance(value, (list, tuple, set)):
+                return tuple(str(item) for item in value if item is not None)
+            return ()
+
+        tier_value = (
+            score_payload.get("tier")
+            or entry.get("slant_tier")
+            or entry.get("rhyme_type")
+            or "weak"
+        )
+        tier_text = str(tier_value).strip().lower() or "weak"
+
+        return SlantScore(
+            total=_as_float("total"),
+            rime=_as_float("rime"),
+            vowel=_as_float("vowel"),
+            coda=_as_float("coda"),
+            stress_penalty=_as_float("stress_penalty"),
+            syllable_penalty=_as_float("syllable_penalty"),
+            tier=tier_text,
+            source_rime=_as_tuple("source_rime"),
+            target_rime=_as_tuple("target_rime"),
+            tie_breaker=_as_float("tie_breaker"),
+            used_spelling_backoff=bool(
+                score_payload.get("used_spelling")
+                or score_payload.get("used_spelling_backoff")
+            ),
+        )
+
+    def _passes_slant_strength(self, entry: Dict[str, Any], strength: float) -> bool:
+        try:
+            strength_value = float(strength)
+        except (TypeError, ValueError):
+            strength_value = 1.0
+
+        if strength_value <= 0:
+            return True
+
+        rhyme_type = self._entry_rhyme_type(entry)
+        if rhyme_type == "perfect":
+            return True
+
+        score = self._reconstruct_slant_score(entry)
+        if score is None:
+            return True
+
+        if strength_value >= 0.999:
+            return passes_gate(score)
+
+        if passes_gate(score):
+            return True
+
+        total_floor = min(1.0, max(0.0, BASE_SLANT_TOTAL_FLOOR * strength_value))
+        rime_floor = min(1.0, max(0.0, BASE_SLANT_RIME_FLOOR * strength_value))
+
+        if score.tier == "weak" and strength_value > 0:
+            return False
+
+        return score.total >= total_floor and score.rime >= rime_floor
+
+    def _apply_slant_strength_gate(
+        self,
+        entries: List[Dict[str, Any]],
+        strength: float,
+    ) -> Tuple[List[Dict[str, Any]], Set[str], bool]:
+        filtered: List[Dict[str, Any]] = []
+        allowed_words: Set[str] = set()
+        saw_single = False
+
+        for entry in entries:
+            if self._is_multi_word_entry(entry):
+                filtered.append(entry)
+                continue
+
+            saw_single = True
+            if self._passes_slant_strength(entry, strength):
+                filtered.append(entry)
+                normalized = self._normalize_word(self._extract_target_word(entry))
+                if normalized:
+                    allowed_words.add(normalized)
+
+        return filtered, allowed_words, saw_single
+
+    def _filter_module1_seeds(
+        self,
+        seeds: List[Dict[str, Any]],
+        allowed_words: Set[str],
+        *,
+        enforce_gate: bool,
+        strength: float,
+    ) -> List[Dict[str, Any]]:
+        if not seeds:
+            return []
+        if not allowed_words:
+            if not enforce_gate or strength <= 0:
+                return list(seeds)
+            return []
+
+        filtered: List[Dict[str, Any]] = []
+        for seed in seeds:
+            candidate = seed.get("word") or seed.get("target")
+            normalized = self._normalize_word(candidate)
+            if normalized and normalized in allowed_words:
+                filtered.append(seed)
+        return filtered
+
+    def _filter_multi_candidates_by_end_words(
+        self,
+        entries: List[Dict[str, Any]],
+        allowed_words: Set[str],
+        *,
+        enforce_gate: bool,
+        strength: float,
+    ) -> List[Dict[str, Any]]:
+        if not enforce_gate or strength <= 0:
+            return entries
+
+        if not allowed_words:
+            return []
+
+        filtered: List[Dict[str, Any]] = []
+        for entry in entries:
+            parent = entry.get("parent_candidate")
+            normalized_parent = self._normalize_word(parent)
+            if not normalized_parent:
+                normalized_parent = self._normalize_terminal(
+                    self._extract_target_word(entry)
+                )
+            if normalized_parent and normalized_parent in allowed_words:
+                filtered.append(entry)
+        return filtered
+
     def _source_profile_shape(
         self, profile: Dict[str, Any]
     ) -> Tuple[Optional[int], bool]:
@@ -1833,9 +2031,31 @@ class RhymeQueryOrchestrator:
         raw_anti_llm: Optional[List[Dict[str, Any]]] = None,
         base_min_confidence: Optional[float] = None,
         filter_parameters: Optional[Dict[str, Any]] = None,
+        allowed_end_words: Optional[Set[str]] = None,
+        enforce_slant_gate: bool = False,
+        slant_strength: float = 1.0,
     ) -> Dict[str, Any]:
         filters = filters or {}
         telemetry = getattr(self, 'telemetry', None)
+
+        normalized_allowed_end_words: Set[str] = {
+            word
+            for word in (allowed_end_words or set())
+            if isinstance(word, str) and word
+        }
+
+        if enforce_slant_gate and slant_strength > 0:
+            filters.setdefault('slant_gate_enforced', True)
+        elif 'slant_gate_enforced' not in filters:
+            filters['slant_gate_enforced'] = False
+
+        if normalized_allowed_end_words:
+            filters.setdefault(
+                'slant_allowed_end_words',
+                sorted(normalized_allowed_end_words),
+            )
+        elif enforce_slant_gate and slant_strength > 0:
+            filters.setdefault('slant_allowed_end_words', [])
 
         bucket_confidence_floors = dict(filters.get('bucket_confidence_floors') or {})
         if not bucket_confidence_floors:
@@ -1884,6 +2104,12 @@ class RhymeQueryOrchestrator:
             for entry in uncommon_candidates
             if self._is_multi_word_entry(entry)
         ]
+        multi_candidates = self._filter_multi_candidates_by_end_words(
+            multi_candidates,
+            normalized_allowed_end_words,
+            enforce_gate=enforce_slant_gate,
+            strength=slant_strength,
+        )
         if multi_candidates:
             multi_results, seen_keys = self._dedupe_and_truncate(
                 multi_candidates,
@@ -2002,6 +2228,12 @@ class RhymeQueryOrchestrator:
                 relaxed_multi_candidates = [
                     entry for entry in relaxed_uncommon if self._is_multi_word_entry(entry)
                 ]
+                relaxed_multi_candidates = self._filter_multi_candidates_by_end_words(
+                    relaxed_multi_candidates,
+                    normalized_allowed_end_words,
+                    enforce_gate=enforce_slant_gate,
+                    strength=slant_strength,
+                )
                 if relaxed_multi_candidates:
                     multi_results, relaxed_seen = self._dedupe_and_truncate(
                         relaxed_multi_candidates,
@@ -2018,6 +2250,7 @@ class RhymeQueryOrchestrator:
                     for entry in relaxed_uncommon
                     if not self._is_multi_word_entry(entry)
                     and self._entry_rhyme_type(entry) != 'perfect'
+                    and self._passes_slant_strength(entry, slant_strength)
                 ]
                 if relaxed_slant_candidates:
                     slant_results, relaxed_seen = self._dedupe_and_truncate(
@@ -2063,6 +2296,24 @@ class RhymeQueryOrchestrator:
                 )
         else:
             filters.setdefault('bucket_confidence_floors', bucket_confidence_floors)
+
+        final_allowed_words: Set[str] = set()
+        for entry in perfect_results + slant_results:
+            normalized_word = self._normalize_word(
+                self._extract_target_word(entry)
+            )
+            if normalized_word:
+                final_allowed_words.add(normalized_word)
+
+        if final_allowed_words or (enforce_slant_gate and slant_strength > 0):
+            filters['slant_allowed_end_words'] = sorted(final_allowed_words)
+
+        multi_results = self._filter_multi_candidates_by_end_words(
+            multi_results,
+            final_allowed_words,
+            enforce_gate=enforce_slant_gate,
+            strength=slant_strength,
+        )
 
         if telemetry:
             component_summary: Dict[str, List[Dict[str, Any]]] = {}
@@ -2128,6 +2379,7 @@ class RhymeQueryOrchestrator:
         min_rarity: Optional[float] = None,
         min_stress_alignment: Optional[float] = None,
         cadence_focus: Optional[str] = None,
+        slant_strength: float = 1.0,
     ) -> Dict[str, List[Dict]]:
         """Search for rhymes without external coordination plumbing."""
 
@@ -2175,6 +2427,12 @@ class RhymeQueryOrchestrator:
         except (TypeError, ValueError):
             min_stress_threshold = None
 
+        try:
+            slant_strength_value = float(slant_strength)
+        except (TypeError, ValueError):
+            slant_strength_value = 1.0
+        slant_strength_value = max(0.0, min(1.0, slant_strength_value))
+
         selected_sources = self._normalise_filters(result_sources, None, None, None)[0]
         if not selected_sources:
             selected_sources = {'phonetic', 'cultural', 'anti-llm'}
@@ -2205,12 +2463,15 @@ class RhymeQueryOrchestrator:
         module1_seeds: List[Dict[str, Any]] = []
         seed_signatures: Set[str] = set(context.get('signature_set') or [])
         delivered_words: Set[str] = set()
+        allowed_end_words: Set[str] = set()
+        saw_single_candidates = False
 
         filter_summary: Dict[str, Any] = {
             'requested_min_confidence': min_confidence,
             'min_confidence': min_confidence,
             'min_rarity': min_rarity_threshold,
             'min_stress_alignment': min_stress_threshold,
+            'slant_strength': slant_strength_value,
             'cadence_focus': cadence_focus_label or None,
             'allowed_rhyme_types': sorted(rhyme_filters),
             'bradley_devices': sorted(bradley_filters),
@@ -2251,6 +2512,31 @@ class RhymeQueryOrchestrator:
                     min_confidence=min_confidence,
                 )
                 seed_signatures.update(new_signatures)
+                raw_phonetic_snapshot = list(phonetic_matches)
+                (
+                    phonetic_matches,
+                    allowed_end_words,
+                    saw_single_candidates,
+                ) = self._apply_slant_strength_gate(
+                    phonetic_matches,
+                    slant_strength_value,
+                )
+                module1_seeds = self._filter_module1_seeds(
+                    module1_seeds,
+                    allowed_end_words,
+                    enforce_gate=saw_single_candidates,
+                    strength=slant_strength_value,
+                )
+                delivered_words = {
+                    normalized
+                    for normalized in (
+                        self._normalize_word(self._extract_target_word(entry))
+                        for entry in phonetic_matches
+                        if isinstance(entry, dict)
+                    )
+                    if normalized
+                }
+                raw_phonetic_matches = raw_phonetic_snapshot
                 if payload is not None:
                     payload['result_count'] = len(phonetic_matches)
         else:
@@ -2294,13 +2580,17 @@ class RhymeQueryOrchestrator:
                     module1_seeds=module1_seeds,
                     seed_signatures=seed_signatures,
                     delivered_words=delivered_words,
+                    allowed_end_words=allowed_end_words,
+                    enforce_gate=saw_single_candidates,
+                    strength=slant_strength_value,
                 )
                 if payload is not None:
                     payload['result_count'] = len(anti_llm_matches)
         elif telemetry:
             telemetry.increment('search.branch.anti_llm.skipped')
 
-        raw_phonetic_matches = list(phonetic_matches)
+        if not raw_phonetic_matches:
+            raw_phonetic_matches = list(phonetic_matches)
 
         phonetic_filtered = self._apply_filters(
             phonetic_matches,
@@ -2389,6 +2679,9 @@ class RhymeQueryOrchestrator:
                 'max_syllables': max_syllable_threshold,
                 'max_line_distance': max_line_distance,
             },
+            allowed_end_words=allowed_end_words,
+            enforce_slant_gate=saw_single_candidates,
+            slant_strength=slant_strength_value,
         )
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
@@ -2482,6 +2775,51 @@ class RhymeResultFormatter:
 
             return details
 
+        def _slant_summary(entry: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+            tier_value = entry.get("slant_tier") or entry.get("rhyme_type")
+            tier_text: Optional[str] = None
+            if tier_value:
+                tier_raw = str(tier_value).strip()
+                if tier_raw:
+                    tier_text = f"Tier: {tier_raw.replace('_', ' ').title()}"
+
+            rationale_parts: List[str] = []
+            score = entry.get("slant_score")
+            if isinstance(score, dict):
+                for key, label in (("rime", "Rime"), ("vowel", "Vowel"), ("coda", "Coda")):
+                    value = score.get(key)
+                    try:
+                        rationale_parts.append(f"{label} {float(value):.2f}")
+                    except (TypeError, ValueError):
+                        continue
+                stress_alignment = entry.get("stress_alignment")
+                if stress_alignment is None:
+                    stress_alignment = score.get("stress_alignment")
+                if stress_alignment is not None:
+                    try:
+                        rationale_parts.append(f"Stress {float(stress_alignment):.2f}")
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    stress_penalty = score.get("stress_penalty")
+                    if stress_penalty is not None:
+                        try:
+                            rationale_parts.append(
+                                f"Stress penalty {float(stress_penalty):.2f}"
+                            )
+                        except (TypeError, ValueError):
+                            pass
+            else:
+                stress_alignment = entry.get("stress_alignment")
+                if stress_alignment is not None:
+                    try:
+                        rationale_parts.append(f"Stress {float(stress_alignment):.2f}")
+                    except (TypeError, ValueError):
+                        pass
+
+            rationale_text = " • ".join(rationale_parts) if rationale_parts else None
+            return tier_text, rationale_text
+
         source_profile = rhymes.get("source_profile") or {}
         phonetics = source_profile.get("phonetics") or {}
         source_meta = _format_phonetics(phonetics)
@@ -2512,6 +2850,31 @@ class RhymeResultFormatter:
                 parts.append(f"{label}: ≥ {floor:.2f}")
             if parts:
                 diagnostics.append("Confidence floors: " + ", ".join(parts))
+
+        slant_strength_val = filters.get("slant_strength")
+        if slant_strength_val is not None:
+            try:
+                diagnostics.append(
+                    f"Slant strength: {float(slant_strength_val):.2f}"
+                )
+            except (TypeError, ValueError):
+                pass
+
+        if filters.get("slant_gate_enforced"):
+            allowed_terms = filters.get("slant_allowed_end_words")
+            if isinstance(allowed_terms, (list, tuple, set)) and allowed_terms:
+                preview_terms = [
+                    str(term).strip().upper()
+                    for term in allowed_terms
+                    if term and str(term).strip()
+                ]
+                if preview_terms:
+                    preview = ", ".join(preview_terms[:6])
+                    if len(preview_terms) > 6:
+                        preview += ", …"
+                    diagnostics.append(f"Slant gate terms: {preview}")
+            else:
+                diagnostics.append("Slant gate terms: none (multi-word rhymes restricted)")
 
         relaxed_buckets = filters.get("relaxed_buckets")
         if isinstance(relaxed_buckets, (list, tuple, set)) and relaxed_buckets:
@@ -2614,6 +2977,16 @@ class RhymeResultFormatter:
                             f"<span class='rr-rhyme-details-inline'> • {escape(detail_text)}</span>"
                         )
                     card.append("</div>")
+
+                    tier_text, rationale_text = _slant_summary(entry)
+                    if tier_text:
+                        card.append(
+                            f"<div class='rr-rhyme-tier'>{escape(tier_text)}</div>"
+                        )
+                    if rationale_text:
+                        card.append(
+                            f"<div class='rr-rhyme-rationale'>{escape(rationale_text)}</div>"
+                        )
 
                     if key == "rap_db":
                         context_value = entry.get("lyrical_context")
@@ -2756,6 +3129,7 @@ class SearchService:
         min_rarity: Optional[float] = None,
         min_stress_alignment: Optional[float] = None,
         cadence_focus: Optional[str] = None,
+        slant_strength: float = 1.0,
     ) -> Dict[str, List[Dict]]:
         return self.orchestrator.search_rhymes(
             source_word,
@@ -2773,6 +3147,7 @@ class SearchService:
             min_rarity=min_rarity,
             min_stress_alignment=min_stress_alignment,
             cadence_focus=cadence_focus,
+            slant_strength=slant_strength,
         )
 
     def format_rhyme_results(self, source_word: str, rhymes: Dict[str, Any]) -> str:
