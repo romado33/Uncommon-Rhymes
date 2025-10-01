@@ -33,7 +33,7 @@ from ...utils.observability import (
 from ...utils.telemetry import StructuredTelemetry
 
 
-RELAXED_BUCKET_CONFIDENCE_FLOOR = 0.55
+RELAXED_BUCKET_CONFIDENCE_FLOOR = 0.35
 
 
 

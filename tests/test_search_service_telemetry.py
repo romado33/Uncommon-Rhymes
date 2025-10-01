@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 import pytest
 
 from rhyme_rarity.utils.telemetry import StructuredTelemetry
+from rhyme_rarity.app.services import search_service as search_service_module
 from rhyme_rarity.app.services.search_service import RhymeResultFormatter, SearchService
 
 
@@ -320,8 +321,9 @@ def test_repopulation_metadata_is_recorded() -> None:
     bucket_meta = metrics["metadata"].get("result.bucket_confidence_floors")
     assert bucket_meta is not None
     assert bucket_meta["perfect"] == pytest.approx(0.85)
-    assert bucket_meta["slant"] == pytest.approx(0.55)
-    assert bucket_meta["multi_word"] == pytest.approx(0.55)
+    relaxed_floor = search_service_module.RELAXED_BUCKET_CONFIDENCE_FLOOR
+    assert bucket_meta["slant"] == pytest.approx(relaxed_floor)
+    assert bucket_meta["multi_word"] == pytest.approx(relaxed_floor)
 
     repop_meta = metrics["metadata"].get("result.bucket_repopulation")
     assert repop_meta is not None
