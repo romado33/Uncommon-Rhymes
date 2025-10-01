@@ -378,3 +378,20 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
     assert "Cadence focus: Smooth Flow" in output
     assert "Min stress alignment: 0.72" in output
     assert "Phonetic threshold: 0.86" in output
+    assert "Stress Pattern: 1-0 (Trochee)" in output
+
+
+@pytest.mark.parametrize(
+    "pattern,label",
+    [
+        ("1-0", "Trochee"),
+        ("0-1", "Iamb"),
+        ("1-0-0", "Dactyl"),
+        ("0-0-1", "Anapest"),
+        ("1-1", "Spondee"),
+        ("2-0", "Trochee"),
+    ],
+)
+def test_formatter_labels_common_feet(pattern: str, label: str) -> None:
+    formatter = RhymeResultFormatter()
+    assert formatter._stress_pattern_label(pattern) == label

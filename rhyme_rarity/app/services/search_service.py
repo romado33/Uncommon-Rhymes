@@ -2393,6 +2393,32 @@ class RhymeQueryOrchestrator:
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
 
+    @staticmethod
+    def _stress_pattern_label(pattern: str) -> Optional[str]:
+        """Return a metrical foot label for a normalized stress pattern."""
+
+        if not pattern:
+            return None
+
+        normalized = re.sub(r"[^0-2]", "", pattern)
+        if not normalized:
+            return None
+
+        normalized = normalized.replace("2", "1")
+        foot_map = [
+            ("100", "Dactyl"),
+            ("001", "Anapest"),
+            ("10", "Trochee"),
+            ("01", "Iamb"),
+            ("11", "Spondee"),
+        ]
+
+        for prefix, label in foot_map:
+            if normalized.startswith(prefix):
+                return label
+
+        return None
+
     def format_rhyme_results(self, source_word: str, rhymes: Dict[str, Any]) -> str:
         """Render grouped rhyme results with shared phonetic context."""
 
@@ -2449,6 +2475,9 @@ class RhymeResultFormatter:
             if stress_pattern:
                 stress_text = str(stress_pattern).strip()
                 if stress_text and stress_text not in {"?", "??"}:
+                    label = self._stress_pattern_label(stress_text)
+                    if label:
+                        stress_text = f"{stress_text} ({label})"
                     details.append(f"Stress Pattern: {stress_text}")
 
             return details
