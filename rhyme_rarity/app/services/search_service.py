@@ -33,6 +33,9 @@ from ...utils.observability import (
 from ...utils.telemetry import StructuredTelemetry
 
 
+RELAXED_BUCKET_CONFIDENCE_FLOOR = 0.55
+
+
 
 class RhymeQueryOrchestrator:
     """Coordinates rhyme searches across analyzers and repositories."""
@@ -1800,7 +1803,23 @@ class RhymeQueryOrchestrator:
         anti_llm: List[Dict[str, Any]],
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 20,
+        raw_phonetic: Optional[List[Dict[str, Any]]] = None,
+        raw_anti_llm: Optional[List[Dict[str, Any]]] = None,
+        base_min_confidence: Optional[float] = None,
+        filter_parameters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        filters = filters or {}
+        telemetry = getattr(self, 'telemetry', None)
+
+        bucket_confidence_floors = dict(filters.get('bucket_confidence_floors') or {})
+        if not bucket_confidence_floors:
+            requested_floor = base_min_confidence if base_min_confidence is not None else 0.0
+            bucket_confidence_floors = {
+                'perfect': requested_floor,
+                'slant': requested_floor,
+                'multi_word': requested_floor,
+            }
+
         profile = context.get('profile', {})
         if isinstance(profile, dict):
             profile.setdefault('signatures', sorted(context.get('signature_set', [])))
@@ -1886,6 +1905,104 @@ class RhymeQueryOrchestrator:
 
         perfect_results, slant_results = _split_single_results(single_results)
 
+        repopulated: Set[str] = set()
+        relaxed_floor_value: Optional[float] = None
+
+        def _relaxed_filter_sources() -> Tuple[
+            List[Dict[str, Any]],
+            List[Dict[str, Any]],
+            float,
+        ]:
+            params = filter_parameters or {}
+            allowed_rhyme_types = set(params.get('allowed_rhyme_types') or set())
+            bradley_devices = set(params.get('bradley_devices') or set())
+            cadence_focus = params.get('cadence_focus')
+            min_rarity = params.get('min_rarity')
+            min_stress = params.get('min_stress_alignment')
+            require_internal = bool(params.get('require_internal'))
+            min_syllables = params.get('min_syllables')
+            max_syllables = params.get('max_syllables')
+            max_line_distance = params.get('max_line_distance')
+
+            relaxed_floor = RELAXED_BUCKET_CONFIDENCE_FLOOR
+            if base_min_confidence is not None:
+                relaxed_floor = min(base_min_confidence, relaxed_floor)
+
+            phonetic_relaxed = self._apply_filters(
+                raw_phonetic or [],
+                limit=limit,
+                min_confidence=relaxed_floor,
+                min_rarity=min_rarity,
+                min_stress_alignment=min_stress,
+                cadence_focus=cadence_focus,
+                allowed_rhyme_types=allowed_rhyme_types,
+                bradley_devices=bradley_devices,
+                require_internal=require_internal,
+                min_syllables=min_syllables,
+                max_syllables=max_syllables,
+                max_line_distance=max_line_distance,
+                cultural_filters=set(),
+                genre_filters=set(),
+                scope='phonetic.relaxed',
+            )
+            anti_relaxed = self._apply_filters(
+                raw_anti_llm or [],
+                limit=limit,
+                min_confidence=relaxed_floor,
+                min_rarity=min_rarity,
+                min_stress_alignment=min_stress,
+                cadence_focus=cadence_focus,
+                allowed_rhyme_types=allowed_rhyme_types,
+                bradley_devices=bradley_devices,
+                require_internal=require_internal,
+                min_syllables=min_syllables,
+                max_syllables=max_syllables,
+                max_line_distance=max_line_distance,
+                cultural_filters=set(),
+                genre_filters=set(),
+                scope='anti_llm.relaxed',
+            )
+            return phonetic_relaxed, anti_relaxed, relaxed_floor
+
+        if (not slant_results or not multi_results) and (
+            (raw_phonetic or raw_anti_llm)
+        ):
+            phonetic_relaxed, anti_relaxed, relaxed_floor = _relaxed_filter_sources()
+            relaxed_floor_value = relaxed_floor
+            relaxed_uncommon = self._merge_uncommon_sources(phonetic_relaxed, anti_relaxed)
+            relaxed_seen = set(seen_keys)
+
+            if not multi_results:
+                relaxed_multi_candidates = [
+                    entry for entry in relaxed_uncommon if self._is_multi_word_entry(entry)
+                ]
+                if relaxed_multi_candidates:
+                    multi_results, relaxed_seen = self._dedupe_and_truncate(
+                        relaxed_multi_candidates,
+                        multi_cap,
+                        seen=relaxed_seen,
+                    )
+                    if multi_results:
+                        bucket_confidence_floors['multi_word'] = relaxed_floor
+                        repopulated.add('multi_word')
+
+            if not slant_results:
+                relaxed_slant_candidates = [
+                    entry
+                    for entry in relaxed_uncommon
+                    if not self._is_multi_word_entry(entry)
+                    and self._entry_rhyme_type(entry) != 'perfect'
+                ]
+                if relaxed_slant_candidates:
+                    slant_results, relaxed_seen = self._dedupe_and_truncate(
+                        relaxed_slant_candidates,
+                        uncommon_cap,
+                        seen=relaxed_seen,
+                    )
+                    if slant_results:
+                        bucket_confidence_floors['slant'] = relaxed_floor
+                        repopulated.add('slant')
+
         def _attach_stress_metadata(entries: List[Dict[str, Any]]) -> None:
             """Expose stress patterns from nested phonetic metadata."""
 
@@ -1904,6 +2021,22 @@ class RhymeQueryOrchestrator:
 
         for bucket in (perfect_results, slant_results, multi_results):
             _attach_stress_metadata(bucket)
+
+        if repopulated:
+            filters['bucket_confidence_floors'] = bucket_confidence_floors
+            filters['relaxed_buckets'] = sorted(repopulated)
+            filters['relaxed_confidence_floor'] = relaxed_floor_value
+            if telemetry:
+                telemetry.annotate('result.bucket_confidence_floors', bucket_confidence_floors)
+                telemetry.annotate(
+                    'result.bucket_repopulation',
+                    {
+                        'buckets': sorted(repopulated),
+                        'confidence_floor': bucket_confidence_floors,
+                    },
+                )
+        else:
+            filters.setdefault('bucket_confidence_floors', bucket_confidence_floors)
 
         return {
             'source_profile': profile,
@@ -2010,6 +2143,7 @@ class RhymeQueryOrchestrator:
         delivered_words: Set[str] = set()
 
         filter_summary: Dict[str, Any] = {
+            'requested_min_confidence': min_confidence,
             'min_confidence': min_confidence,
             'min_rarity': min_rarity_threshold,
             'min_stress_alignment': min_stress_threshold,
@@ -2023,6 +2157,15 @@ class RhymeQueryOrchestrator:
             'max_syllables': max_syllable_threshold,
             'max_line_distance': max_line_distance,
         }
+
+        filter_summary['bucket_confidence_floors'] = {
+            'perfect': min_confidence,
+            'slant': min_confidence,
+            'multi_word': min_confidence,
+        }
+
+        raw_phonetic_matches: List[Dict[str, Any]] = []
+        raw_anti_llm_matches: List[Dict[str, Any]] = []
 
         if include_phonetic:
             timer = telemetry.timer('search.branch.phonetic') if telemetry else nullcontext()
@@ -2093,6 +2236,8 @@ class RhymeQueryOrchestrator:
         elif telemetry:
             telemetry.increment('search.branch.anti_llm.skipped')
 
+        raw_phonetic_matches = list(phonetic_matches)
+
         phonetic_filtered = self._apply_filters(
             phonetic_matches,
             limit=limit,
@@ -2129,6 +2274,8 @@ class RhymeQueryOrchestrator:
             scope='cultural',
         )
 
+        raw_anti_llm_matches = list(anti_llm_matches)
+
         anti_llm_filtered = self._apply_filters(
             anti_llm_matches,
             limit=limit,
@@ -2164,6 +2311,20 @@ class RhymeQueryOrchestrator:
             anti_llm=anti_llm_filtered,
             filters=filter_summary,
             limit=limit,
+            raw_phonetic=raw_phonetic_matches,
+            raw_anti_llm=raw_anti_llm_matches,
+            base_min_confidence=min_confidence,
+            filter_parameters={
+                'min_rarity': min_rarity_threshold,
+                'min_stress_alignment': min_stress_threshold,
+                'cadence_focus': cadence_focus_label,
+                'allowed_rhyme_types': set(rhyme_filters),
+                'bradley_devices': set(bradley_filters),
+                'require_internal': require_internal,
+                'min_syllables': min_syllable_threshold,
+                'max_syllables': max_syllable_threshold,
+                'max_line_distance': max_line_distance,
+            },
         )
 class RhymeResultFormatter:
     """Format rhyme search results into a rich markdown summary."""
@@ -2233,6 +2394,48 @@ class RhymeResultFormatter:
         source_meta = _format_phonetics(phonetics)
         filters = rhymes.get("filters") or {}
         diagnostics: List[str] = []
+        requested_min_conf = filters.get("requested_min_confidence")
+        if requested_min_conf is None:
+            requested_min_conf = filters.get("min_confidence")
+        if requested_min_conf is not None:
+            try:
+                diagnostics.append(
+                    f"Requested min confidence: {float(requested_min_conf):.2f}"
+                )
+            except (TypeError, ValueError):
+                pass
+
+        bucket_floors = filters.get("bucket_confidence_floors")
+        if isinstance(bucket_floors, dict) and bucket_floors:
+            parts: List[str] = []
+            for bucket in ("perfect", "slant", "multi_word"):
+                if bucket not in bucket_floors:
+                    continue
+                try:
+                    floor = float(bucket_floors[bucket])
+                except (TypeError, ValueError):
+                    continue
+                label = bucket.replace("_", " ")
+                parts.append(f"{label}: ≥ {floor:.2f}")
+            if parts:
+                diagnostics.append("Confidence floors: " + ", ".join(parts))
+
+        relaxed_buckets = filters.get("relaxed_buckets")
+        if isinstance(relaxed_buckets, (list, tuple, set)) and relaxed_buckets:
+            relaxed_floor = filters.get("relaxed_confidence_floor")
+            relaxed_label = ", ".join(
+                sorted(str(bucket).replace("_", " ") for bucket in relaxed_buckets)
+            )
+            if relaxed_floor is not None:
+                try:
+                    diagnostics.append(
+                        f"Relaxed buckets ({relaxed_label}) to ≥ {float(relaxed_floor):.2f}"
+                    )
+                except (TypeError, ValueError):
+                    diagnostics.append(f"Relaxed buckets: {relaxed_label}")
+            else:
+                diagnostics.append(f"Relaxed buckets: {relaxed_label}")
+
         cadence_focus = filters.get("cadence_focus")
         if cadence_focus:
             diagnostics.append(
