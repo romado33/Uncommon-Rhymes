@@ -153,6 +153,7 @@ class EnhancedPhoneticAnalyzer:
         self.cmu_loader = cmu_loader or DEFAULT_CMU_LOADER
         self.rarity_map = rarity_map or DEFAULT_RARITY_MAP
         self.phonetic_weights = self._initialize_phonetic_weights()
+        self.variant_score_weights = self._initialize_variant_score_weights()
 
         self._cache_lock = threading.RLock()
         self._max_cache_entries = 512
@@ -181,6 +182,16 @@ class EnhancedPhoneticAnalyzer:
             'vowel_sounds': 0.2,        # Vowel similarity (feature-driven)
             'consonant_clusters': 0.1,  # Coda and texture alignment
             'syllable_structure': 0.05, # Secondary importance
+        }
+
+    def _initialize_variant_score_weights(self) -> Dict[str, float]:
+        """Default weight blend used when combining variant scores."""
+
+        return {
+            'phonetic': 0.55,
+            'prosody': 0.25,
+            'fluency': 0.15,
+            'rarity': 0.05,
         }
 
     # ------------------------------------------------------------------
@@ -1381,6 +1392,66 @@ def get_cmu_rhymes(
     multi_similarity_factor = 0.93
     multi_rarity_factor = 0.9
     multi_combined_factor = 0.93
+    multi_prosody_factor = 0.9
+    multi_fluency_factor = 0.92
+
+    default_variant_weights = {
+        "phonetic": 0.55,
+        "prosody": 0.25,
+        "fluency": 0.15,
+        "rarity": 0.05,
+    }
+
+    configured_weights = getattr(scoring_analyzer, "variant_score_weights", None)
+    if isinstance(configured_weights, dict):
+        variant_weights = {
+            key: float(configured_weights.get(key, default_variant_weights.get(key, 0.0)))
+            for key in default_variant_weights
+        }
+        for key, value in configured_weights.items():
+            if key not in variant_weights and isinstance(value, (int, float)):
+                variant_weights[key] = float(value)
+    else:
+        variant_weights = dict(default_variant_weights)
+
+    total_variant_weight = sum(weight for weight in variant_weights.values() if weight > 0)
+    if total_variant_weight <= 0:
+        variant_weights = dict(default_variant_weights)
+        total_variant_weight = sum(weight for weight in variant_weights.values() if weight > 0)
+
+    def _stress_signature_from_phones(phones: Iterable[str]) -> str:
+        signature: List[str] = []
+        try:
+            if hasattr(scoring_analyzer, "_stress_signature_from_phones"):
+                return str(scoring_analyzer._stress_signature_from_phones(list(phones)))
+        except Exception:
+            signature = []
+        if not signature:
+            for phone in phones:
+                match = re.search(r"(\d)", str(phone))
+                if match:
+                    signature.append(match.group(1))
+        return "".join(signature)
+
+    def _collect_stress_signatures(info: PhraseComponents) -> List[str]:
+        signatures: List[str] = []
+        for phones in info.anchor_pronunciations or []:
+            try:
+                signature = _stress_signature_from_phones(phones)
+            except Exception:
+                signature = ""
+            if signature:
+                signatures.append(signature)
+        return signatures
+
+    source_stress_signatures = _collect_stress_signatures(components)
+    source_syllable_count = max(int(components.total_syllables or 0), 0)
+
+    source_function_tokens = {
+        token
+        for token in (components.normalized_tokens or [])
+        if token in {"the", "a", "an", "to", "for", "with", "in", "on"}
+    }
 
     def _score_variant(
         suggestion: str,
@@ -1407,19 +1478,33 @@ def get_cmu_rhymes(
 
         raw_similarity = score
 
+        avg_token_rarity: Optional[float] = None
         try:
             if " " in normalized_suggestion:
                 token_scores: List[float] = []
                 for token in normalized_suggestion.split():
+                    candidate_token = token.strip()
+                    if not candidate_token:
+                        continue
                     try:
-                        token_scores.append(float(rarity_source.get_rarity(token)))
+                        token_scores.append(float(rarity_source.get_rarity(candidate_token)))
                     except Exception:
-                        token_scores.append(float(DEFAULT_RARITY_MAP.get_rarity(token)))
-                rarity = sum(token_scores) / len(token_scores) if token_scores else 0.0
+                        token_scores.append(float(DEFAULT_RARITY_MAP.get_rarity(candidate_token)))
+                if token_scores:
+                    rarity = sum(token_scores) / len(token_scores)
+                    avg_token_rarity = rarity
+                else:
+                    rarity = 0.0
             else:
                 rarity = float(rarity_source.get_rarity(base_candidate))
+                avg_token_rarity = rarity
         except Exception:
             rarity = DEFAULT_RARITY_MAP.get_rarity(base_candidate)
+            if avg_token_rarity is None:
+                avg_token_rarity = rarity
+
+        if avg_token_rarity is None:
+            avg_token_rarity = rarity
 
         if callable(combine_fn):
             try:
@@ -1440,10 +1525,90 @@ def get_cmu_rhymes(
         raw_rarity = rarity
         raw_combined = combined
 
+        candidate_stress_signatures = _collect_stress_signatures(candidate_info)
+        stress_alignment = 0.0
+        matched_source_signature = source_stress_signatures[0] if source_stress_signatures else ""
+        matched_candidate_signature = candidate_stress_signatures[0] if candidate_stress_signatures else ""
+
+        if source_stress_signatures and candidate_stress_signatures:
+            best_alignment = -1.0
+            for src_sig in source_stress_signatures:
+                for cand_sig in candidate_stress_signatures:
+                    if not cand_sig and not src_sig:
+                        continue
+                    try:
+                        alignment = difflib.SequenceMatcher(None, src_sig, cand_sig).ratio()
+                    except Exception:
+                        alignment = 0.0
+                    if alignment > best_alignment:
+                        best_alignment = alignment
+                        matched_source_signature = src_sig
+                        matched_candidate_signature = cand_sig
+            if best_alignment >= 0.0:
+                stress_alignment = max(0.0, min(1.0, best_alignment))
+        elif candidate_stress_signatures:
+            matched_candidate_signature = candidate_stress_signatures[0]
+        elif source_stress_signatures:
+            matched_source_signature = source_stress_signatures[0]
+
+        candidate_syllables = max(int(candidate_info.total_syllables or 0), 0)
+        if source_syllable_count and candidate_syllables:
+            syllable_diff = abs(source_syllable_count - candidate_syllables)
+            syllable_alignment = 1.0 - (syllable_diff / max(source_syllable_count, candidate_syllables, 1))
+            syllable_alignment = max(0.0, min(1.0, syllable_alignment))
+        elif source_syllable_count == candidate_syllables:
+            syllable_alignment = 1.0
+        else:
+            syllable_alignment = 0.0
+
+        prosody_components: List[float] = []
+        if syllable_alignment or syllable_alignment == 0.0:
+            prosody_components.append(float(syllable_alignment))
+        if stress_alignment or stress_alignment == 0.0:
+            prosody_components.append(float(stress_alignment))
+        prosody_score = sum(prosody_components) / len(prosody_components) if prosody_components else 0.0
+
+        rarity_for_fluency = max(0.0, min(1.0, float(avg_token_rarity)))
+        fluency_score = 1.0 - rarity_for_fluency
+
+        candidate_tokens = list(candidate_info.normalized_tokens or normalized_suggestion.split())
+        average_frequency: Optional[float] = None
+        get_frequency = getattr(rarity_source, "get_frequency", None)
+        if callable(get_frequency):
+            frequency_samples: List[float] = []
+            for token in candidate_tokens:
+                try:
+                    frequency_samples.append(float(get_frequency(token)))
+                except Exception:
+                    continue
+            if frequency_samples:
+                average_frequency = sum(frequency_samples) / len(frequency_samples)
+
+        fluency_tags: Set[str] = set()
+        if candidate_tokens:
+            fluency_tags.add("multi-phrase" if len(candidate_tokens) > 1 else "single-word")
+        if candidate_tokens and candidate_tokens[0] in {"the", "a", "an", "to", "for", "with", "in", "on"}:
+            fluency_tags.add("function-lead")
+        if rarity_for_fluency < 0.4:
+            fluency_tags.add("common-lexicon")
+        elif rarity_for_fluency > 0.65:
+            fluency_tags.add("novel-lexicon")
+        if candidate_syllables <= source_syllable_count and source_syllable_count:
+            fluency_tags.add("compact")
+        if candidate_syllables - source_syllable_count >= 2:
+            fluency_tags.add("expansive")
+        if source_function_tokens and candidate_tokens and candidate_tokens[0] in source_function_tokens:
+            fluency_tags.add("echoes-source-function")
+
+        prosody_raw = prosody_score
+        fluency_raw = fluency_score
+
         if is_multi and base_metrics:
             base_similarity = base_metrics.get("similarity")
             base_rarity = base_metrics.get("rarity")
             base_combined = base_metrics.get("combined")
+            base_prosody = base_metrics.get("prosody")
+            base_fluency = base_metrics.get("fluency")
 
             if base_similarity is not None:
                 score = max(score, float(base_similarity) * multi_similarity_factor)
@@ -1451,6 +1616,45 @@ def get_cmu_rhymes(
                 rarity = max(rarity, float(base_rarity) * multi_rarity_factor)
             if base_combined is not None:
                 combined = max(combined, float(base_combined) * multi_combined_factor)
+            if base_prosody is not None:
+                prosody_score = max(prosody_score, float(base_prosody) * multi_prosody_factor)
+            if base_fluency is not None:
+                fluency_score = max(fluency_score, float(base_fluency) * multi_fluency_factor)
+
+        component_scores = {
+            "phonetic": float(score),
+            "prosody": float(prosody_score),
+            "fluency": float(fluency_score),
+            "rarity": float(rarity),
+        }
+
+        weighted_total = 0.0
+        applied_weight = 0.0
+        for key, value in component_scores.items():
+            weight = float(variant_weights.get(key, 0.0))
+            if weight <= 0:
+                continue
+            weighted_total += value * weight
+            applied_weight += weight
+
+        blended_score = weighted_total / applied_weight if applied_weight else score
+        combined = blended_score
+
+        prosody_metrics = {
+            "score": float(prosody_score),
+            "syllable_alignment": float(syllable_alignment),
+            "stress_alignment": float(stress_alignment),
+            "source_signature": matched_source_signature,
+            "candidate_signature": matched_candidate_signature,
+        }
+
+        fluency_metrics = {
+            "score": float(fluency_score),
+            "average_rarity": float(avg_token_rarity),
+            "average_frequency": float(average_frequency) if average_frequency is not None else None,
+            "tags": sorted(fluency_tags),
+            "token_count": len(candidate_tokens),
+        }
 
         entry: Dict[str, Any] = {
             "word": suggestion,
@@ -1473,6 +1677,11 @@ def get_cmu_rhymes(
             "prefix_display": prefix_text_display,
             "suffix_display": suffix_text_display,
             "target_tokens": candidate_info.normalized_tokens,
+            "prosody_metrics": prosody_metrics,
+            "fluency_metrics": fluency_metrics,
+            "component_scores": {**component_scores, "blended": float(blended_score)},
+            "component_weights": dict(variant_weights),
+            "legacy_combined": float(raw_combined),
         }
 
         if is_multi and base_metrics:
@@ -1480,18 +1689,25 @@ def get_cmu_rhymes(
             entry.setdefault("raw_multi_similarity", raw_similarity)
             entry.setdefault("raw_multi_combined", raw_combined)
             entry.setdefault("raw_multi_rarity", raw_rarity)
+            entry.setdefault("raw_multi_prosody", prosody_raw)
+            entry.setdefault("raw_multi_fluency", fluency_raw)
 
         if metadata:
             for key, value in metadata.items():
                 if key not in entry:
                     entry[key] = value
 
+        if prosody_metrics.get("stress_alignment") is not None and "stress_alignment" not in entry:
+            entry["stress_alignment"] = prosody_metrics["stress_alignment"]
+
         scored_candidates.append(entry)
 
         return {
             "similarity": score,
             "rarity": rarity,
-            "combined": combined,
+            "combined": blended_score,
+            "prosody": prosody_score,
+            "fluency": fluency_score,
         }
 
     for candidate in candidate_words:

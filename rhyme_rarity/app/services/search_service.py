@@ -857,6 +857,12 @@ class RhymeQueryOrchestrator:
                 similarity = float(candidate.get('similarity', candidate.get('score', 0.0)) or 0.0)
                 rarity = float(candidate.get('rarity', candidate.get('rarity_score', 0.0)) or 0.0)
                 combined = float(candidate.get('combined', candidate.get('combined_score', similarity)) or similarity)
+                component_scores = candidate.get('component_scores') if isinstance(candidate.get('component_scores'), dict) else None
+                if component_scores and component_scores.get('blended') is not None:
+                    try:
+                        combined = float(component_scores.get('blended', combined))
+                    except (TypeError, ValueError):
+                        combined = combined
                 candidate_tokens = list(candidate.get('target_tokens') or [])
                 candidate_syllables = candidate.get('candidate_syllables')
                 is_multi_variant = bool(candidate.get('is_multi_word'))
@@ -903,6 +909,26 @@ class RhymeQueryOrchestrator:
                 'is_multi_word': bool(is_multi_variant or (' ' in target_word.strip())),
                 'result_variant': 'multi_word' if is_multi_variant or (' ' in target_word.strip()) else 'single_word',
             }
+
+            if isinstance(candidate, dict):
+                for key in ('prosody_metrics', 'fluency_metrics', 'component_weights', 'legacy_combined'):
+                    value = candidate.get(key)
+                    if value is not None:
+                        entry[key] = value
+                if component_scores:
+                    entry['component_scores'] = dict(component_scores)
+                    blended = component_scores.get('blended')
+                    if blended is not None:
+                        try:
+                            blended_value = float(blended)
+                        except (TypeError, ValueError):
+                            blended_value = None
+                        if blended_value is not None:
+                            entry['combined_score'] = blended_value
+                            entry['confidence'] = blended_value
+                stress_alignment_candidate = candidate.get('stress_alignment')
+                if stress_alignment_candidate is not None:
+                    entry.setdefault('stress_alignment', stress_alignment_candidate)
 
             if analyzer is not None:
                 entry['target_phonetics'] = self._describe_word(analyzer, target_word)
@@ -2037,6 +2063,44 @@ class RhymeQueryOrchestrator:
                 )
         else:
             filters.setdefault('bucket_confidence_floors', bucket_confidence_floors)
+
+        if telemetry:
+            component_summary: Dict[str, List[Dict[str, Any]]] = {}
+
+            def _collect_component_payload(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                payload: List[Dict[str, Any]] = []
+                for entry in entries[:5]:
+                    scores = entry.get('component_scores')
+                    if not isinstance(scores, dict):
+                        continue
+                    try:
+                        payload.append(
+                            {
+                                'target': entry.get('target_word'),
+                                'scores': {
+                                    'phonetic': float(scores.get('phonetic', 0.0) or 0.0),
+                                    'prosody': float(scores.get('prosody', 0.0) or 0.0),
+                                    'fluency': float(scores.get('fluency', 0.0) or 0.0),
+                                    'rarity': float(scores.get('rarity', 0.0) or 0.0),
+                                    'blended': float(scores.get('blended', entry.get('combined_score', 0.0)) or 0.0),
+                                },
+                            }
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                return payload
+
+            for bucket_name, bucket_entries in (
+                ('perfect', perfect_results),
+                ('slant', slant_results),
+                ('multi_word', multi_results),
+            ):
+                bucket_payload = _collect_component_payload(bucket_entries)
+                if bucket_payload:
+                    component_summary[bucket_name] = bucket_payload
+
+            if component_summary:
+                telemetry.annotate('result.component_scores', component_summary)
 
         return {
             'source_profile': profile,

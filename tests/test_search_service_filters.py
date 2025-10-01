@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Optional
 
+import re
 import types
 
 import pytest
@@ -18,6 +19,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from rhyme_rarity.app.services import search_service as search_service_module
 from rhyme_rarity.app.services.search_service import SearchService
+from rhyme_rarity.core.analyzer import get_cmu_rhymes
+from rhyme_rarity.core.feature_profile import extract_phrase_components as core_extract_phrase_components
 
 
 @dataclass
@@ -257,6 +260,143 @@ def test_relaxed_confidence_refills_scarce_buckets() -> None:
     assert filters["bucket_confidence_floors"]["multi_word"] == pytest.approx(relaxed_floor)
     assert filters.get("relaxed_confidence_floor") == pytest.approx(relaxed_floor)
     assert set(filters.get("relaxed_buckets", [])) == {"slant", "multi_word"}
+
+
+def test_multi_word_results_prioritise_prosody_and_emit_component_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        search_service_module,
+        "extract_phrase_components",
+        core_extract_phrase_components,
+    )
+
+    class ProsodyAwareRarityMap:
+        _rarity = {"glow": 0.35, "shadow": 0.65, "paper": 0.4}
+        _frequency = {"glow": 1200, "shadow": 400, "paper": 800}
+
+        def get_rarity(self, word: str) -> float:
+            return float(self._rarity.get(word.lower(), 0.5))
+
+        def get_frequency(self, word: str) -> float:
+            return float(self._frequency.get(word.lower(), 100))
+
+    class ProsodyAwareLoader:
+        def __init__(self) -> None:
+            self._rhymes = {"trail": ["glow", "shadow"]}
+            self._pronunciations = {
+                "paper": [["P", "EY1", "P", "ER0"]],
+                "trail": [["T", "R", "EY1", "L"]],
+                "glow": [["G", "L", "OW1"]],
+                "shadow": [["SH", "AE1", "D", "OW0"]],
+            }
+
+        def get_rhyming_words(self, anchor: str) -> list[str]:
+            return list(self._rhymes.get((anchor or "").lower(), []))
+
+        def get_pronunciations(self, word: str) -> list[list[str]]:
+            return [list(phones) for phones in self._pronunciations.get(word.lower(), [])]
+
+        def split_pronunciation_into_words(
+            self,
+            phones: list[str],
+            *,
+            max_pairs: Optional[int] = None,
+            prefix_limit: int = 0,
+            suffix_limit: int = 0,
+        ) -> list[tuple[str, str, int]]:
+            return []
+
+    class ProsodyAwareAnalyzer:
+        def __init__(self) -> None:
+            self.cmu_loader = ProsodyAwareLoader()
+            self.rarity_map = ProsodyAwareRarityMap()
+            self.variant_score_weights = {
+                "phonetic": 0.55,
+                "prosody": 0.25,
+                "fluency": 0.15,
+                "rarity": 0.05,
+            }
+            self._similarities = {
+                "glow": 0.9,
+                "paper glow": 0.86,
+                "shadow": 0.92,
+                "paper shadow": 0.88,
+            }
+
+        @staticmethod
+        def _stress_signature_from_phones(phones: Iterable[str]) -> str:
+            signature: list[str] = []
+            for phone in phones:
+                match = re.search(r"(\d)", str(phone))
+                if match:
+                    signature.append(match.group(1))
+            return "".join(signature)
+
+        def get_phonetic_similarity(self, _word1: str, word2: str) -> float:
+            return float(self._similarities.get(word2.strip().lower(), 0.6))
+
+        def get_phrase_components(self, phrase: str, loader: Any | None = None):
+            return core_extract_phrase_components(phrase, loader or self.cmu_loader)
+
+        def combine_similarity_and_rarity(self, similarity: float, rarity: float) -> float:
+            return float(0.65 * similarity + 0.35 * rarity)
+
+    class ProsodyCmuRepository(DummyCmuRepository):
+        def __init__(self, analyzer: ProsodyAwareAnalyzer) -> None:
+            self._analyzer = analyzer
+
+        def lookup(
+            self,
+            source_word: str,
+            limit: int,
+            *,
+            analyzer: Any | None = None,
+            cmu_loader: Any | None = None,
+        ) -> list[Any]:
+            return get_cmu_rhymes(
+                source_word,
+                limit=limit,
+                analyzer=self._analyzer,
+                cmu_loader=self._analyzer.cmu_loader,
+            )
+
+    analyzer = ProsodyAwareAnalyzer()
+    cmu_repo = ProsodyCmuRepository(analyzer)
+    service = SearchService(
+        repository=DummyRepository(),
+        phonetic_analyzer=analyzer,
+        anti_llm_engine=DummyAntiEngine([]),
+        cmu_repository=cmu_repo,
+    )
+
+    results = service.search_rhymes(
+        "Paper trail",
+        limit=6,
+        result_sources=["phonetic"],
+        min_confidence=0.0,
+    )
+
+    multi_bucket = results["multi_word"]
+    assert len(multi_bucket) >= 2
+    assert [entry["target_word"].lower() for entry in multi_bucket[:2]] == [
+        "paper glow",
+        "paper shadow",
+    ]
+
+    lead, follower = multi_bucket[0], multi_bucket[1]
+    assert lead["combined_score"] > follower["combined_score"]
+    assert lead["component_scores"]["prosody"] > follower["component_scores"]["prosody"]
+    assert lead["component_scores"]["fluency"] > follower["component_scores"]["fluency"]
+
+    telemetry_snapshot = service.get_latest_telemetry()
+    component_meta = telemetry_snapshot.get("metadata", {}).get("result.component_scores")
+    assert component_meta is not None
+    assert "multi_word" in component_meta
+    assert component_meta["multi_word"][0]["target"].lower() == "paper glow"
+    assert component_meta["multi_word"][0]["scores"]["prosody"] == pytest.approx(
+        lead["component_scores"]["prosody"]
+    )
 
 
 def test_rarity_and_stress_filters_keep_only_strong_matches() -> None:
