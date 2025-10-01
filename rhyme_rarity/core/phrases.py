@@ -1,16 +1,23 @@
-"""Constrained phrase generation utilities for rhyme-aware search."""
+"""Constrained phrase generation and ranking utilities for rhyme-aware search."""
 
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
+
+from .phrase_corpus import lookup_ngram_phrases
+from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
+from .scorer import SlantScore, passes_gate, score_pair
 
 __all__ = [
     "TEMPLATES",
     "PhraseCandidate",
     "generate_phrases_for_endwords",
+    "retrieve_phrases_by_last_word",
+    "rank_phrases",
 ]
 
 
@@ -31,6 +38,19 @@ class _BeamState:
     tokens: Tuple[str, ...]
     stress: str
     score: float
+
+
+@dataclass(frozen=True)
+class RankedPhrase:
+    """Container describing a scored phrase produced by :func:`rank_phrases`."""
+
+    phrase: str
+    score: float
+    tier: str
+    why: Tuple[str, ...]
+    slant_score: SlantScore
+    bonuses: Dict[str, float]
+    metadata: Dict[str, Any]
 
 
 # The template inventory favours compact two and three word phrases. Each entry
@@ -237,6 +257,10 @@ def _options_for_literal(token: str) -> List[Tuple[str, str, float]]:
     return [(token, stress, 0.35)]
 
 
+def _normalise_phrase(text: str) -> str:
+    return " ".join(part for part in text.split() if part).strip().lower()
+
+
 def generate_phrases_for_endwords(
     base_word: str,
     end_words: Iterable[str],
@@ -352,3 +376,259 @@ def generate_phrases_for_endwords(
     )
 
     return ordered[:max_phrases]
+
+
+def retrieve_phrases_by_last_word(
+    end_word: str,
+    rhyme_keys: Iterable[str] = (),
+    *,
+    repository: Any = None,
+    limit: int = 40,
+    min_tokens: int = 2,
+    max_tokens: int = 5,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Retrieve idiomatic phrases whose terminal token matches ``end_word``.
+
+    The lookup blends a tiny built-in corpus with optional repository backed
+    retrieval so callers can surface domain specific phrases when a database is
+    available. Results are deduplicated and normalised to ensure consistent
+    downstream handling.
+    """
+
+    normalized_end = _normalise_phrase(end_word)
+    if not normalized_end:
+        return []
+
+    seen: Set[str] = set()
+    results: List[Tuple[str, Dict[str, Any]]] = []
+
+    def _register(phrase: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
+        cleaned = " ".join(part for part in phrase.split() if part).strip()
+        if not cleaned:
+            return
+        key = _normalise_phrase(cleaned)
+        if not key or key in seen:
+            return
+        tokens = key.split()
+        if not tokens or tokens[-1] != normalized_end:
+            return
+        if not (min_tokens <= len(tokens) <= max_tokens):
+            return
+        seen.add(key)
+        entry_metadata = {"source": "corpus_ngram"}
+        if metadata:
+            for meta_key, meta_value in metadata.items():
+                if meta_key not in entry_metadata:
+                    entry_metadata[meta_key] = meta_value
+        results.append((cleaned, entry_metadata))
+
+    for phrase in lookup_ngram_phrases(normalized_end, rhyme_keys):
+        if phrase:
+            _register(phrase, {"source": "corpus_ngram"})
+
+    fetcher = None
+    if repository is not None:
+        fetcher = getattr(repository, "fetch_phrases_for_word", None)
+
+    if callable(fetcher):
+        try:
+            fetched: Iterable[Any] = fetcher(
+                normalized_end,
+                limit=limit,
+                min_tokens=min_tokens,
+                max_tokens=max_tokens,
+                rhyme_backoffs=tuple(rhyme_keys or tuple()),
+            )
+        except TypeError:
+            try:
+                fetched = fetcher(normalized_end, limit)
+            except Exception:
+                fetched = []
+        except Exception:
+            fetched = []
+
+        for item in fetched or []:
+            phrase_text: str
+            metadata: Mapping[str, Any] | None = None
+            if isinstance(item, tuple) and len(item) == 2:
+                phrase_text = str(item[0])
+                metadata = item[1] if isinstance(item[1], Mapping) else None
+            elif isinstance(item, Mapping):
+                phrase_text = str(
+                    item.get("phrase")
+                    or item.get("text")
+                    or item.get("value")
+                    or item.get("context")
+                    or ""
+                )
+                metadata = item
+            else:
+                phrase_text = str(item)
+            if not phrase_text:
+                continue
+            merged_meta: Dict[str, Any] = {"source": "database"}
+            if metadata:
+                for meta_key, meta_value in metadata.items():
+                    if meta_key not in merged_meta:
+                        merged_meta[meta_key] = meta_value
+            _register(phrase_text, merged_meta)
+
+    if limit > 0:
+        return results[:limit]
+    return results
+
+
+def _average_token_rarity(tokens: Iterable[str], rarity_map: WordRarityMap) -> float:
+    values: List[float] = []
+    for token in tokens:
+        lookup = token.strip().lower()
+        if not lookup:
+            continue
+        try:
+            values.append(float(rarity_map.get_rarity(lookup)))
+        except Exception:
+            values.append(float(DEFAULT_RARITY_MAP.get_rarity(lookup)))
+    if not values:
+        return 1.0
+    return sum(values) / len(values)
+
+
+def rank_phrases(
+    analyzer: Any,
+    base_phrase: str,
+    candidates: Iterable[Tuple[str, Mapping[str, Any] | None]],
+    *,
+    rarity_map: Optional[WordRarityMap] = None,
+    max_results: Optional[int] = None,
+) -> List[RankedPhrase]:
+    """Score ``candidates`` relative to ``base_phrase``.
+
+    Each candidate is scored using :func:`score_pair` to assess phonetic
+    alignment. Lightweight bonuses favour prosodic alignment, perceived fluency
+    (token rarity), and semantic cohesion between non-terminal tokens. Entries
+    that fail :func:`passes_gate` are discarded.
+    """
+
+    if analyzer is None:
+        return []
+
+    base_clean = " ".join(part for part in str(base_phrase or "").split() if part).strip()
+    if not base_clean:
+        return []
+
+    rarity_lookup = rarity_map or getattr(analyzer, "rarity_map", None) or DEFAULT_RARITY_MAP
+    base_syllables = max(estimate_syllable_count(base_clean.lower()), 1)
+    base_tokens = base_clean.lower().split()
+    base_prefix = " ".join(base_tokens[:-1]) if len(base_tokens) > 1 else ""
+
+    ranked: List[RankedPhrase] = []
+    seen: Set[str] = set()
+
+    for phrase, metadata in candidates:
+        normalized = " ".join(part for part in str(phrase or "").split() if part).strip()
+        if not normalized:
+            continue
+        key = _normalise_phrase(normalized)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        used_fallback = False
+        try:
+            slant = score_pair(analyzer, base_clean, normalized)
+        except Exception:
+            used_fallback = True
+            similarity_fn = getattr(analyzer, "get_phonetic_similarity", None)
+            fallback_total = 0.0
+            if callable(similarity_fn):
+                try:
+                    fallback_total = float(similarity_fn(base_clean, normalized))
+                except Exception:
+                    fallback_total = 0.0
+            fallback_total = max(0.0, min(1.0, fallback_total))
+            if fallback_total >= 0.97:
+                tier = "perfect"
+            elif fallback_total >= 0.82:
+                tier = "very_close"
+            elif fallback_total >= 0.68:
+                tier = "strong"
+            elif fallback_total >= 0.55:
+                tier = "loose"
+            else:
+                tier = "weak"
+            slant = SlantScore(
+                total=fallback_total,
+                rime=fallback_total,
+                vowel=fallback_total,
+                coda=fallback_total,
+                stress_penalty=0.0,
+                syllable_penalty=0.0,
+                tier=tier,
+            )
+
+        if not used_fallback and not passes_gate(slant):
+            continue
+
+        candidate_tokens = key.split()
+        candidate_prefix = (
+            " ".join(candidate_tokens[:-1]) if len(candidate_tokens) > 1 else ""
+        )
+
+        candidate_syllables = max(estimate_syllable_count(key), 1)
+        syllable_diff = abs(candidate_syllables - base_syllables)
+        prosody_bonus = 1.0 - (syllable_diff / max(base_syllables, candidate_syllables, 1))
+        prosody_bonus = max(0.0, min(1.0, prosody_bonus))
+
+        avg_rarity = _average_token_rarity(candidate_tokens, rarity_lookup)
+        fluency_bonus = max(0.0, min(1.0, 1.0 - avg_rarity))
+
+        semantic_bonus = 0.0
+        if base_prefix and candidate_prefix:
+            try:
+                semantic_bonus = difflib.SequenceMatcher(
+                    None, base_prefix, candidate_prefix
+                ).ratio()
+            except Exception:
+                semantic_bonus = 0.0
+
+        bonus_weights = {"prosody": 0.12, "fluency": 0.08, "semantic": 0.05}
+        combined = slant.total
+        combined += bonus_weights["prosody"] * prosody_bonus
+        combined += bonus_weights["fluency"] * fluency_bonus
+        combined += bonus_weights["semantic"] * semantic_bonus
+        combined = max(0.0, min(1.0, combined))
+
+        reasons: List[str] = []
+        reasons.append(f"phonetic tier: {slant.tier}")
+        if prosody_bonus >= 0.9:
+            reasons.append("prosody aligned")
+        elif prosody_bonus >= 0.75:
+            reasons.append("prosody close")
+        if fluency_bonus >= 0.7:
+            reasons.append("fluent wording")
+        if semantic_bonus >= 0.6:
+            reasons.append("semantic echo")
+
+        bonus_snapshot = {
+            "prosody": prosody_bonus,
+            "fluency": fluency_bonus,
+            "semantic": semantic_bonus,
+        }
+
+        ranked.append(
+            RankedPhrase(
+                phrase=normalized,
+                score=combined,
+                tier=slant.tier,
+                why=tuple(reasons),
+                slant_score=slant,
+                bonuses=bonus_snapshot,
+                metadata=dict(metadata or {}),
+            )
+        )
+
+    ranked.sort(key=lambda item: (-item.score, item.phrase))
+
+    if max_results is not None and max_results >= 0:
+        return ranked[:max_results]
+    return ranked

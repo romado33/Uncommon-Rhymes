@@ -22,7 +22,13 @@ from .feature_profile import (
     pronouncing,
 )
 from .phrase_corpus import lookup_ngram_phrases, lookup_template_words
-from .phrases import PhraseCandidate, generate_phrases_for_endwords
+from .phrases import (
+    PhraseCandidate,
+    RankedPhrase,
+    generate_phrases_for_endwords,
+    rank_phrases,
+    retrieve_phrases_by_last_word,
+)
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
 from .scorer import SlantScore, passes_gate, score_pair
 
@@ -1528,7 +1534,7 @@ def get_cmu_rhymes(
     }
 
     template_seed_cache: Dict[Tuple[str, ...], Dict[str, Set[str]]] = {}
-    corpus_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], Set[str]] = {}
+    corpus_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]] = {}
     creative_phrase_cache: Dict[
         Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]
     ] = {}
@@ -1546,13 +1552,26 @@ def get_cmu_rhymes(
             }
         return template_seed_cache[cache_key]
 
-    def _collect_corpus_phrases(word_key: str, backoff_keys: Tuple[str, ...]) -> Set[str]:
-        normalized_word = (word_key or "").strip().lower()
+    phrase_repository = getattr(scoring_analyzer, "phrase_repository", None)
+    if phrase_repository is None:
+        phrase_repository = getattr(scoring_analyzer, "repository", None)
+
+    def _collect_corpus_phrases(
+        word_key: str, backoff_keys: Tuple[str, ...]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        normalized_word = (word_key or "").strip()
         effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
-        cache_key = (normalized_word, effective_keys if effective_keys else tuple())
+        cache_key = (normalized_word.lower(), effective_keys if effective_keys else tuple())
         if cache_key not in corpus_phrase_cache:
-            phrases = lookup_ngram_phrases(normalized_word, effective_keys or tuple())
-            corpus_phrase_cache[cache_key] = set(phrases)
+            phrases = retrieve_phrases_by_last_word(
+                normalized_word,
+                effective_keys or tuple(),
+                repository=phrase_repository,
+            )
+            if not phrases:
+                fallback = lookup_ngram_phrases(normalized_word, effective_keys or tuple())
+                phrases = [(phrase, {"source": "corpus_ngram"}) for phrase in fallback]
+            corpus_phrase_cache[cache_key] = list(phrases)
         return corpus_phrase_cache[cache_key]
 
     def _invoke_creative_hook(
@@ -1753,24 +1772,43 @@ def get_cmu_rhymes(
             return None
         seen_variants.add(normalized_key)
 
-        slant_result: Optional[SlantScore] = None
-        try:
-            slant_result = scoring_analyzer.get_slant_score(base_phrase, suggestion)
-        except AttributeError:
-            slant_result = None
-        except Exception:
-            slant_result = None
+        ranked_phrase: Optional[RankedPhrase] = None
 
-        if slant_result is not None:
-            score = float(slant_result.total)
-            if not passes_gate(slant_result) and not is_multi:
+        if is_multi:
+            rarity_ref = rarity_source if isinstance(rarity_source, WordRarityMap) else None
+            ranked = rank_phrases(
+                scoring_analyzer,
+                base_phrase,
+                [(normalized_suggestion, metadata or {})],
+                rarity_map=rarity_ref,
+                max_results=1,
+            )
+            if not ranked:
                 return None
+            ranked_phrase = ranked[0]
+            slant_result = ranked_phrase.slant_score
+            score = float(slant_result.total)
         else:
-            try:
-                score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
-            except Exception:
-                score = 0.0
             slant_result = None
+            try:
+                slant_result = scoring_analyzer.get_slant_score(base_phrase, suggestion)
+            except AttributeError:
+                slant_result = None
+            except Exception:
+                slant_result = None
+
+            if slant_result is not None:
+                score = float(slant_result.total)
+                if not passes_gate(slant_result) and not is_multi:
+                    return None
+            else:
+                try:
+                    score = float(
+                        scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion)
+                    )
+                except Exception:
+                    score = 0.0
+                slant_result = None
 
         if (
             not is_multi
@@ -2028,6 +2066,14 @@ def get_cmu_rhymes(
             }
             entry["slant_tie_breaker"] = slant_result.tie_breaker
 
+        if ranked_phrase is not None:
+            entry.setdefault("phrase_rank_score", float(ranked_phrase.score))
+            entry.setdefault("phrase_rank_tier", ranked_phrase.tier)
+            entry.setdefault("phrase_rank_why", list(ranked_phrase.why))
+            entry.setdefault("phrase_rank_bonuses", dict(ranked_phrase.bonuses))
+            if ranked_phrase.metadata:
+                entry.setdefault("phrase_rank_metadata", dict(ranked_phrase.metadata))
+
         if is_multi and base_metrics:
             entry.setdefault("parent_candidate", base_candidate)
             entry.setdefault("raw_multi_similarity", raw_similarity)
@@ -2112,14 +2158,20 @@ def get_cmu_rhymes(
                     break
 
         if generated_multi < max_multi_variants:
-            corpus_variants = sorted(_collect_corpus_phrases(base_candidate, tuple(effective_backoff_keys)))
-            for phrase in corpus_variants:
+            corpus_variants = _collect_corpus_phrases(
+                base_candidate, tuple(effective_backoff_keys)
+            )
+            for phrase, corpus_meta in corpus_variants:
+                metadata = {"multi_source": corpus_meta.get("source", "corpus_ngram")}
+                for key, value in corpus_meta.items():
+                    if key not in metadata:
+                        metadata[key] = value
                 result = _score_variant(
                     phrase,
                     is_multi=True,
                     base_candidate=base_candidate,
                     base_metrics=base_metrics,
-                    metadata={"multi_source": "corpus_ngram"},
+                    metadata=metadata,
                 )
                 if result:
                     generated_multi += 1
