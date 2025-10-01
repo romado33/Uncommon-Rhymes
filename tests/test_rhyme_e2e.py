@@ -52,7 +52,13 @@ def load_cases():
             row["expected_properties"] = json.loads(row["expected_properties"] or "{}")
             yield row
 
-@pytest.mark.skipif(CORE is None, reason=lambda: ADAPTER_ERR or "Core API missing")
+# pytest.skipif requires a literal string for ``reason``; resolve it eagerly so we
+# can still provide the adapter error details if discovery failed.
+_CORE_SKIP_REASON = None
+if CORE is None:
+    _CORE_SKIP_REASON = ADAPTER_ERR or "Core API missing"
+
+@pytest.mark.skipif(CORE is None, reason=_CORE_SKIP_REASON)
 @pytest.mark.parametrize("case", list(load_cases()))
 def test_core_paths(case):
     m = CORE["module"]
@@ -84,7 +90,7 @@ def test_core_paths(case):
         else:
             pytest.skip("multiword_rhymes not found; implement Module 2 to enable reverse phrase tests.")
 
-@pytest.mark.skipif(CORE is None, reason=lambda: ADAPTER_ERR or "Core API missing")
+@pytest.mark.skipif(CORE is None, reason=_CORE_SKIP_REASON)
 @pytest.mark.parametrize("case", list(load_cases()))
 def test_policy_guards(case):
     # Ensure orthography is not used as primary ranking signal (tie-break only).
