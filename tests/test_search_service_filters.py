@@ -252,8 +252,10 @@ def test_relaxed_confidence_refills_scarce_buckets() -> None:
 
     filters = result["filters"]
     assert filters["bucket_confidence_floors"]["perfect"] == pytest.approx(0.8)
-    assert filters["bucket_confidence_floors"]["slant"] == pytest.approx(0.55)
-    assert filters["bucket_confidence_floors"]["multi_word"] == pytest.approx(0.55)
+    relaxed_floor = search_service_module.RELAXED_BUCKET_CONFIDENCE_FLOOR
+    assert filters["bucket_confidence_floors"]["slant"] == pytest.approx(relaxed_floor)
+    assert filters["bucket_confidence_floors"]["multi_word"] == pytest.approx(relaxed_floor)
+    assert filters.get("relaxed_confidence_floor") == pytest.approx(relaxed_floor)
     assert set(filters.get("relaxed_buckets", [])) == {"slant", "multi_word"}
 
 
