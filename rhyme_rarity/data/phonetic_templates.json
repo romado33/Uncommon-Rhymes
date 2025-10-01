@@ -1,0 +1,126 @@
+{
+  "templates": {
+    "AE N": {
+      "adjectives": ["ancient", "brazen", "vagrant"],
+      "nouns": ["lantern", "ballad", "pattern"],
+      "verbs": ["gather", "wander", "chant"]
+    },
+    "ER": {
+      "adjectives": ["fervent", "inner", "weathered"],
+      "nouns": ["harbor", "ember", "murmur"],
+      "verbs": ["murmur", "shiver", "shelter"]
+    },
+    "OW N": {
+      "adjectives": ["open", "overgrown", "shadowed"],
+      "nouns": ["meadow", "window", "afterglow"],
+      "verbs": ["follow", "shadow", "glow"]
+    },
+    "IH NG": {
+      "adjectives": ["glittering", "lingering", "whispering"],
+      "nouns": ["evening", "morning", "painting"],
+      "verbs": ["linger", "whisper", "glimmer"]
+    },
+    "IY M": {
+      "adjectives": ["dreamlike", "serene", "gleaming"],
+      "nouns": ["dream", "stream", "theme"],
+      "verbs": ["gleam", "redeem", "beam"]
+    },
+    "AA R": {
+      "adjectives": ["starlit", "scarlet", "ancient"],
+      "nouns": ["guitar", "altar", "bazaar"],
+      "verbs": ["carve", "regard", "harm"]
+    },
+    "AO R": {
+      "adjectives": ["stormy", "seaborne", "sorrowful"],
+      "nouns": ["shore", "corridor", "meteor"],
+      "verbs": ["roar", "soar", "implore"]
+    },
+    "UW N": {
+      "adjectives": ["moonlit", "luminous", "cool"],
+      "nouns": ["moon", "tune", "lagoon"],
+      "verbs": ["croon", "attune", "balloon"]
+    },
+    "AY N": {
+      "adjectives": ["shining", "vivid", "untamed"],
+      "nouns": ["skyline", "guideline", "vine"],
+      "verbs": ["align", "incline", "shine"]
+    },
+    "EH L": {
+      "adjectives": ["sacred", "gentle", "melodic"],
+      "nouns": ["bell", "chapel", "carousel"],
+      "verbs": ["level", "revel", "settle"]
+    },
+    "AH M": {
+      "adjectives": ["solemn", "ancient", "even"],
+      "nouns": ["harvest", "anthem", "kingdom"],
+      "verbs": ["become", "succumb", "hum"]
+    },
+    "OY N": {
+      "adjectives": ["loyal", "buoyant", "joyful"],
+      "nouns": ["coin", "alloy", "buoy"],
+      "verbs": ["enjoy", "employ", "rejoin"]
+    }
+  },
+  "fallback_stems": {
+    "AE": {
+      "adjectives": ["ancient", "brazen", "vagrant"],
+      "nouns": ["lantern", "ballad", "pattern"],
+      "verbs": ["gather", "wander", "chant"]
+    },
+    "ER": {
+      "adjectives": ["fervent", "inner", "weathered"],
+      "nouns": ["harbor", "ember", "murmur"],
+      "verbs": ["murmur", "shiver", "shelter"]
+    },
+    "OW": {
+      "adjectives": ["open", "overgrown", "shadowed"],
+      "nouns": ["meadow", "window", "afterglow"],
+      "verbs": ["follow", "shadow", "glow"]
+    },
+    "IH": {
+      "adjectives": ["glittering", "lingering", "whispering"],
+      "nouns": ["evening", "morning", "painting"],
+      "verbs": ["linger", "whisper", "glimmer"]
+    },
+    "IY": {
+      "adjectives": ["dreamlike", "serene", "gleaming"],
+      "nouns": ["dream", "stream", "theme"],
+      "verbs": ["gleam", "redeem", "beam"]
+    },
+    "AA": {
+      "adjectives": ["starlit", "scarlet", "ancient"],
+      "nouns": ["guitar", "altar", "bazaar"],
+      "verbs": ["carve", "regard", "harm"]
+    },
+    "AO": {
+      "adjectives": ["stormy", "seaborne", "sorrowful"],
+      "nouns": ["shore", "corridor", "meteor"],
+      "verbs": ["roar", "soar", "implore"]
+    },
+    "UW": {
+      "adjectives": ["moonlit", "luminous", "cool"],
+      "nouns": ["moon", "tune", "lagoon"],
+      "verbs": ["croon", "attune", "balloon"]
+    },
+    "AY": {
+      "adjectives": ["shining", "vivid", "untamed"],
+      "nouns": ["skyline", "guideline", "vine"],
+      "verbs": ["align", "incline", "shine"]
+    },
+    "EH": {
+      "adjectives": ["sacred", "gentle", "melodic"],
+      "nouns": ["bell", "chapel", "carousel"],
+      "verbs": ["level", "revel", "settle"]
+    },
+    "AH": {
+      "adjectives": ["solemn", "ancient", "even"],
+      "nouns": ["harvest", "anthem", "kingdom"],
+      "verbs": ["become", "succumb", "hum"]
+    },
+    "OY": {
+      "adjectives": ["loyal", "buoyant", "joyful"],
+      "nouns": ["coin", "alloy", "buoy"],
+      "verbs": ["enjoy", "employ", "rejoin"]
+    }
+  }
+}
