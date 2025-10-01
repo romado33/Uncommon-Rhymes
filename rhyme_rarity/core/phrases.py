@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import difflib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
@@ -19,6 +19,66 @@ __all__ = [
     "retrieve_phrases_by_last_word",
     "rank_phrases",
 ]
+
+
+_RELAXED_MULTI_TOTAL_FLOOR = 0.5
+_RELAXED_MULTI_RIME_FLOOR = 0.3
+_RELAXED_MULTI_RIME_RATIO = 0.6
+_RELAXED_MULTI_FALLBACK_FLOOR = 0.6
+
+
+def _tier_from_total(total: float) -> str:
+    if total >= 0.97:
+        return "perfect"
+    if total >= 0.82:
+        return "very_close"
+    if total >= 0.68:
+        return "strong"
+    if total >= 0.55:
+        return "loose"
+    return "weak"
+
+
+def _relax_multi_gate(
+    analyzer: Any,
+    base_phrase: str,
+    candidate_phrase: str,
+    slant: SlantScore,
+) -> SlantScore | None:
+    """Apply a softer similarity check for multi-word phrases."""
+
+    similarity_fn = getattr(analyzer, "get_phonetic_similarity", None)
+    fallback_total = 0.0
+    if callable(similarity_fn):
+        try:
+            fallback_total = float(similarity_fn(base_phrase, candidate_phrase))
+        except Exception:
+            fallback_total = 0.0
+
+    fallback_total = max(0.0, min(1.0, fallback_total))
+    if slant.tier == "weak" and fallback_total < _RELAXED_MULTI_FALLBACK_FLOOR:
+        return None
+    relaxed_total = max(float(slant.total), fallback_total)
+
+    relaxed_rime = float(slant.rime)
+    if fallback_total >= _RELAXED_MULTI_TOTAL_FLOOR:
+        relaxed_rime = max(relaxed_rime, fallback_total * _RELAXED_MULTI_RIME_RATIO)
+
+    relaxed_total = min(relaxed_total, 1.0)
+    relaxed_rime = min(relaxed_rime, 1.0)
+
+    if relaxed_total < _RELAXED_MULTI_TOTAL_FLOOR or relaxed_rime < _RELAXED_MULTI_RIME_FLOOR:
+        return None
+
+    if relaxed_total == slant.total and relaxed_rime == slant.rime:
+        return slant
+
+    return replace(
+        slant,
+        total=relaxed_total,
+        rime=relaxed_rime,
+        tier=_tier_from_total(relaxed_total),
+    )
 
 
 @dataclass(frozen=True)
@@ -533,6 +593,11 @@ def rank_phrases(
             continue
         seen.add(key)
 
+        candidate_tokens = key.split()
+        if not candidate_tokens:
+            continue
+        is_multi_word = len(candidate_tokens) > 1
+
         used_fallback = False
         try:
             slant = score_pair(analyzer, base_clean, normalized)
@@ -567,9 +632,13 @@ def rank_phrases(
             )
 
         if not used_fallback and not passes_gate(slant):
-            continue
+            if not is_multi_word:
+                continue
+            relaxed = _relax_multi_gate(analyzer, base_clean, normalized, slant)
+            if relaxed is None:
+                continue
+            slant = relaxed
 
-        candidate_tokens = key.split()
         candidate_prefix = (
             " ".join(candidate_tokens[:-1]) if len(candidate_tokens) > 1 else ""
         )

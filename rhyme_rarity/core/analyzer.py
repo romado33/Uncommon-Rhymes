@@ -2385,6 +2385,9 @@ def get_cmu_rhymes(
             "token_count": len(candidate_tokens),
         }
 
+        text_is_multi = " " in normalized_suggestion
+        entry_multi_flag = bool(is_multi or text_is_multi)
+
         entry: Dict[str, Any] = {
             "word": suggestion,
             "target": suggestion,
@@ -2395,7 +2398,8 @@ def get_cmu_rhymes(
             "rarity_score": rarity,
             "combined": combined,
             "combined_score": combined,
-            "is_multi_word": is_multi,
+            "is_multi_word": entry_multi_flag,
+            "result_variant": "multi_word" if entry_multi_flag else "single_word",
             "source_phrase": normalized_phrase,
             "source_syllables": components.total_syllables,
             "candidate_syllables": candidate_info.total_syllables,
