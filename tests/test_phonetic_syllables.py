@@ -28,6 +28,16 @@ def test_extract_phrase_components_for_phrase():
     assert components.total_syllables == estimate_syllable_count("paper") + estimate_syllable_count("trail")
 
 
+def test_describe_word_reports_multi_word_stress_patterns():
+    loader = CMUDictLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+
+    profile = analyzer.describe_word("carry lindow")
+
+    assert profile["stress_pattern_display"] == "1-0 1-0"
+    assert profile["stress_pattern"] == "1010"
+
+
 class DummyLoader:
     def __init__(self):
         self.requests = []

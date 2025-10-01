@@ -1148,6 +1148,66 @@ class EnhancedPhoneticAnalyzer:
         if not normalized:
             return profile
 
+        # Build a composite stress pattern that accounts for every token in the
+        # phrase. Previously we only surfaced the stress pattern for the anchor
+        # word which meant multi-word entries dropped syllables from the
+        # display.  We now look up pronunciations token-by-token and stitch the
+        # stress signatures together so that each syllable is represented in the
+        # final pattern.  This ensures UI elements such as the multi-word rhyme
+        # cards report the complete cadence information.
+        loader = getattr(self, "cmu_loader", None)
+        token_stress_signatures: List[str] = []
+        display_segments: List[str] = []
+
+        for index, token in enumerate(components.normalized_tokens or []):
+            if not token:
+                continue
+
+            pronunciations: List[List[str]] = []
+            if loader is not None:
+                try:
+                    pronunciations = loader.get_pronunciations(token)
+                except Exception:
+                    pronunciations = []
+
+            if not pronunciations and pronouncing is not None:
+                try:
+                    pronunciations = [
+                        phones.split()
+                        for phones in pronouncing.phones_for_word(token)
+                        if phones
+                    ]
+                except Exception:
+                    pronunciations = []
+
+            stress_signature = ""
+            for phones in pronunciations:
+                try:
+                    stress_signature = self._stress_signature_from_phones(list(phones))
+                except Exception:
+                    stress_signature = ""
+                if stress_signature:
+                    break
+
+            if not stress_signature:
+                syllable_estimate = 0
+                if 0 <= index < len(components.syllable_counts):
+                    syllable_estimate = int(components.syllable_counts[index] or 0)
+                if syllable_estimate <= 0:
+                    syllable_estimate = estimate_syllable_count(token)
+                if syllable_estimate > 0:
+                    stress_signature = "?" * syllable_estimate
+
+            if stress_signature:
+                token_stress_signatures.append(stress_signature)
+                display_segments.append("-".join(stress_signature))
+
+        if token_stress_signatures and not profile["stress_pattern"]:
+            profile["stress_pattern"] = "".join(token_stress_signatures)
+            profile["stress_pattern_display"] = " ".join(
+                segment for segment in display_segments if segment
+            )
+
         pronunciations = self._get_pronunciation_variants(word)
         if pronunciations:
             stripped_variants = []
