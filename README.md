@@ -41,6 +41,11 @@ The refreshed release integrates insights from contemporary rap-poetics scholars
 │   ├── test_app.py
 │   ├── test_cmudict_loader.py
 │   └── test_cultural_engine.py
+├── LLMRhymeMethodologies/             # LLM-specific methodology briefs referenced in research docs
+│   ├── GPT-5-Thinking.txt
+│   ├── Gemini.txt
+│   ├── Perplexity.txt
+│   └── Sonnet 4.5.txt
 └── requirements.txt
 ```
 
