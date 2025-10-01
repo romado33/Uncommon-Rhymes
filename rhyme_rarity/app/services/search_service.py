@@ -3014,12 +3014,6 @@ class RhymeResultFormatter:
                 summary_lines.append(f"<li>{escape(item)}</li>")
             summary_lines.append("</ul>")
 
-        if diagnostics:
-            summary_lines.append("<p><strong>Diagnostics:</strong></p>")
-            summary_lines.append("<ul>")
-            for diag in diagnostics:
-                summary_lines.append(f"<li>{escape(diag)}</li>")
-            summary_lines.append("</ul>")
         summary_lines.append("</div>")
 
         def _render_section(key: str, *, span_full: bool = False) -> str:
