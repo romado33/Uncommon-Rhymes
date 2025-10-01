@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from functools import lru_cache
+from contextlib import closing
 from importlib import resources
-from typing import Dict, Iterable, Mapping, Sequence, Set
+from typing import Dict, Iterable, Mapping, Sequence, Set, Tuple
 
 __all__ = [
     "lookup_template_words",
@@ -32,6 +34,8 @@ def _normalize_rhyme_key(key: str) -> str:
 
 
 _TEMPLATE_CONFIG_ENV = "RHYME_RARITY_TEMPLATE_CONFIG"
+_PHRASE_CORPUS_ENV = "RHYME_RARITY_PHRASE_CORPUS"
+_PHRASE_DATABASE_ENV = "RHYME_RARITY_PHRASE_DB"
 
 _VOWEL_PHONEMES = {
     "AA",
@@ -225,28 +229,207 @@ GENERIC_TEMPLATE_BANK: Dict[str, Sequence[str]] = {
 }
 
 
-# Compact n-gram inventory. Each phrase ends in a word that regularly appears as
-# a rhyme target in tests and demos. The corpus is intentionally lightweight so
-# unit tests remain fast while still demonstrating idiomatic retrieval.
-NGRAM_CORPUS_BY_WORD: Dict[str, Sequence[str]] = {
-    "trail": ("paper trail", "blazing trail", "hidden trail"),
-    "mail": ("snail mail", "chain mail"),
-    "fail": ("epic fail", "major fail"),
-    "flow": ("steady flow", "afterglow"),
-    "go": ("on the go", "let it go"),
-    "feel": ("deeply feel", "can you feel"),
-    "light": ("guiding light", "midnight light"),
-}
+def _load_phrase_corpus_from_source() -> Tuple[
+    Dict[str, Sequence[str]],
+    Dict[str, Sequence[str]],
+]:
+    """Load the idiomatic n-gram corpus from disk."""
 
-# Additional groupings indexed by rhyme key so words that share the same phonetic
-# ending can borrow idioms even if they do not appear explicitly in the word map.
-NGRAM_CORPUS_BY_RHYME: Dict[str, Sequence[str]] = {
-    "EY L": ("paper trail", "snail mail", "chain mail", "hidden trail"),
-    "EY": ("everyday sway", "nightly play"),
-    "OW": ("steady flow", "open window"),
-    "IY L": ("can you feel", "sudden steel"),
-    "AY T": ("midnight light", "starlit night"),
-}
+    raw_data: Mapping[str, object] | None = None
+    path = os.getenv(_PHRASE_CORPUS_ENV)
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                raw_data = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw_data = None
+
+    if raw_data is None:
+        try:
+            corpus_path = resources.files("rhyme_rarity").joinpath(
+                "data", "phrase_corpus.json"
+            )
+            with corpus_path.open("r", encoding="utf-8") as handle:
+                raw_data = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw_data = {}
+
+    if not isinstance(raw_data, Mapping):
+        return {}, {}
+
+    by_word: Dict[str, Sequence[str]] = {}
+    word_section = raw_data.get("by_word")
+    if isinstance(word_section, Mapping):
+        for raw_word, phrases in word_section.items():
+            word = str(raw_word or "").strip().lower()
+            if not word or not isinstance(phrases, Sequence) or isinstance(
+                phrases, (str, bytes)
+            ):
+                continue
+            cleaned = tuple(
+                " ".join(str(phrase).split())
+                for phrase in phrases
+                if isinstance(phrase, str) and phrase.strip()
+            )
+            if cleaned:
+                by_word[word] = cleaned
+
+    by_rhyme: Dict[str, Sequence[str]] = {}
+    rhyme_section = raw_data.get("by_rhyme")
+    if isinstance(rhyme_section, Mapping):
+        for raw_key, phrases in rhyme_section.items():
+            key = _normalize_rhyme_key(str(raw_key or ""))
+            if not key or not isinstance(phrases, Sequence) or isinstance(
+                phrases, (str, bytes)
+            ):
+                continue
+            cleaned = tuple(
+                " ".join(str(phrase).split())
+                for phrase in phrases
+                if isinstance(phrase, str) and phrase.strip()
+            )
+            if cleaned:
+                by_rhyme[key] = cleaned
+
+    return by_word, by_rhyme
+
+
+@lru_cache()
+def _load_ngram_corpus() -> Tuple[Dict[str, Sequence[str]], Dict[str, Sequence[str]]]:
+    return _load_phrase_corpus_from_source()
+
+
+def _split_context_segments(value: str) -> Sequence[str]:
+    """Yield candidate segments from lyrical contexts."""
+
+    cleaned = " ".join((value or "").split()).strip()
+    if not cleaned:
+        return ()
+    segments = re.split(r"\s*(?:\/{2}|\n|\||;|--)+\s*", cleaned)
+    return tuple(segment for segment in segments if segment)
+
+
+def _mine_phrases_from_database(
+    target: str,
+    rhyme_keys: Iterable[str],
+    *,
+    limit: int = 10,
+) -> Set[str]:
+    """Collect phrases from the SQLite rhyme database for ``target``."""
+
+    db_path = os.getenv(_PHRASE_DATABASE_ENV) or "patterns.db"
+    if not db_path or not os.path.exists(db_path):
+        return set()
+
+    normalized_target = (target or "").strip().lower()
+    if not normalized_target:
+        return set()
+
+    try:
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                cursor = connection.execute(
+                    """
+                    SELECT target_word, target_context, lyrical_context,
+                           confidence_score, phonetic_similarity
+                    FROM song_rhyme_patterns
+                    WHERE LOWER(TRIM(COALESCE(target_word, ''))) = ?
+                       OR LOWER(TRIM(COALESCE(target_word_normalized, ''))) = ?
+                    ORDER BY COALESCE(confidence_score, 0) DESC,
+                             COALESCE(phonetic_similarity, 0) DESC
+                    LIMIT ?
+                    """,
+                    (normalized_target, normalized_target, max(1, int(limit) * 2)),
+                )
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                cursor = connection.execute(
+                    """
+                    SELECT target_word, target_context, lyrical_context,
+                           confidence_score, phonetic_similarity
+                    FROM song_rhyme_patterns
+                    WHERE LOWER(TRIM(COALESCE(target_word, ''))) = ?
+                    ORDER BY COALESCE(confidence_score, 0) DESC,
+                             COALESCE(phonetic_similarity, 0) DESC
+                    LIMIT ?
+                    """,
+                    (normalized_target, max(1, int(limit) * 2)),
+                )
+                rows = cursor.fetchall()
+    except sqlite3.Error:
+        return set()
+
+    candidates: Set[str] = set()
+    for row in rows or ():
+        values = []
+        if isinstance(row, Mapping):
+            values.extend([
+                row.get("target_word"),
+                row.get("target_context"),
+                row.get("lyrical_context"),
+            ])
+        elif isinstance(row, Sequence):
+            values.extend(list(row)[:3])
+        for value in values:
+            if not value:
+                continue
+            for segment in _split_context_segments(str(value)):
+                tokens = segment.lower().split()
+                if tokens and tokens[-1] == normalized_target:
+                    candidates.add(segment)
+                    if len(candidates) >= limit:
+                        return candidates
+
+    if candidates:
+        return candidates
+
+    # As a final back-off, probe rhyme keys for segments containing the target.
+    normalized_keys = {_normalize_rhyme_key(key) for key in rhyme_keys or ()}
+    normalized_keys.discard("")
+    if not normalized_keys:
+        return set()
+
+    try:
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            query = (
+                """
+                SELECT target_context, lyrical_context
+                FROM song_rhyme_patterns
+                WHERE LOWER(TRIM(COALESCE(target_word, ''))) LIKE ?
+                   OR LOWER(TRIM(COALESCE(target_word_normalized, ''))) LIKE ?
+                   OR LOWER(TRIM(COALESCE(pattern, ''))) LIKE ?
+                """
+            )
+            params: Tuple[str, ...] = tuple(
+                [f"% {normalized_target}", f"% {normalized_target}", f"% {normalized_target}"]
+            )
+            try:
+                cursor = connection.execute(query, params)
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                return set()
+    except sqlite3.Error:
+        return set()
+
+    fallback_candidates: Set[str] = set()
+    for row in rows or ():
+        row_values = []
+        if isinstance(row, Mapping):
+            row_values.extend([row.get("target_context"), row.get("lyrical_context")])
+        elif isinstance(row, Sequence):
+            row_values.extend(list(row)[:2])
+        for value in row_values:
+            if not value:
+                continue
+            for segment in _split_context_segments(str(value)):
+                tokens = segment.lower().split()
+                if tokens and tokens[-1] == normalized_target:
+                    fallback_candidates.add(segment)
+                    if len(fallback_candidates) >= limit:
+                        return fallback_candidates
+    return fallback_candidates
 
 
 def lookup_template_words(rhyme_keys: Iterable[str]) -> Dict[str, Set[str]]:
@@ -303,16 +486,28 @@ def lookup_template_words(rhyme_keys: Iterable[str]) -> Dict[str, Set[str]]:
     return {slot: values for slot, values in collected.items() if values}
 
 
-def lookup_ngram_phrases(word: str, rhyme_keys: Iterable[str]) -> Set[str]:
+def lookup_ngram_phrases(
+    word: str,
+    rhyme_keys: Iterable[str],
+    *,
+    enable_dynamic_fallback: bool = True,
+    dynamic_limit: int = 10,
+) -> Set[str]:
     """Fetch idiomatic phrases whose terminal token matches ``word``.
 
     Args:
         word: Candidate rhyme word that should appear at the end of each phrase.
         rhyme_keys: Iterable of simplified rhyme identifiers that provide
             phonetic back-off cues when a direct word lookup is unavailable.
+        enable_dynamic_fallback: When ``True`` the function will query the rhyme
+            database for lyric fragments if the static corpus does not provide a
+            match.
+        dynamic_limit: Maximum number of database derived phrases to return when
+            ``enable_dynamic_fallback`` is active.
 
     Returns:
-        A set of phrases drawn from the miniature corpus.
+        A set of phrases drawn from the comprehensive corpus with optional
+        database backed fallbacks.
     """
 
     results: Set[str] = set()
@@ -320,7 +515,9 @@ def lookup_ngram_phrases(word: str, rhyme_keys: Iterable[str]) -> Set[str]:
     if not target:
         return results
 
-    for phrase in NGRAM_CORPUS_BY_WORD.get(target, ()):  # direct lookups first
+    corpus_by_word, corpus_by_rhyme = _load_ngram_corpus()
+
+    for phrase in corpus_by_word.get(target, ()):  # direct lookups first
         if phrase and phrase.lower().split()[-1] == target:
             results.add(phrase)
 
@@ -328,10 +525,18 @@ def lookup_ngram_phrases(word: str, rhyme_keys: Iterable[str]) -> Set[str]:
         normalized = _normalize_rhyme_key(key)
         if not normalized:
             continue
-        for phrase in NGRAM_CORPUS_BY_RHYME.get(normalized, ()):  # phonetic back-off
+        for phrase in corpus_by_rhyme.get(normalized, ()):  # phonetic back-off
             if not phrase:
                 continue
             if phrase.lower().split()[-1] == target:
                 results.add(phrase)
+
+    if enable_dynamic_fallback and not results:
+        mined = _mine_phrases_from_database(
+            target,
+            tuple(rhyme_keys or tuple()),
+            limit=max(1, int(dynamic_limit)),
+        )
+        results.update(mined)
 
     return results

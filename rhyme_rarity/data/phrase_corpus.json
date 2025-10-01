@@ -1,0 +1,260 @@
+{
+  "by_word": {
+    "time": [
+      "take your time",
+      "spare the time",
+      "race against time",
+      "lost in time"
+    ],
+    "fire": [
+      "play with fire",
+      "line of fire",
+      "set on fire",
+      "open fire"
+    ],
+    "dream": [
+      "living the dream",
+      "keep the dream",
+      "pipe dream",
+      "within a dream"
+    ],
+    "mind": [
+      "peace of mind",
+      "state of mind",
+      "frame of mind",
+      "speak your mind"
+    ],
+    "heart": [
+      "change of heart",
+      "young at heart",
+      "open heart",
+      "brave heart"
+    ],
+    "star": [
+      "shooting star",
+      "guiding star",
+      "rising star",
+      "fallen star"
+    ],
+    "road": [
+      "open road",
+      "down the road",
+      "middle of the road",
+      "hit the road"
+    ],
+    "night": [
+      "dead of night",
+      "late at night",
+      "into the night",
+      "middle of the night"
+    ],
+    "light": [
+      "guiding light",
+      "midnight light",
+      "northern light",
+      "hold the light"
+    ],
+    "sky": [
+      "open sky",
+      "across the sky",
+      "painted sky",
+      "night sky"
+    ],
+    "hand": [
+      "lend a hand",
+      "sleight of hand",
+      "second hand",
+      "raise your hand"
+    ],
+    "gold": [
+      "heart of gold",
+      "fool's gold",
+      "veins of gold",
+      "fields of gold"
+    ],
+    "stone": [
+      "set in stone",
+      "written in stone",
+      "cast in stone",
+      "heart of stone"
+    ],
+    "storm": [
+      "weather the storm",
+      "ride the storm",
+      "brewing storm",
+      "perfect storm"
+    ],
+    "home": [
+      "close to home",
+      "right at home",
+      "back home",
+      "head for home"
+    ],
+    "river": [
+      "cross the river",
+      "down the river",
+      "river to river",
+      "over the river"
+    ],
+    "song": [
+      "sing the song",
+      "end of the song",
+      "write a song",
+      "love song"
+    ],
+    "wind": [
+      "ride the wind",
+      "against the wind",
+      "into the wind",
+      "catch the wind"
+    ],
+    "voice": [
+      "find your voice",
+      "raise your voice",
+      "inner voice",
+      "lost voice"
+    ],
+    "world": [
+      "around the world",
+      "whole world",
+      "world to world",
+      "world at large"
+    ]
+  },
+  "by_rhyme": {
+    "AY M": [
+      "take your time",
+      "spare the time",
+      "race against time",
+      "lost in time",
+      "back in time"
+    ],
+    "AY ER": [
+      "play with fire",
+      "line of fire",
+      "set on fire",
+      "open fire",
+      "ring of fire"
+    ],
+    "IY M": [
+      "living the dream",
+      "keep the dream",
+      "pipe dream",
+      "within a dream",
+      "beyond the dream"
+    ],
+    "AY ND": [
+      "peace of mind",
+      "state of mind",
+      "frame of mind",
+      "speak your mind",
+      "change your mind"
+    ],
+    "AA RT": [
+      "change of heart",
+      "young at heart",
+      "open heart",
+      "brave heart",
+      "heart to heart"
+    ],
+    "AA R": [
+      "shooting star",
+      "guiding star",
+      "rising star",
+      "fallen star",
+      "north star"
+    ],
+    "OW D": [
+      "open road",
+      "down the road",
+      "middle of the road",
+      "hit the road",
+      "old road"
+    ],
+    "AY T": [
+      "dead of night",
+      "late at night",
+      "into the night",
+      "middle of the night",
+      "guiding light",
+      "midnight light"
+    ],
+    "AY": [
+      "open sky",
+      "across the sky",
+      "painted sky",
+      "night sky",
+      "clear sky"
+    ],
+    "AE N D": [
+      "lend a hand",
+      "sleight of hand",
+      "second hand",
+      "raise your hand",
+      "steady hand"
+    ],
+    "OW L D": [
+      "heart of gold",
+      "fool's gold",
+      "veins of gold",
+      "fields of gold",
+      "hands of gold"
+    ],
+    "OW N": [
+      "set in stone",
+      "written in stone",
+      "cast in stone",
+      "heart of stone",
+      "cornerstone"
+    ],
+    "AO RM": [
+      "weather the storm",
+      "ride the storm",
+      "brewing storm",
+      "perfect storm",
+      "gathering storm"
+    ],
+    "OW M": [
+      "close to home",
+      "right at home",
+      "back home",
+      "head for home",
+      "call it home"
+    ],
+    "IH V ER": [
+      "cross the river",
+      "down the river",
+      "river to river",
+      "over the river",
+      "river of silver"
+    ],
+    "AO NG": [
+      "sing the song",
+      "end of the song",
+      "write a song",
+      "love song",
+      "battle song"
+    ],
+    "IH N D": [
+      "ride the wind",
+      "against the wind",
+      "into the wind",
+      "catch the wind",
+      "in the wind"
+    ],
+    "OY S": [
+      "find your voice",
+      "raise your voice",
+      "inner voice",
+      "lost voice",
+      "echoing voice"
+    ],
+    "ER L D": [
+      "around the world",
+      "whole world",
+      "world to world",
+      "world at large",
+      "brave new world"
+    ]
+  }
+}
