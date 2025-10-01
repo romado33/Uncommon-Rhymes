@@ -6,8 +6,9 @@ import sqlite3
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, List, Optional, Sequence, Set, Tuple
 
+from rhyme_rarity.core.analyzer import normalize_rime_key
 from rhyme_rarity.utils.profile import normalize_profile_dict
 from rhyme_rarity.utils.observability import get_logger
 
@@ -278,13 +279,36 @@ class CulturalIntelligenceEngine:
         """Calculate cultural rarity score based on context"""
         return cultural_rarity_score(context)
 
-    def find_cultural_patterns(self, source_word: str, cultural_filter: Optional[str] = None,
-                             limit: int = 20) -> List[Dict]:
+    def find_cultural_patterns(
+        self,
+        source_word: str,
+        cultural_filter: Optional[str] = None,
+        limit: int = 20,
+        phonetic_keys: Optional[Dict[str, Sequence[str]]] = None,
+    ) -> List[Dict]:
         """Find patterns with specific cultural characteristics"""
         try:
             normalized_source = _normalize_lookup_term(source_word)
             if not normalized_source:
                 return []
+
+            phonetic_keys = phonetic_keys or {}
+
+            def _collect_keys(*names: str) -> List[str]:
+                values: Set[str] = set()
+                for name in names:
+                    entries = phonetic_keys.get(name)
+                    if not entries:
+                        continue
+                    for candidate in entries:
+                        normalized = normalize_rime_key(candidate)
+                        if normalized:
+                            values.add(normalized)
+                return sorted(values)
+
+            end_word_keys = _collect_keys("end_word", "last_word", "anchor", "end")
+            compound_keys = _collect_keys("compound", "compound_end", "compound_rime")
+            backoff_keys = _collect_keys("backoff", "backoffs", "ending", "ending_sounds")
 
             with self._cursor() as cursor:
                 query = """
@@ -297,12 +321,31 @@ class CulturalIntelligenceEngine:
                     cultural_significance,
                     lyrical_context
                 FROM song_rhyme_patterns
-                WHERE source_word_normalized = ?
-                  AND target_word_normalized IS NOT NULL
+                WHERE target_word_normalized IS NOT NULL
                   AND target_word_normalized != ?
                 """
 
-                params = [normalized_source, normalized_source]
+                params: List[Any] = [normalized_source]
+
+                key_clauses: List[str] = []
+                key_params: List[str] = []
+
+                key_clauses.append("source_word_normalized = ?")
+                key_params.append(normalized_source)
+
+                for key_values, column in (
+                    (end_word_keys, "source_last_word_rime_key"),
+                    (compound_keys, "source_compound_rime_key"),
+                    (backoff_keys, "source_backoff_rime_key"),
+                ):
+                    if key_values:
+                        placeholders = ",".join("?" for _ in key_values)
+                        key_clauses.append(f"{column} IN ({placeholders})")
+                        key_params.extend(key_values)
+
+                if key_clauses:
+                    query += " AND (" + " OR ".join(key_clauses) + ")"
+                    params.extend(key_params)
 
                 if cultural_filter:
                     normalized_filter = _normalize_cultural_value(cultural_filter)
@@ -312,6 +355,10 @@ class CulturalIntelligenceEngine:
 
                 query += " ORDER BY confidence_score DESC, phonetic_similarity DESC LIMIT ?"
                 params.append(limit)
+
+                if not key_clauses:
+                    # Ensure base equality parameter is present when no key clauses were added.
+                    params.insert(1, normalized_source)
 
                 cursor.execute(query, params)
                 results = cursor.fetchall()

@@ -7,11 +7,14 @@ import queue
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Dict, Generator, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, List, Optional, Sequence, Set, Tuple
 
 from rhyme_rarity.utils.observability import get_logger
 
-from demo_data import DEMO_RHYME_PATTERNS, iter_demo_rhyme_rows
+from demo_data import DEMO_RHYME_PATTERNS
+from rhyme_rarity.core.analyzer import normalize_rime_key, phrase_rime_keys
+from rhyme_rarity.core.cmudict_loader import CMUDictLoader
+from rhyme_rarity.core.feature_profile import extract_phrase_components
 
 
 def _ensure_parent_directory(path: str) -> None:
@@ -81,6 +84,8 @@ class SQLiteRhymeRepository:
             component="sqlite_repository",
             db_path=db_path,
         )
+        self._cmu_loader = CMUDictLoader()
+        self._phrase_key_cache: Dict[str, Tuple[Optional[str], Optional[str], Optional[str]]] = {}
         self._logger.info(
             "SQLite repository initialised",
             context={"pool_size": self._pool_size, "pool_timeout": self._pool_timeout},
@@ -120,6 +125,45 @@ class SQLiteRhymeRepository:
             connection.close()
         finally:
             self._pool_semaphore.release()
+
+    def _derive_phrase_keys(
+        self, phrase: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        text = str(phrase or "").strip()
+        if not text:
+            return (None, None, None)
+
+        normalized = text.lower()
+
+        cached = self._phrase_key_cache.get(normalized)
+        if cached is not None:
+            return cached
+
+        loader = self._cmu_loader
+
+        try:
+            components = extract_phrase_components(text, loader)
+            key_info = phrase_rime_keys(components, loader)
+        except Exception:
+            key_info = None
+
+        if key_info is None:
+            result = (None, None, None)
+        else:
+            def _first_normalized(values: Sequence[str]) -> Optional[str]:
+                for candidate in values:
+                    normalized = normalize_rime_key(candidate)
+                    if normalized:
+                        return normalized
+                return None
+
+            anchor_key = _first_normalized(key_info.anchor_rhymes)
+            compound_key = _first_normalized(key_info.compound_strings)
+            backoff_key = _first_normalized(key_info.backoff_keys)
+            result = (anchor_key, compound_key, backoff_key)
+
+        self._phrase_key_cache[normalized] = result
+        return result
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -193,7 +237,13 @@ class SQLiteRhymeRepository:
                 target_context TEXT,
                 lyrical_context TEXT,
                 genre_normalized TEXT,
-                cultural_significance_normalized TEXT
+                cultural_significance_normalized TEXT,
+                source_last_word_rime_key TEXT,
+                source_compound_rime_key TEXT,
+                source_backoff_rime_key TEXT,
+                target_last_word_rime_key TEXT,
+                target_compound_rime_key TEXT,
+                target_backoff_rime_key TEXT
             )
             """
         )
@@ -260,7 +310,24 @@ class SQLiteRhymeRepository:
                 """
             )
 
+        for column_name in (
+            "source_last_word_rime_key",
+            "source_compound_rime_key",
+            "source_backoff_rime_key",
+            "target_last_word_rime_key",
+            "target_compound_rime_key",
+            "target_backoff_rime_key",
+        ):
+            if column_name not in existing_columns:
+                cursor.execute(
+                    f"""
+                    ALTER TABLE song_rhyme_patterns
+                    ADD COLUMN {column_name} TEXT
+                    """
+                )
+
         self._refresh_normalized_columns(connection)
+        self._refresh_phonetic_key_columns(connection)
 
         cursor.execute(
             """
@@ -311,6 +378,42 @@ class SQLiteRhymeRepository:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_source_last_word_key
+            ON song_rhyme_patterns (source_last_word_rime_key, confidence_score DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_source_compound_key
+            ON song_rhyme_patterns (source_compound_rime_key, confidence_score DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_source_backoff_key
+            ON song_rhyme_patterns (source_backoff_rime_key, confidence_score DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_target_last_word_key
+            ON song_rhyme_patterns (target_last_word_rime_key, confidence_score DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_target_compound_key
+            ON song_rhyme_patterns (target_compound_rime_key, confidence_score DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rhyme_target_backoff_key
+            ON song_rhyme_patterns (target_backoff_rime_key, confidence_score DESC)
+            """
+        )
         connection.commit()
 
     def _refresh_normalized_columns(self, connection: sqlite3.Connection) -> None:
@@ -351,6 +454,82 @@ class SQLiteRhymeRepository:
             """
         )
 
+    def _refresh_phonetic_key_columns(self, connection: sqlite3.Connection) -> None:
+        cursor = connection.cursor()
+        self._phrase_key_cache.clear()
+
+        cursor.execute(
+            """
+            SELECT id, source_word, source_last_word_rime_key,
+                   source_compound_rime_key, source_backoff_rime_key
+            FROM song_rhyme_patterns
+            """
+        )
+        source_updates: List[Tuple[Optional[str], Optional[str], Optional[str], int]] = []
+        for row in cursor.fetchall():
+            if not row or not row[1]:
+                continue
+            identifier = int(row[0])
+            phrase = row[1]
+            existing_anchor = normalize_rime_key(row[2]) if row[2] else None
+            existing_compound = normalize_rime_key(row[3]) if row[3] else None
+            existing_backoff = normalize_rime_key(row[4]) if row[4] else None
+            anchor_key, compound_key, backoff_key = self._derive_phrase_keys(phrase)
+            if (
+                anchor_key != existing_anchor
+                or compound_key != existing_compound
+                or backoff_key != existing_backoff
+            ):
+                source_updates.append((anchor_key, compound_key, backoff_key, identifier))
+
+        if source_updates:
+            cursor.executemany(
+                """
+                UPDATE song_rhyme_patterns
+                SET source_last_word_rime_key = ?,
+                    source_compound_rime_key = ?,
+                    source_backoff_rime_key = ?
+                WHERE id = ?
+                """,
+                source_updates,
+            )
+
+        cursor.execute(
+            """
+            SELECT id, target_word, target_last_word_rime_key,
+                   target_compound_rime_key, target_backoff_rime_key
+            FROM song_rhyme_patterns
+            """
+        )
+        target_updates: List[Tuple[Optional[str], Optional[str], Optional[str], int]] = []
+        for row in cursor.fetchall():
+            if not row or not row[1]:
+                continue
+            identifier = int(row[0])
+            phrase = row[1]
+            existing_anchor = normalize_rime_key(row[2]) if row[2] else None
+            existing_compound = normalize_rime_key(row[3]) if row[3] else None
+            existing_backoff = normalize_rime_key(row[4]) if row[4] else None
+            anchor_key, compound_key, backoff_key = self._derive_phrase_keys(phrase)
+            if (
+                anchor_key != existing_anchor
+                or compound_key != existing_compound
+                or backoff_key != existing_backoff
+            ):
+                target_updates.append((anchor_key, compound_key, backoff_key, identifier))
+
+        if target_updates:
+            cursor.executemany(
+                """
+                UPDATE song_rhyme_patterns
+                SET target_last_word_rime_key = ?,
+                    target_compound_rime_key = ?,
+                    target_backoff_rime_key = ?
+                WHERE id = ?
+                """,
+                target_updates,
+            )
+
     def _create_demo_database(self, overwrite: bool = False) -> int:
         if overwrite and os.path.exists(self.db_path):
             os.remove(self.db_path)
@@ -367,13 +546,52 @@ class SQLiteRhymeRepository:
 
             cursor = conn.cursor()
             cursor.execute("DELETE FROM song_rhyme_patterns")
+            rows: List[Tuple[Any, ...]] = []
+            for entry in DEMO_RHYME_PATTERNS:
+                source_word = entry.get("source_word")
+                target_word = entry.get("target_word")
+                source_keys = self._derive_phrase_keys(source_word)
+                target_keys = self._derive_phrase_keys(target_word)
+                rows.append(
+                    (
+                        entry.get("pattern"),
+                        source_word,
+                        _normalise_text(source_word),
+                        target_word,
+                        _normalise_text(target_word),
+                        entry.get("artist"),
+                        _normalise_text(entry.get("artist")),
+                        entry.get("song_title"),
+                        entry.get("release_year"),
+                        entry.get("genre"),
+                        entry.get("line_distance"),
+                        entry.get("confidence_score"),
+                        entry.get("phonetic_similarity"),
+                        entry.get("cultural_significance"),
+                        entry.get("source_context"),
+                        entry.get("target_context"),
+                        entry.get("lyrical_context"),
+                        _normalise_text(entry.get("genre")),
+                        _normalise_cultural_significance(entry.get("cultural_significance")),
+                        source_keys[0],
+                        source_keys[1],
+                        source_keys[2],
+                        target_keys[0],
+                        target_keys[1],
+                        target_keys[2],
+                    )
+                )
+
             cursor.executemany(
                 """
                 INSERT INTO song_rhyme_patterns (
                     pattern,
                     source_word,
+                    source_word_normalized,
                     target_word,
+                    target_word_normalized,
                     artist,
+                    artist_normalized,
                     song_title,
                     release_year,
                     genre,
@@ -383,13 +601,24 @@ class SQLiteRhymeRepository:
                     cultural_significance,
                     source_context,
                     target_context,
-                    lyrical_context
+                    lyrical_context,
+                    genre_normalized,
+                    cultural_significance_normalized,
+                    source_last_word_rime_key,
+                    source_compound_rime_key,
+                    source_backoff_rime_key,
+                    target_last_word_rime_key,
+                    target_compound_rime_key,
+                    target_backoff_rime_key
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
-                iter_demo_rhyme_rows(),
+                rows,
             )
             self._refresh_normalized_columns(conn)
+            self._refresh_phonetic_key_columns(conn)
             conn.commit()
 
         row_count = len(DEMO_RHYME_PATTERNS)
@@ -561,12 +790,31 @@ class SQLiteRhymeRepository:
         genre_filters: Sequence[str],
         max_line_distance: Optional[int],
         limit: Optional[int] = None,
+        phonetic_keys: Optional[Dict[str, Sequence[str]]] = None,
     ) -> Tuple[List[Tuple], List[Tuple]]:
         """Return rhyme matches treating the word as both source and target."""
 
         normalised_source_word = _normalise_text(source_word)
         if normalised_source_word is None:
             return [], []
+
+        phonetic_keys = phonetic_keys or {}
+
+        def _collect_keys(*names: str) -> List[str]:
+            values: Set[str] = set()
+            for name in names:
+                entries = phonetic_keys.get(name)
+                if not entries:
+                    continue
+                for candidate in entries:
+                    normalized = normalize_rime_key(candidate)
+                    if normalized:
+                        values.add(normalized)
+            return sorted(values)
+
+        end_word_keys = _collect_keys("end_word", "last_word", "anchor", "end")
+        compound_keys = _collect_keys("compound", "compound_end", "compound_rime")
+        backoff_keys = _collect_keys("backoff", "backoffs", "ending", "ending_sounds")
 
         base_query = """
             SELECT DISTINCT
@@ -598,13 +846,36 @@ class SQLiteRhymeRepository:
             value for value in (_normalise_genre(item) for item in genre_filters) if value is not None
         ]
 
-        def build_query(column: str) -> Tuple[str, List]:
-            conditions = [
-                f"{column} = ?",
-                "confidence_score >= ?",
-                "source_word != target_word",
-            ]
-            params: List = [normalised_source_word, min_confidence]
+        def build_query(column: str, key_columns: Tuple[str, str, str]) -> Tuple[str, List]:
+            params: List = []
+
+            key_clauses: List[str] = []
+
+            if normalised_source_word:
+                key_clauses.append(f"{column} = ?")
+                params.append(normalised_source_word)
+
+            for key_values, key_column in zip(
+                (end_word_keys, compound_keys, backoff_keys), key_columns
+            ):
+                if key_values:
+                    placeholders = ",".join("?" for _ in key_values)
+                    key_clauses.append(f"{key_column} IN ({placeholders})")
+                    params.extend(key_values)
+
+            if key_clauses:
+                conditions = ["(" + " OR ".join(key_clauses) + ")"]
+            else:
+                conditions = [f"{column} = ?"]
+                params = [normalised_source_word]
+
+            conditions.extend(
+                [
+                    "confidence_score >= ?",
+                    "source_word != target_word",
+                ]
+            )
+            params.append(min_confidence)
 
             if phonetic_threshold is not None:
                 conditions.append("phonetic_similarity >= ?")
@@ -637,13 +908,28 @@ class SQLiteRhymeRepository:
 
         with self._connect() as conn:
             self._refresh_normalized_columns(conn)
+            self._refresh_phonetic_key_columns(conn)
             conn.commit()
             cursor = conn.cursor()
-            query, params = build_query("source_word_normalized")
+            query, params = build_query(
+                "source_word_normalized",
+                (
+                    "source_last_word_rime_key",
+                    "source_compound_rime_key",
+                    "source_backoff_rime_key",
+                ),
+            )
             cursor.execute(query, params)
             source_rows = cursor.fetchall()
 
-            query, params = build_query("target_word_normalized")
+            query, params = build_query(
+                "target_word_normalized",
+                (
+                    "target_last_word_rime_key",
+                    "target_compound_rime_key",
+                    "target_backoff_rime_key",
+                ),
+            )
             cursor.execute(query, params)
             target_rows = cursor.fetchall()
 

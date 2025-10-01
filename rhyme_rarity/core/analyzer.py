@@ -1323,6 +1323,20 @@ class PhraseRimeKeyInfo:
     compound_strings: Tuple[str, ...]
 
 
+def normalize_rime_key(value: Optional[str]) -> Optional[str]:
+    """Return a canonical representation for rime key comparisons."""
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    tokens = [segment.strip().upper() for segment in text.split() if segment.strip()]
+    if not tokens:
+        return None
+
+    return " ".join(tokens)
+
+
 def collect_rhyme_parts(word: str, loader: Optional[CMUDictLoader]) -> Set[str]:
     """Return CMU rhyme parts for ``word`` with a pronouncing fallback."""
 

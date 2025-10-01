@@ -20,6 +20,7 @@ from rhyme_rarity.core import (
     extract_phrase_components,
     passes_gate,
 )
+from rhyme_rarity.core.analyzer import normalize_rime_key, phrase_rime_keys
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
 
@@ -727,6 +728,43 @@ class RhymeQueryOrchestrator:
 
         phonetics = self._describe_word(analyzer, source_word)
 
+        loader_for_keys: Optional[Any] = None
+        if cmu_loader is not None and hasattr(cmu_loader, "get_pronunciations"):
+            loader_for_keys = cmu_loader
+        elif analyzer is not None:
+            candidate_loader = getattr(analyzer, "cmu_loader", None)
+            if candidate_loader is not None and hasattr(candidate_loader, "get_pronunciations"):
+                loader_for_keys = candidate_loader
+
+        phonetic_key_set: Dict[str, Set[str]] = {
+            'end_word': set(),
+            'compound': set(),
+            'backoff': set(),
+        }
+        flattened_keys: Set[str] = set()
+
+        try:
+            key_info = phrase_rime_keys(components, loader_for_keys)
+        except Exception:
+            key_info = None
+
+        if key_info is not None:
+            for value in key_info.anchor_rhymes:
+                normalized_key = normalize_rime_key(value)
+                if normalized_key:
+                    phonetic_key_set['end_word'].add(normalized_key)
+                    flattened_keys.add(normalized_key)
+            for value in key_info.compound_strings:
+                normalized_key = normalize_rime_key(value)
+                if normalized_key:
+                    phonetic_key_set['compound'].add(normalized_key)
+                    flattened_keys.add(normalized_key)
+            for value in key_info.backoff_keys:
+                normalized_key = normalize_rime_key(value)
+                if normalized_key:
+                    phonetic_key_set['backoff'].add(normalized_key)
+                    flattened_keys.add(normalized_key)
+
         signature_provenance: Dict[str, Set[str]] = {}
         cultural_signatures: Set[str] = set()
         if cultural_engine and hasattr(cultural_engine, 'derive_rhyme_signatures'):
@@ -771,6 +809,11 @@ class RhymeQueryOrchestrator:
             'reference_similarity': 0.0,
             'is_multi_word': bool(phonetics.get('is_multi_word')),
             'signature_provenance': profile_signature_provenance,
+            'phrase_rime_keys': {
+                key: sorted(values)
+                for key, values in phonetic_key_set.items()
+                if values
+            },
         }
 
         return {
@@ -781,6 +824,12 @@ class RhymeQueryOrchestrator:
             'threshold': 0.7,
             'reference_similarity': 0.0,
             'signature_provenance': signature_provenance,
+            'phonetic_key_set': {
+                key: sorted(values)
+                for key, values in phonetic_key_set.items()
+                if values
+            },
+            'phonetic_keys': sorted(flattened_keys),
         }
 
     def _update_threshold_from_similarity(self, context: Dict[str, Any], similarity: float) -> None:
@@ -1142,6 +1191,7 @@ class RhymeQueryOrchestrator:
                 genre_filters=sorted(genre_filters),
                 max_line_distance=max_line_distance,
                 limit=limit,
+                phonetic_keys=context.get('phonetic_key_set'),
             )
         except Exception as exc:
             self._logger.error(
