@@ -12,7 +12,7 @@ app_file: "app.py"
 
 RhymeRarity is an experimental research project that explores uncommon rhyme patterns drawn from authentic hip-hop lyrics. The application bundles three cooperating engines that surface culturally grounded rhymes which are difficult for large language models to produce on demand:
 
-- **Module 1 – Enhanced Core Phonetic Analysis** (`module1_enhanced_core_phonetic.py`): scores phonetic similarity, syllable span, stress alignment, and Bradley-inspired rhyme devices using the CMU Pronouncing Dictionary.
+- **Module 1 – Enhanced Core Phonetic Analysis** (`module1_enhanced_core_phonetic.py`): scores phonetic similarity, syllable span, stress alignment, and rhyme devices using the CMU Pronouncing Dictionary.
 - **Module 2 – Enhanced Anti-LLM Rhyme Engine** (`module2_enhanced_anti_llm.py`): expands on Module 1 results to prioritise patterns that challenge common LLM failure modes while capturing prosody and internal rhyme complexity.
 - **Module 3 – Enhanced Cultural Database Engine** (`module3_enhanced_cultural_database.py`): layers cultural context, attribution, rhythm-aware metadata, and genre-aware filtering over the rhyme search.
 
@@ -24,7 +24,7 @@ The project ships with a Gradio interface (`app.py`) that ties the modules toget
 
 The refreshed release integrates insights from contemporary rap-poetics scholarship and popular rhyme dictionaries:
 
-- **Bradley device detection**: classify matches as pure, multisyllabic, assonant, consonant, or slant rhymes following Adam Bradley's *Book of Rhymes* taxonomy.
+- **Classifier**: classify matches as pure, multisyllabic, assonant, consonant, or slant rhymes.
 - **Syllable and stress filters**: constrain search results by syllable span, stress alignment, and cadence tags to emulate RhymeZone, Double-Rhyme, and Bryant's pattern filters while surfacing uncommon, rap-oriented pairings.
 - **Prosody analytics**: compute cadence ratios, internal rhyme potential, and sonic blend (assonance/consonance) so writers can balance rarity against rhythmic feel.
 - **Rap metadata enrichment**: anti-LLM patterns inherit artist, era, and stylistic signals from the cultural engine while tagging LLM weakness categories for targeted practice.
