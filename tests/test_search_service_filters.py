@@ -174,6 +174,89 @@ def test_min_confidence_filter_blocks_low_scoring_entries() -> None:
     assert result["rap_db"] == []
 
 
+def test_relaxed_confidence_refills_scarce_buckets() -> None:
+    service = make_service([])
+    orchestrator = service.orchestrator
+
+    perfect_entry = {
+        "target_word": "Alpha",
+        "pattern": "Echo / Alpha",
+        "confidence": 0.92,
+        "combined_score": 0.92,
+        "rarity_score": 0.6,
+        "feature_profile": {"rhyme_type": "perfect"},
+        "result_source": "phonetic",
+    }
+    slant_entry = {
+        "target_word": "beta",
+        "pattern": "Echo / beta",
+        "confidence": 0.6,
+        "combined_score": 0.6,
+        "rarity_score": 0.55,
+        "feature_profile": {"rhyme_type": "slant"},
+        "result_source": "phonetic",
+    }
+    multi_entry = {
+        "target_word": "gamma ray",
+        "pattern": "Echo / gamma ray",
+        "confidence": 0.58,
+        "combined_score": 0.58,
+        "rarity_score": 0.5,
+        "feature_profile": {"rhyme_type": "slant"},
+        "result_source": "phonetic",
+        "is_multi_word": True,
+        "target_phonetics": {"stress_pattern_display": "1-1"},
+    }
+
+    filters = {
+        "requested_min_confidence": 0.8,
+        "min_confidence": 0.8,
+        "bucket_confidence_floors": {
+            "perfect": 0.8,
+            "slant": 0.8,
+            "multi_word": 0.8,
+        },
+    }
+
+    result = orchestrator._finalize_results(
+        {"profile": {"word": "Echo"}},
+        phonetic=[dict(perfect_entry)],
+        cultural=[],
+        anti_llm=[],
+        filters=filters,
+        limit=5,
+        raw_phonetic=[dict(perfect_entry), dict(slant_entry), dict(multi_entry)],
+        raw_anti_llm=[],
+        base_min_confidence=0.8,
+        filter_parameters={
+            "min_rarity": None,
+            "min_stress_alignment": None,
+            "cadence_focus": None,
+            "allowed_rhyme_types": set(),
+            "bradley_devices": set(),
+            "require_internal": False,
+            "min_syllables": None,
+            "max_syllables": None,
+            "max_line_distance": None,
+        },
+    )
+
+    perfect_targets = [entry["target_word"] for entry in result["perfect"]]
+    assert perfect_targets == ["Alpha"]
+
+    slant_targets = [entry["target_word"] for entry in result["slant"]]
+    multi_targets = [entry["target_word"] for entry in result["multi_word"]]
+
+    assert "beta" in slant_targets
+    assert "gamma ray" in multi_targets
+
+    filters = result["filters"]
+    assert filters["bucket_confidence_floors"]["perfect"] == pytest.approx(0.8)
+    assert filters["bucket_confidence_floors"]["slant"] == pytest.approx(0.55)
+    assert filters["bucket_confidence_floors"]["multi_word"] == pytest.approx(0.55)
+    assert set(filters.get("relaxed_buckets", [])) == {"slant", "multi_word"}
+
+
 def test_rarity_and_stress_filters_keep_only_strong_matches() -> None:
     patterns = [
         DummyPattern("Alpha", confidence=0.9, rarity_score=0.6, stress_alignment=0.8),

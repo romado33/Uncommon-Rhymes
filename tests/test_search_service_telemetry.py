@@ -237,6 +237,97 @@ def test_anti_llm_respects_dynamic_threshold() -> None:
     assert counters["search.anti_llm.threshold_blocked"] >= 1
 
 
+def test_repopulation_metadata_is_recorded() -> None:
+    telemetry = StructuredTelemetry(time_fn=FakeClock())
+    repo = DummyRepository()
+    analyzer = DummyAnalyzer()
+    cmu_repo = DummyCmuRepository()
+
+    service = SearchService(
+        repository=repo,
+        phonetic_analyzer=analyzer,
+        cultural_engine=None,
+        anti_llm_engine=None,
+        telemetry=telemetry,
+        cmu_repository=cmu_repo,
+    )
+
+    orchestrator = service.orchestrator
+
+    perfect_entry = {
+        "target_word": "Prime",
+        "pattern": "Echo / Prime",
+        "confidence": 0.9,
+        "combined_score": 0.9,
+        "rarity_score": 0.7,
+        "result_source": "phonetic",
+        "feature_profile": {"rhyme_type": "perfect"},
+    }
+    slant_entry = {
+        "target_word": "Loose",
+        "pattern": "Echo / Loose",
+        "confidence": 0.6,
+        "combined_score": 0.6,
+        "rarity_score": 0.5,
+        "result_source": "phonetic",
+        "feature_profile": {"rhyme_type": "slant"},
+    }
+    multi_entry = {
+        "target_word": "Loose crew",
+        "pattern": "Echo / Loose crew",
+        "confidence": 0.58,
+        "combined_score": 0.58,
+        "rarity_score": 0.55,
+        "result_source": "phonetic",
+        "feature_profile": {"rhyme_type": "slant"},
+        "is_multi_word": True,
+    }
+
+    filters = {
+        "requested_min_confidence": 0.85,
+        "min_confidence": 0.85,
+        "bucket_confidence_floors": {
+            "perfect": 0.85,
+            "slant": 0.85,
+            "multi_word": 0.85,
+        },
+    }
+
+    orchestrator._finalize_results(
+        {"profile": {"word": "Echo"}},
+        phonetic=[dict(perfect_entry)],
+        cultural=[],
+        anti_llm=[],
+        filters=filters,
+        limit=5,
+        raw_phonetic=[dict(perfect_entry), dict(slant_entry), dict(multi_entry)],
+        raw_anti_llm=[],
+        base_min_confidence=0.85,
+        filter_parameters={
+            "min_rarity": None,
+            "min_stress_alignment": None,
+            "cadence_focus": None,
+            "allowed_rhyme_types": set(),
+            "bradley_devices": set(),
+            "require_internal": False,
+            "min_syllables": None,
+            "max_syllables": None,
+            "max_line_distance": None,
+        },
+    )
+
+    metrics = telemetry.snapshot()
+    bucket_meta = metrics["metadata"].get("result.bucket_confidence_floors")
+    assert bucket_meta is not None
+    assert bucket_meta["perfect"] == pytest.approx(0.85)
+    assert bucket_meta["slant"] == pytest.approx(0.55)
+    assert bucket_meta["multi_word"] == pytest.approx(0.55)
+
+    repop_meta = metrics["metadata"].get("result.bucket_repopulation")
+    assert repop_meta is not None
+    assert set(repop_meta["buckets"]) == {"slant", "multi_word"}
+
+
 def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
     formatter = RhymeResultFormatter()
     rhymes = {
