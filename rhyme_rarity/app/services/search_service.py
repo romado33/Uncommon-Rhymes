@@ -1200,7 +1200,7 @@ class RhymeQueryOrchestrator:
             )
             return []
 
-        def _row_to_entry(row: Tuple[Any, ...]) -> Dict[str, Any]:
+        def _row_to_entry(row: Tuple[Any, ...]) -> Optional[Dict[str, Any]]:
             (
                 source,
                 target,
@@ -1225,6 +1225,13 @@ class RhymeQueryOrchestrator:
                 source, target = target, source
                 source_context, target_context = target_context, source_context
                 source_clean, target_clean = target_clean, source_clean
+
+            if query_word:
+                if (
+                    source_clean.lower() != query_word
+                    and target_clean.lower() != query_word
+                ):
+                    return None
 
             combined_context: Optional[str]
             parts = [
@@ -1268,7 +1275,11 @@ class RhymeQueryOrchestrator:
                 entry['target_phonetics'] = self._describe_word(None, target)
             return entry
 
-        entries = [_row_to_entry(row) for row in source_rows + target_rows]
+        entries = []
+        for row in source_rows + target_rows:
+            entry = _row_to_entry(row)
+            if entry is not None:
+                entries.append(entry)
 
         if cultural_engine:
             for entry in entries:
