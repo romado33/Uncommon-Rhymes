@@ -116,6 +116,22 @@ pytest
 
 Running the tests ensures the fallback database creation and rhyme search behave as expected.
 
+### Optional: Explore the Streamlit prototype
+
+If you prefer a more traditional dashboard layout, the repository also
+contains a Streamlit prototype that exercises the same rhyme search
+engines. Launch it with:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+The app mirrors the Gradio workflow but adds tabbed navigation and
+sidebar configuration. It is helpful for user research sessions where
+participants are already familiar with Streamlit-based tooling. Make
+sure the required packages from `requirements.txt` are installed before
+starting the prototype.
+
 ## Additional notes
 
 - The CMU dictionary (`cmudict.7b`) must remain alongside `module1_enhanced_core_phonetic.py` so that the phonetic loader can locate it. You can swap in a larger dictionary file if desired.
