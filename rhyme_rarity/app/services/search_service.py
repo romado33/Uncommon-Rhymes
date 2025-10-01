@@ -1356,6 +1356,7 @@ class RhymeQueryOrchestrator:
         allowed_end_words: Optional[Set[str]] = None,
         enforce_gate: bool = False,
         strength: float = 1.0,
+        constrain_to_allowed_end_words: bool = False,
     ) -> List[Dict[str, Any]]:
         """Generate anti-LLM patterns with consistent dictionaries."""
 
@@ -1378,6 +1379,9 @@ class RhymeQueryOrchestrator:
             fallback_floor = float(min_confidence)
 
         allowed_norm = {word for word in (allowed_end_words or set()) if word}
+        apply_slant_gate = (
+            constrain_to_allowed_end_words and enforce_gate and strength > 0
+        )
 
         try:
             raw_patterns = anti_llm_engine.generate_anti_llm_patterns(
@@ -1430,16 +1434,11 @@ class RhymeQueryOrchestrator:
                 confidence_val = 0.0
 
             terminal_word = self._normalize_terminal(target_word)
-            if allowed_norm:
-                if terminal_word not in allowed_norm:
-                    if enforce_gate and strength > 0:
-                        if telemetry:
-                            telemetry.increment('search.anti_llm.slant_gate_block')
-                        continue
-            elif enforce_gate and strength > 0:
-                if telemetry:
-                    telemetry.increment('search.anti_llm.slant_gate_block')
-                continue
+            if apply_slant_gate:
+                if not allowed_norm or terminal_word not in allowed_norm:
+                    if telemetry:
+                        telemetry.increment('search.anti_llm.slant_gate_block')
+                    continue
 
             gate_mode = 'strict'
             if confidence_val < threshold:
