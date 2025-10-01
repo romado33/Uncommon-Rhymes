@@ -1,0 +1,234 @@
+===================================================== test session starts ======================================================
+platform linux -- Python 3.12.10, pytest-8.4.1, pluggy-1.6.0
+rootdir: /workspace/Uncommon-Rhymes
+plugins: anyio-4.11.0
+collected 250 items
+
+tests/test_anti_llm_caching.py .                                                                                         [  0%]
+tests/test_anti_llm_engine.py ......                                                                                     [  2%]
+tests/test_app.py F...F........                                                                                          [  8%]
+tests/test_cmudict_loader.py ....                                                                                        [  9%]
+tests/test_cultural_engine.py ....                                                                                       [ 11%]
+tests/test_database_integration.py ....                                                                                  [ 12%]
+tests/test_phonetic_caching.py .                                                                                         [ 13%]
+tests/test_phonetic_feature_similarity.py ...                                                                            [ 14%]
+tests/test_phonetic_syllables.py ............                                                                            [ 19%]
+tests/test_phrase_corpus.py ......                                                                                       [ 21%]
+tests/test_phrase_corpus_templates.py ...                                                                                [ 22%]
+tests/test_phrase_workflows.py .F..                                                                                      [ 24%]
+tests/test_rhyme_e2e.py ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 62%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss.                                                      [ 89%]
+tests/test_search_service_filters.py ........                                                                            [ 92%]
+tests/test_search_service_input_validation.py .....                                                                      [ 94%]
+tests/test_search_service_telemetry.py ..F........                                                                       [ 99%]
+tests/test_utils_helpers.py ..                                                                                           [100%]
+
+=========================================================== FAILURES ===========================================================
+____________________________________ test_search_rhymes_returns_counterpart_for_target_word ____________________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_search_rhymes_returns_cou0')
+
+    def test_search_rhymes_returns_counterpart_for_target_word(tmp_path):
+        db_path = tmp_path / "patterns.db"
+        create_test_database(str(db_path))
+    
+        app = RhymeRarityApp(db_path=str(db_path))
+    
+        results = app.search_rhymes("glove", limit=5, min_confidence=0.0)
+    
+        assert "source_profile" in results
+        assert isinstance(results["source_profile"], dict)
+    
+        rap_results = results["rap_db"]
+        assert rap_results, "Expected at least one rhyme suggestion"
+        first = rap_results[0]
+        assert first["target_word"] == "love"
+        assert first["pattern"] == "glove / love"
+        assert first["source_context"] == "Glove in the chorus"
+        assert first["target_context"] == "Love in the bridge"
+        assert first["artist"] == "Artist C"
+        assert first["song"] == "Song C"
+        assert first["year"] == 1998
+        assert first["lyrical_context"] == "Glove in the chorus // Love in the bridge"
+>       assert all(result["target_word"] == "love" for result in rap_results)
+E       assert False
+E        +  where False = all(<generator object test_search_rhymes_returns_counterpart_for_target_word.<locals>.<genexpr> at 0x7f8694bfea80>)
+
+tests/test_app.py:266: AssertionError
+_______________________________________ test_search_rhymes_phonetic_rhyme_cases[orange] ________________________________________
+
+deterministic_cmu_loader = <test_app.DeterministicCMULoader object at 0x7f868063ee40>, source_word = 'orange'
+expected_syllables = 2
+expectations = ({'expected_syllables': 2, 'is_multi': False, 'min_confidence': 0.7, 'min_similarity': 0.95, ...}, {'expected_syllables': 2, 'is_multi': True, 'min_confidence': 0.35, 'min_similarity': 0.4, ...})
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_search_rhymes_phonetic_rh1')
+
+    @pytest.mark.parametrize(
+        "source_word, expected_syllables, expectations",
+        [
+            (
+                "desk",
+                1,
+                (
+                    {
+                        "target": "grotesque",
+                        "min_similarity": 0.95,
+                        "min_confidence": 0.7,
+                        "is_multi": False,
+                        "expected_syllables": 2,
+                    },
+                ),
+            ),
+            (
+                "orange",
+                2,
+                (
+                    {
+                        "target": "sporange",
+                        "min_similarity": 0.95,
+                        "min_confidence": 0.7,
+                        "is_multi": False,
+                        "expected_syllables": 2,
+                    },
+                    {
+                        "target": "door hinge",
+                        "min_similarity": 0.4,
+                        "min_confidence": 0.35,
+                        "is_multi": True,
+                        "expected_syllables": 2,
+                    },
+                ),
+            ),
+            (
+                "fire",
+                1,
+                (
+                    {
+                        "target": "choir",
+                        "min_similarity": 0.95,
+                        "min_confidence": 0.7,
+                        "is_multi": False,
+                        "expected_syllables": 1,
+                    },
+                ),
+            ),
+            (
+                "wild fire",
+                2,
+                (
+                    {
+                        "target": "wild choir",
+                        "min_similarity": 0.95,
+                        "min_confidence": 0.7,
+                        "is_multi": True,
+                        "expected_syllables": 2,
+                    },
+                ),
+            ),
+        ],
+        ids=["desk", "orange", "fire", "wild-fire"],
+    )
+    def test_search_rhymes_phonetic_rhyme_cases(
+        deterministic_cmu_loader, source_word, expected_syllables, expectations, tmp_path
+    ):
+        db_path = tmp_path / "patterns.db"
+        create_test_database(str(db_path))
+    
+        app = RhymeRarityApp(db_path=str(db_path), cmu_loader=deterministic_cmu_loader)
+        app.set_cultural_engine(None)
+    
+        results = app.search_rhymes(
+            source_word,
+            limit=10,
+            min_confidence=0.0,
+            result_sources=["phonetic"],
+        )
+    
+        source_profile = results["source_profile"]
+        assert source_profile["phonetics"]["syllables"] == expected_syllables
+    
+        single_results = _single_word_entries(results)
+        multi_results = results["multi_word"]
+        assert single_results or multi_results, f"Expected phonetic results for '{source_word}'"
+    
+        for expectation in expectations:
+            target = expectation["target"]
+            search_pool = multi_results if expectation.get("is_multi") else single_results
+            entry = next(
+                (
+                    candidate
+                    for candidate in search_pool
+                    if candidate["target_word"] == target
+                ),
+                None,
+            )
+            if entry is None and expectation.get("is_multi"):
+                entry = next(
+                    (
+                        candidate
+                        for candidate in single_results
+                        if candidate["target_word"] == target
+                    ),
+                    None,
+                )
+>           assert entry is not None, f"Expected phonetic rhyme '{target}' for '{source_word}'"
+E           AssertionError: Expected phonetic rhyme 'door hinge' for 'orange'
+E           assert None is not None
+
+tests/test_app.py:536: AssertionError
+______________________________________ test_retrieve_phrases_by_last_word_returns_idioms _______________________________________
+
+    def test_retrieve_phrases_by_last_word_returns_idioms() -> None:
+        results = retrieve_phrases_by_last_word("window", rhyme_keys=("OW",))
+    
+        phrases = {phrase for phrase, _ in results}
+>       assert "open window" in phrases
+E       AssertionError: assert 'open window' in set()
+
+tests/test_phrase_workflows.py:36: AssertionError
+___________________________________________ test_anti_llm_respects_dynamic_threshold ___________________________________________
+
+    def test_anti_llm_respects_dynamic_threshold() -> None:
+        telemetry = StructuredTelemetry(time_fn=FakeClock())
+        repo = DummyRepository()
+        analyzer = DummyAnalyzer()
+        cmu_repo = DummyCmuRepository([("mecho", 0.95, 0.8, 0.95)])
+        anti_engine = DummyAntiEngine(
+            [
+                DummyPattern("Alpha", confidence=0.94, rarity_score=0.6),
+                DummyPattern("Beta", confidence=0.83, rarity_score=0.7),
+                DummyPattern("Gamma", confidence=0.6, rarity_score=0.4),
+            ]
+        )
+    
+        service = SearchService(
+            repository=repo,
+            phonetic_analyzer=analyzer,
+            cultural_engine=None,
+            anti_llm_engine=anti_engine,
+            telemetry=telemetry,
+            cmu_repository=cmu_repo,
+        )
+    
+        results = service.search_rhymes(
+            "Echo",
+            limit=3,
+            result_sources=["phonetic", "anti_llm"],
+            min_confidence=0.6,
+        )
+    
+        anti_targets = {entry["target_word"]: entry for entry in _anti_entries(results)}
+>       assert set(anti_targets) == {"Alpha", "Beta"}
+E       AssertionError: assert set() == {'Alpha', 'Beta'}
+E         
+E         Extra items in the right set:
+E         'Beta'
+E         'Alpha'
+E         Use -v to get more diff
+
+tests/test_search_service_telemetry.py:232: AssertionError
+=================================================== short test summary info ====================================================
+FAILED tests/test_app.py::test_search_rhymes_returns_counterpart_for_target_word - assert False
+FAILED tests/test_app.py::test_search_rhymes_phonetic_rhyme_cases[orange] - AssertionError: Expected phonetic rhyme 'door hin...
+FAILED tests/test_phrase_workflows.py::test_retrieve_phrases_by_last_word_returns_idioms - AssertionError: assert 'open windo...
+FAILED tests/test_search_service_telemetry.py::test_anti_llm_respects_dynamic_threshold - AssertionError: assert set() == {'A...
+==================================== 4 failed, 84 passed, 162 skipped in 150.24s (0:02:30) =====================================
