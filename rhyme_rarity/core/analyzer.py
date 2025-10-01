@@ -21,6 +21,7 @@ from .feature_profile import (
     extract_phrase_components,
     pronouncing,
 )
+from .phrase_corpus import lookup_ngram_phrases, lookup_template_words
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
 
 RARITY_SIMILARITY_WEIGHT: float = 0.65
@@ -1335,6 +1336,64 @@ def get_cmu_rhymes(
             local_candidates = []
 
     candidate_words: List[str] = list(local_candidates)
+    preferred_single_candidates: Set[str] = {
+        candidate.strip().lower() for candidate in candidate_words if candidate
+    }
+
+    def _collect_rhyme_parts_for_word(term: str) -> Set[str]:
+        parts: Set[str] = set()
+        if not term:
+            return parts
+
+        if loader is not None:
+            try:
+                parts.update(loader.get_rhyme_parts(term))
+            except Exception:
+                pass
+
+        if not parts and pronouncing is not None:
+            try:
+                for phones in pronouncing.phones_for_word(term):
+                    rhyme_part = pronouncing.rhyming_part(phones)
+                    if rhyme_part:
+                        parts.add(rhyme_part)
+            except Exception:
+                pass
+
+        return parts
+
+    def _phonetic_backoffs_from_parts(parts: Iterable[str]) -> Tuple[str, ...]:
+        seen: Set[str] = set()
+        ordered: List[str] = []
+        for part in parts:
+            cleaned = str(part or "").strip()
+            if not cleaned:
+                continue
+
+            tokens = cleaned.split()
+            for index in range(len(tokens)):
+                segment = " ".join(tokens[index:])
+                if segment and segment not in seen:
+                    seen.add(segment)
+                    ordered.append(segment)
+
+            normalized = re.sub(r"\d", "", cleaned)
+            normalized = re.sub(r"\s+", " ", normalized).strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+
+            if tokens:
+                vowel_only = tokens[-1]
+                vowel_clean = re.sub(r"\d", "", vowel_only)
+                if vowel_clean and vowel_clean not in seen:
+                    seen.add(vowel_clean)
+                    ordered.append(vowel_clean)
+
+        return tuple(ordered)
+
+    anchor_rhyme_parts = _collect_rhyme_parts_for_word(anchor_lookup)
+    anchor_backoff_keys = _phonetic_backoffs_from_parts(anchor_rhyme_parts)
 
     if not candidate_words and pronouncing is not None and anchor_lookup:
         try:
@@ -1355,6 +1414,7 @@ def get_cmu_rhymes(
                     continue
                 seen.add(cleaned)
                 candidate_words.append(cleaned)
+                preferred_single_candidates.add(cleaned)
         except Exception:
             candidate_words = []
 
@@ -1389,11 +1449,11 @@ def get_cmu_rhymes(
     scored_candidates: List[Dict[str, Any]] = []
     seen_variants: Set[str] = set()
 
-    multi_similarity_factor = 0.93
-    multi_rarity_factor = 0.9
-    multi_combined_factor = 0.93
+    multi_similarity_factor = 0.9
+    multi_rarity_factor = 0.85
+    multi_combined_factor = 0.88
     multi_prosody_factor = 0.9
-    multi_fluency_factor = 0.92
+    multi_fluency_factor = 0.9
 
     default_variant_weights = {
         "phonetic": 0.55,
@@ -1453,6 +1513,144 @@ def get_cmu_rhymes(
         if token in {"the", "a", "an", "to", "for", "with", "in", "on"}
     }
 
+    template_seed_cache: Dict[Tuple[str, ...], Dict[str, Set[str]]] = {}
+    corpus_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], Set[str]] = {}
+    creative_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], Set[str]] = {}
+
+    creative_phrase_hook = getattr(scoring_analyzer, "generate_constrained_phrases", None)
+
+    def _collect_template_seeds(backoff_keys: Tuple[str, ...]) -> Dict[str, Set[str]]:
+        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        cache_key = effective_keys if effective_keys else tuple()
+        if cache_key not in template_seed_cache:
+            lookup_keys = effective_keys if effective_keys else tuple()
+            seeds = lookup_template_words(lookup_keys)
+            template_seed_cache[cache_key] = {
+                slot: set(values) for slot, values in seeds.items()
+            }
+        return template_seed_cache[cache_key]
+
+    def _collect_corpus_phrases(word_key: str, backoff_keys: Tuple[str, ...]) -> Set[str]:
+        normalized_word = (word_key or "").strip().lower()
+        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        cache_key = (normalized_word, effective_keys if effective_keys else tuple())
+        if cache_key not in corpus_phrase_cache:
+            phrases = lookup_ngram_phrases(normalized_word, effective_keys or tuple())
+            corpus_phrase_cache[cache_key] = set(phrases)
+        return corpus_phrase_cache[cache_key]
+
+    def _invoke_creative_hook(word_key: str, backoff_keys: Tuple[str, ...]) -> Set[str]:
+        if not callable(creative_phrase_hook):
+            return set()
+
+        normalized_word = (word_key or "").strip().lower()
+        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        cache_key = (normalized_word, effective_keys if effective_keys else tuple())
+        if cache_key in creative_phrase_cache:
+            return creative_phrase_cache[cache_key]
+
+        try:
+            generated = creative_phrase_hook(
+                base_word=word_key,
+                rhyme_keys=tuple(effective_keys or tuple()),
+            )
+        except TypeError:
+            try:
+                generated = creative_phrase_hook(word_key, tuple(effective_keys or tuple()))
+            except Exception:
+                generated = []
+        except Exception:
+            generated = []
+
+        phrases: Set[str] = set()
+        for phrase in generated or []:
+            if not phrase:
+                continue
+            phrase_text = str(phrase).strip()
+            if not phrase_text:
+                continue
+            if phrase_text.lower().split()[-1] == normalized_word:
+                phrases.add(phrase_text)
+
+        creative_phrase_cache[cache_key] = phrases
+        return phrases
+
+    def _assemble_template_variants(
+        word_key: str, seeds: Dict[str, Set[str]]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        suggestions: List[Tuple[str, Dict[str, Any]]] = []
+        seen: Set[str] = set()
+        target = (word_key or "").strip()
+        if not target:
+            return suggestions
+
+        slot_limits = {"adj+noun": 2, "compound": 1, "verb+particle": 2}
+        slot_counts = {key: 0 for key in slot_limits}
+
+        def _register(phrase: str, metadata: Dict[str, Any]) -> None:
+            normalized = phrase.strip().lower()
+            if not normalized or normalized in seen:
+                return
+            pattern = metadata.get("template_pattern")
+            if pattern in slot_limits and slot_counts.get(pattern, 0) >= slot_limits[pattern]:
+                return
+            if pattern in slot_limits:
+                slot_counts[pattern] = slot_counts.get(pattern, 0) + 1
+            seen.add(normalized)
+            suggestions.append((phrase, metadata))
+
+        lower_target = target.lower()
+
+        for adj in sorted(seeds.get("adjectives", set())):
+            modifier = str(adj).strip()
+            if not modifier or modifier.lower() == lower_target:
+                continue
+            phrase = f"{modifier} {target}".strip()
+            if phrase.lower().split()[-1] != lower_target:
+                continue
+            _register(
+                phrase,
+                {
+                    "multi_source": "template",
+                    "template_pattern": "adj+noun",
+                    "template_modifier": modifier,
+                },
+            )
+
+        for noun in sorted(seeds.get("nouns", set())):
+            modifier = str(noun).strip()
+            if not modifier or modifier.lower() == lower_target:
+                continue
+            phrase = f"{modifier} {target}".strip()
+            if phrase.lower().split()[-1] != lower_target:
+                continue
+            _register(
+                phrase,
+                {
+                    "multi_source": "template",
+                    "template_pattern": "compound",
+                    "template_modifier": modifier,
+                },
+            )
+
+        for verb in sorted(seeds.get("verbs", set())):
+            modifier = str(verb).strip()
+            if not modifier or modifier.lower() == lower_target:
+                continue
+            phrase = f"{modifier} {target}".strip()
+            if phrase.lower().split()[-1] != lower_target:
+                continue
+            _register(
+                phrase,
+                {
+                    "multi_source": "template",
+                    "template_pattern": "verb+particle",
+                    "template_modifier": modifier,
+                },
+            )
+
+        return suggestions
+
     def _score_variant(
         suggestion: str,
         *,
@@ -1475,6 +1673,14 @@ def get_cmu_rhymes(
             score = float(scoring_analyzer.get_phonetic_similarity(base_phrase, suggestion))
         except Exception:
             score = 0.0
+
+        if (
+            not is_multi
+            and preferred_single_candidates
+            and base_candidate.strip().lower() in preferred_single_candidates
+            and score < 0.95
+        ):
+            score = 0.95
 
         raw_similarity = score
 
@@ -1603,6 +1809,8 @@ def get_cmu_rhymes(
         prosody_raw = prosody_score
         fluency_raw = fluency_score
 
+        contextual_multi = bool(metadata and metadata.get("multi_source") == "contextual")
+
         if is_multi and base_metrics:
             base_similarity = base_metrics.get("similarity")
             base_rarity = base_metrics.get("rarity")
@@ -1611,15 +1819,39 @@ def get_cmu_rhymes(
             base_fluency = base_metrics.get("fluency")
 
             if base_similarity is not None:
-                score = max(score, float(base_similarity) * multi_similarity_factor)
+                if contextual_multi:
+                    score = max(score, float(base_similarity))
+                else:
+                    adjusted_similarity = float(base_similarity) * multi_similarity_factor
+                    score = max(score, adjusted_similarity)
+                    score = min(score, float(base_similarity))
             if base_rarity is not None:
-                rarity = max(rarity, float(base_rarity) * multi_rarity_factor)
+                if contextual_multi:
+                    rarity = max(rarity, float(base_rarity))
+                else:
+                    adjusted_rarity = float(base_rarity) * multi_rarity_factor
+                    rarity = max(rarity, adjusted_rarity)
+                    rarity = min(rarity, float(base_rarity))
             if base_combined is not None:
-                combined = max(combined, float(base_combined) * multi_combined_factor)
+                if contextual_multi:
+                    combined = max(combined, float(base_combined))
+                else:
+                    target_combined = float(base_combined) * multi_combined_factor
+                    combined = min(combined, target_combined)
             if base_prosody is not None:
-                prosody_score = max(prosody_score, float(base_prosody) * multi_prosody_factor)
+                if contextual_multi:
+                    prosody_score = max(prosody_score, float(base_prosody))
+                else:
+                    adjusted_prosody = float(base_prosody) * multi_prosody_factor
+                    prosody_score = max(prosody_score, adjusted_prosody)
+                    prosody_score = min(prosody_score, float(base_prosody))
             if base_fluency is not None:
-                fluency_score = max(fluency_score, float(base_fluency) * multi_fluency_factor)
+                if contextual_multi:
+                    fluency_score = max(fluency_score, float(base_fluency))
+                else:
+                    adjusted_fluency = float(base_fluency) * multi_fluency_factor
+                    fluency_score = max(fluency_score, adjusted_fluency)
+                    fluency_score = min(fluency_score, float(base_fluency))
 
         component_scores = {
             "phonetic": float(score),
@@ -1724,7 +1956,16 @@ def get_cmu_rhymes(
         )
 
         generated_multi = 0
-        max_multi_variants = 3
+        max_multi_variants = 9
+
+        candidate_rhyme_parts = _collect_rhyme_parts_for_word(base_candidate)
+        candidate_backoff_keys = _phonetic_backoffs_from_parts(candidate_rhyme_parts)
+        if candidate_backoff_keys:
+            effective_backoff_keys = candidate_backoff_keys
+        elif anchor_backoff_keys:
+            effective_backoff_keys = anchor_backoff_keys
+        else:
+            effective_backoff_keys = tuple()
 
         if components.total_syllables >= 2 and (prefix_tokens_norm or suffix_tokens_norm):
             multi_tokens = list(prefix_tokens_norm)
@@ -1741,6 +1982,52 @@ def get_cmu_rhymes(
                 )
                 if result:
                     generated_multi += 1
+
+        if generated_multi < max_multi_variants:
+            template_seeds = _collect_template_seeds(tuple(effective_backoff_keys))
+            template_variants = _assemble_template_variants(base_candidate, template_seeds)
+            for phrase, metadata in template_variants:
+                result = _score_variant(
+                    phrase,
+                    is_multi=True,
+                    base_candidate=base_candidate,
+                    base_metrics=base_metrics,
+                    metadata=metadata,
+                )
+                if result:
+                    generated_multi += 1
+                if generated_multi >= max_multi_variants:
+                    break
+
+        if generated_multi < max_multi_variants:
+            corpus_variants = sorted(_collect_corpus_phrases(base_candidate, tuple(effective_backoff_keys)))
+            for phrase in corpus_variants:
+                result = _score_variant(
+                    phrase,
+                    is_multi=True,
+                    base_candidate=base_candidate,
+                    base_metrics=base_metrics,
+                    metadata={"multi_source": "corpus_ngram"},
+                )
+                if result:
+                    generated_multi += 1
+                if generated_multi >= max_multi_variants:
+                    break
+
+        if generated_multi < max_multi_variants:
+            creative_variants = sorted(_invoke_creative_hook(base_candidate, tuple(effective_backoff_keys)))
+            for phrase in creative_variants:
+                result = _score_variant(
+                    phrase,
+                    is_multi=True,
+                    base_candidate=base_candidate,
+                    base_metrics=base_metrics,
+                    metadata={"multi_source": "creative_hook"},
+                )
+                if result:
+                    generated_multi += 1
+                if generated_multi >= max_multi_variants:
+                    break
 
         def _generate_phoneme_splits(max_variants: int) -> int:
             if (
@@ -1808,7 +2095,14 @@ def get_cmu_rhymes(
         if generated_multi < max_multi_variants:
             generated_multi += _generate_phoneme_splits(max_multi_variants - generated_multi)
 
-    scored_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
+    scored_candidates.sort(
+        key=lambda item: (
+            item.get("combined", 0.0),
+            1 if not item.get("is_multi_word") else 0,
+            item.get("similarity", 0.0),
+        ),
+        reverse=True,
+    )
 
     if limit >= len(scored_candidates):
         return scored_candidates[:limit]

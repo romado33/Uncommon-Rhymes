@@ -61,6 +61,54 @@ def test_get_cmu_rhymes_uses_anchor_and_produces_phrase_variants():
     assert "paper fail" in phrase_words or "paper mail" in phrase_words
 
 
+def test_template_and_corpus_variants_expand_multi_word_pool():
+    loader = DummyLoader()
+    analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("paper trail", analyzer=analyzer, cmu_loader=loader, limit=20)
+
+    multi_entries = [entry for entry in results if entry.get("is_multi_word")]
+    assert multi_entries, "Expected multi-word entries from template assembly"
+
+    sources = {entry.get("multi_source") for entry in multi_entries}
+    assert "template" in sources, "Template-driven variants should be surfaced"
+    assert "corpus_ngram" in sources, "N-gram corpus variants should be surfaced"
+
+    multi_words = [entry["word"] for entry in multi_entries]
+    assert len(multi_words) == len(set(multi_words)), "Variants should not duplicate"
+    assert any("chain mail" == word for word in multi_words) or any(
+        "snail mail" == word for word in multi_words
+    ), "Expected idiomatic corpus phrase ending in rhyme key"
+    assert len(multi_words) >= 3, "Should provide broader multi-word coverage"
+
+
+class CreativeHookAnalyzer(EnhancedPhoneticAnalyzer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hook_calls = []
+
+    def generate_constrained_phrases(self, base_word: str, rhyme_keys=()):
+        self.hook_calls.append((base_word, tuple(rhyme_keys)))
+        return [f"beam {base_word}"]
+
+
+def test_constrained_generation_hook_is_respected():
+    loader = DummyLoader()
+    analyzer = CreativeHookAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("paper trail", analyzer=analyzer, cmu_loader=loader, limit=20)
+
+    creative_entries = [
+        entry for entry in results if entry.get("multi_source") == "creative_hook"
+    ]
+
+    assert analyzer.hook_calls, "Expected constrained generation hook to be invoked"
+    assert creative_entries, "Creative hook output should appear in results"
+    assert all(
+        entry["word"].split()[-1] in {"fail", "mail"} for entry in creative_entries
+    )
+
+
 def test_single_word_queries_produce_phoneme_split_multi_words():
     loader = CMUDictLoader()
     analyzer = EnhancedPhoneticAnalyzer(cmu_loader=loader)
