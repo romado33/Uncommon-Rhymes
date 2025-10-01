@@ -22,6 +22,7 @@ from .feature_profile import (
     pronouncing,
 )
 from .phrase_corpus import lookup_ngram_phrases, lookup_template_words
+from .phrases import PhraseCandidate, generate_phrases_for_endwords
 from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
 from .scorer import SlantScore, passes_gate, score_pair
 
@@ -195,6 +196,57 @@ class EnhancedPhoneticAnalyzer:
             'fluency': 0.15,
             'rarity': 0.05,
         }
+
+    def generate_constrained_phrases(
+        self, base_word: str, rhyme_keys: Iterable[str] = ()
+    ) -> List[PhraseCandidate]:
+        """Generate multi-word phrases biased to end with ``base_word``.
+
+        This method exposes a constrained beam-search generator that fills
+        lightweight templates with curated modifiers while ensuring the final
+        token belongs to the supplied end-word inventory.
+        """
+
+        allowed_end_words: List[str] = []
+        seen: Set[str] = set()
+
+        normalized_base = str(base_word or "").strip()
+        if normalized_base:
+            seen.add(normalized_base.lower())
+            allowed_end_words.append(normalized_base)
+
+        loader = getattr(self, "cmu_loader", None)
+        if loader is not None:
+            for key in rhyme_keys:
+                if not key:
+                    continue
+                tokens = [token for token in str(key).split() if token]
+                if not tokens:
+                    continue
+                try:
+                    matches = loader.find_words_by_phonemes(tokens, limit=6)
+                except Exception:
+                    continue
+                for match in matches:
+                    cleaned = str(match or "").strip()
+                    if not cleaned:
+                        continue
+                    lowered = cleaned.lower()
+                    if lowered in seen:
+                        continue
+                    seen.add(lowered)
+                    allowed_end_words.append(cleaned)
+
+        if not allowed_end_words:
+            return []
+
+        generated = generate_phrases_for_endwords(normalized_base, allowed_end_words)
+        enriched: List[PhraseCandidate] = []
+        for candidate in generated:
+            if not isinstance(candidate, PhraseCandidate):
+                continue
+            enriched.append(candidate)
+        return enriched
 
     # ------------------------------------------------------------------
     # Feature utilities
@@ -1477,7 +1529,9 @@ def get_cmu_rhymes(
 
     template_seed_cache: Dict[Tuple[str, ...], Dict[str, Set[str]]] = {}
     corpus_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], Set[str]] = {}
-    creative_phrase_cache: Dict[Tuple[str, Tuple[str, ...]], Set[str]] = {}
+    creative_phrase_cache: Dict[
+        Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]
+    ] = {}
 
     creative_phrase_hook = getattr(scoring_analyzer, "generate_constrained_phrases", None)
 
@@ -1501,9 +1555,11 @@ def get_cmu_rhymes(
             corpus_phrase_cache[cache_key] = set(phrases)
         return corpus_phrase_cache[cache_key]
 
-    def _invoke_creative_hook(word_key: str, backoff_keys: Tuple[str, ...]) -> Set[str]:
+    def _invoke_creative_hook(
+        word_key: str, backoff_keys: Tuple[str, ...]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
         if not callable(creative_phrase_hook):
-            return set()
+            return []
 
         normalized_word = (word_key or "").strip().lower()
         effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
@@ -1524,16 +1580,82 @@ def get_cmu_rhymes(
         except Exception:
             generated = []
 
-        phrases: Set[str] = set()
+        entries: Dict[str, Dict[str, Any]] = {}
+
+        def _capture_metadata(candidate: PhraseCandidate) -> Dict[str, Any]:
+            metadata: Dict[str, Any] = {
+                "creative_template": candidate.template,
+                "creative_score": candidate.score,
+                "creative_tokens": candidate.token_count,
+                "creative_end_word": candidate.end_word,
+            }
+            if candidate.stress_pattern:
+                metadata["creative_stress"] = candidate.stress_pattern
+            return metadata
+
+        def _sort_score(meta: Dict[str, Any]) -> float:
+            try:
+                value = meta.get("creative_score", 0.0)
+                if value is None:
+                    return 0.0
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
         for phrase in generated or []:
             if not phrase:
                 continue
-            phrase_text = str(phrase).strip()
+
+            metadata: Dict[str, Any] = {}
+            if isinstance(phrase, PhraseCandidate):
+                phrase_text = str(phrase.text).strip()
+                metadata = _capture_metadata(phrase)
+            elif isinstance(phrase, tuple) and len(phrase) == 2 and isinstance(phrase[1], dict):
+                phrase_text = str(phrase[0]).strip()
+                metadata = dict(phrase[1])
+            elif isinstance(phrase, dict):
+                phrase_text = str(
+                    phrase.get("phrase")
+                    or phrase.get("text")
+                    or phrase.get("word")
+                    or phrase.get("value")
+                    or ""
+                ).strip()
+                metadata = {
+                    key: value
+                    for key, value in phrase.items()
+                    if key not in {"phrase", "text", "word", "value"}
+                }
+            else:
+                phrase_text = str(phrase).strip()
+
             if not phrase_text:
                 continue
-            if phrase_text.lower().split()[-1] == normalized_word:
-                phrases.add(phrase_text)
 
+            tokens = phrase_text.lower().split()
+            if not tokens or tokens[-1] != normalized_word:
+                continue
+
+            key = phrase_text.lower()
+            if key in entries:
+                existing = entries[key]
+                for meta_key, meta_value in metadata.items():
+                    if meta_key not in existing or existing[meta_key] is None:
+                        existing[meta_key] = meta_value
+                continue
+
+            entries[key] = dict(metadata)
+
+        ordered = sorted(
+            entries.items(),
+            key=lambda item: (
+                -_sort_score(item[1]),
+                len(item[0].split()),
+                item[0],
+            ),
+        )
+
+        phrases = [(phrase, metadata) for phrase, metadata in ordered]
         creative_phrase_cache[cache_key] = phrases
         return phrases
 
@@ -2005,14 +2127,21 @@ def get_cmu_rhymes(
                     break
 
         if generated_multi < max_multi_variants:
-            creative_variants = sorted(_invoke_creative_hook(base_candidate, tuple(effective_backoff_keys)))
-            for phrase in creative_variants:
+            creative_variants = _invoke_creative_hook(
+                base_candidate, tuple(effective_backoff_keys)
+            )
+            for phrase, hook_metadata in creative_variants:
+                metadata = {"multi_source": "creative_hook"}
+                if isinstance(hook_metadata, dict):
+                    for key, value in hook_metadata.items():
+                        if key not in metadata:
+                            metadata[key] = value
                 result = _score_variant(
                     phrase,
                     is_multi=True,
                     base_candidate=base_candidate,
                     base_metrics=base_metrics,
-                    metadata={"multi_source": "creative_hook"},
+                    metadata=metadata,
                 )
                 if result:
                     generated_multi += 1
