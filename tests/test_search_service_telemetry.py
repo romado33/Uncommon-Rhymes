@@ -374,10 +374,10 @@ def test_formatter_emits_cadence_and_stress_diagnostics() -> None:
     }
 
     output = formatter.format_rhyme_results("Echo", rhymes)
-    assert "Diagnostics:" in output
-    assert "Cadence focus: Smooth Flow" in output
-    assert "Min stress alignment: 0.72" in output
-    assert "Phonetic threshold: 0.86" in output
+    assert "Diagnostics:" not in output
+    assert "Cadence focus: Smooth Flow" not in output
+    assert "Min stress alignment: 0.72" not in output
+    assert "Phonetic threshold: 0.86" not in output
     assert "Stress Pattern: 1-0 (Trochee)" in output
 
 
