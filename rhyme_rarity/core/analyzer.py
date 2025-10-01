@@ -26,6 +26,118 @@ from .rarity_map import DEFAULT_RARITY_MAP, WordRarityMap
 RARITY_SIMILARITY_WEIGHT: float = 0.65
 RARITY_NOVELTY_WEIGHT: float = 0.35
 
+
+# ---------------------------------------------------------------------------
+# Phoneme feature tables
+# ---------------------------------------------------------------------------
+
+# A compact feature inventory derived from PanPhon's SPE feature schema. The
+# values are intentionally simplified so we can approximate distance-based
+# similarity without introducing a heavy dependency at runtime. The mapping
+# only needs to cover the phonemes that appear in CMUdict and common fallback
+# graphemes that we inspect when CMU pronunciations are unavailable.
+PHONEME_FEATURES: Dict[str, Dict[str, str]] = {
+    # Vowels
+    "AA": {"category": "vowel", "height": "open", "backness": "back", "rounding": "unrounded", "tenseness": "tense"},
+    "AE": {"category": "vowel", "height": "near-open", "backness": "front", "rounding": "unrounded", "tenseness": "lax"},
+    "AH": {"category": "vowel", "height": "open-mid", "backness": "central", "rounding": "unrounded", "tenseness": "lax"},
+    "AO": {"category": "vowel", "height": "open", "backness": "back", "rounding": "rounded", "tenseness": "tense"},
+    "AW": {"category": "vowel", "height": "open", "backness": "back", "rounding": "rounded", "diphthong": "1"},
+    "AY": {"category": "vowel", "height": "open", "backness": "front", "rounding": "unrounded", "diphthong": "1"},
+    "EH": {"category": "vowel", "height": "open-mid", "backness": "front", "rounding": "unrounded", "tenseness": "lax"},
+    "ER": {"category": "vowel", "height": "mid", "backness": "central", "rounding": "rounded", "rhotacized": "1"},
+    "EY": {"category": "vowel", "height": "close-mid", "backness": "front", "rounding": "unrounded", "tenseness": "tense", "diphthong": "1"},
+    "IH": {"category": "vowel", "height": "close", "backness": "front", "rounding": "unrounded", "tenseness": "lax"},
+    "IY": {"category": "vowel", "height": "close", "backness": "front", "rounding": "unrounded", "tenseness": "tense"},
+    "OW": {"category": "vowel", "height": "close-mid", "backness": "back", "rounding": "rounded", "tenseness": "tense", "diphthong": "1"},
+    "OY": {"category": "vowel", "height": "close-mid", "backness": "back", "rounding": "rounded", "diphthong": "1"},
+    "UH": {"category": "vowel", "height": "close-mid", "backness": "back", "rounding": "rounded", "tenseness": "lax"},
+    "UW": {"category": "vowel", "height": "close", "backness": "back", "rounding": "rounded", "tenseness": "tense"},
+    "UX": {"category": "vowel", "height": "close", "backness": "central", "rounding": "rounded", "tenseness": "tense"},
+    "AX": {"category": "vowel", "height": "mid", "backness": "central", "rounding": "unrounded", "tenseness": "lax"},
+    "AXR": {"category": "vowel", "height": "mid", "backness": "central", "rounding": "rounded", "rhotacized": "1"},
+
+    # Stops
+    "P": {"category": "consonant", "place": "bilabial", "manner": "stop", "voicing": "voiceless", "nasal": "0"},
+    "B": {"category": "consonant", "place": "bilabial", "manner": "stop", "voicing": "voiced", "nasal": "0"},
+    "T": {"category": "consonant", "place": "alveolar", "manner": "stop", "voicing": "voiceless", "nasal": "0"},
+    "D": {"category": "consonant", "place": "alveolar", "manner": "stop", "voicing": "voiced", "nasal": "0"},
+    "K": {"category": "consonant", "place": "velar", "manner": "stop", "voicing": "voiceless", "nasal": "0"},
+    "G": {"category": "consonant", "place": "velar", "manner": "stop", "voicing": "voiced", "nasal": "0"},
+    "Q": {"category": "consonant", "place": "uvular", "manner": "stop", "voicing": "voiceless", "nasal": "0"},
+    "DX": {"category": "consonant", "place": "alveolar", "manner": "tap", "voicing": "voiced", "nasal": "0"},
+
+    # Fricatives and affricates
+    "F": {"category": "consonant", "place": "labiodental", "manner": "fricative", "voicing": "voiceless", "nasal": "0"},
+    "V": {"category": "consonant", "place": "labiodental", "manner": "fricative", "voicing": "voiced", "nasal": "0"},
+    "TH": {"category": "consonant", "place": "dental", "manner": "fricative", "voicing": "voiceless", "nasal": "0"},
+    "DH": {"category": "consonant", "place": "dental", "manner": "fricative", "voicing": "voiced", "nasal": "0"},
+    "S": {"category": "consonant", "place": "alveolar", "manner": "fricative", "voicing": "voiceless", "sibilant": "1", "nasal": "0"},
+    "Z": {"category": "consonant", "place": "alveolar", "manner": "fricative", "voicing": "voiced", "sibilant": "1", "nasal": "0"},
+    "SH": {"category": "consonant", "place": "postalveolar", "manner": "fricative", "voicing": "voiceless", "sibilant": "1", "nasal": "0"},
+    "ZH": {"category": "consonant", "place": "postalveolar", "manner": "fricative", "voicing": "voiced", "sibilant": "1", "nasal": "0"},
+    "HH": {"category": "consonant", "place": "glottal", "manner": "fricative", "voicing": "voiceless", "nasal": "0"},
+    "CH": {"category": "consonant", "place": "postalveolar", "manner": "affricate", "voicing": "voiceless", "sibilant": "1", "nasal": "0"},
+    "JH": {"category": "consonant", "place": "postalveolar", "manner": "affricate", "voicing": "voiced", "sibilant": "1", "nasal": "0"},
+
+    # Nasals
+    "M": {"category": "consonant", "place": "bilabial", "manner": "nasal", "voicing": "voiced", "nasal": "1"},
+    "N": {"category": "consonant", "place": "alveolar", "manner": "nasal", "voicing": "voiced", "nasal": "1"},
+    "NG": {"category": "consonant", "place": "velar", "manner": "nasal", "voicing": "voiced", "nasal": "1"},
+
+    # Liquids and glides
+    "L": {"category": "consonant", "place": "alveolar", "manner": "liquid", "voicing": "voiced", "lateral": "1", "nasal": "0"},
+    "R": {"category": "consonant", "place": "postalveolar", "manner": "liquid", "voicing": "voiced", "nasal": "0"},
+    "W": {"category": "consonant", "place": "labial-velar", "manner": "glide", "voicing": "voiced", "rounding": "rounded", "nasal": "0"},
+    "Y": {"category": "consonant", "place": "palatal", "manner": "glide", "voicing": "voiced", "nasal": "0"},
+}
+
+# Grapheme approximations to use when CMU pronunciations are unavailable. Each
+# entry maps a letter or digraph to one or more ARPABET phonemes so the feature
+# lookup stays consistent with the table above.
+GRAPHEME_TO_PHONEMES: Dict[str, Tuple[str, ...]] = {
+    "A": ("AE",),
+    "E": ("EH",),
+    "I": ("IH",),
+    "O": ("AO",),
+    "U": ("UH",),
+    "Y": ("IY",),
+    "OO": ("UW",),
+    "EE": ("IY",),
+    "OU": ("AW",),
+    "OW": ("OW",),
+    "AI": ("EY",),
+    "AY": ("AY",),
+    "EA": ("IY",),
+    "B": ("B",),
+    "C": ("K",),
+    "D": ("D",),
+    "F": ("F",),
+    "G": ("G",),
+    "H": ("HH",),
+    "J": ("JH",),
+    "K": ("K",),
+    "L": ("L",),
+    "M": ("M",),
+    "N": ("N",),
+    "P": ("P",),
+    "Q": ("K",),
+    "R": ("R",),
+    "S": ("S",),
+    "T": ("T",),
+    "V": ("V",),
+    "W": ("W",),
+    "X": ("K", "S"),
+    "Z": ("Z",),
+    "NG": ("NG",),
+    "SH": ("SH",),
+    "TH": ("TH",),
+    "PH": ("F",),
+    "CH": ("CH",),
+    "GH": ("G",),
+    "CK": ("K",),
+}
+
 class EnhancedPhoneticAnalyzer:
     """
     Enhanced phonetic analysis system for superior rhyme detection
@@ -40,8 +152,6 @@ class EnhancedPhoneticAnalyzer:
         # Initialize phonetic analysis components
         self.cmu_loader = cmu_loader or DEFAULT_CMU_LOADER
         self.rarity_map = rarity_map or DEFAULT_RARITY_MAP
-        self.vowel_groups = self._initialize_vowel_groups()
-        self.consonant_groups = self._initialize_consonant_groups()
         self.phonetic_weights = self._initialize_phonetic_weights()
 
         self._cache_lock = threading.RLock()
@@ -63,39 +173,123 @@ class EnhancedPhoneticAnalyzer:
             },
         )
     
-    def _initialize_vowel_groups(self) -> Dict[str, List[str]]:
-        """Initialize vowel sound groupings for phonetic analysis"""
-        return {
-            'long_a': ['ay', 'ey', 'ai', 'ei'],
-            'long_e': ['ee', 'ea', 'ie', 'ei'],
-            'long_i': ['igh', 'ie', 'y', 'eye'],
-            'long_o': ['ow', 'oe', 'oa', 'o'],
-            'long_u': ['oo', 'ou', 'ew', 'ue'],
-            'short_a': ['a', 'at', 'an', 'ap'],
-            'short_e': ['e', 'en', 'et', 'ed'],
-            'short_i': ['i', 'in', 'it', 'ip'],
-            'short_o': ['o', 'on', 'ot', 'op'],
-            'short_u': ['u', 'un', 'ut', 'up']
-        }
-    
-    def _initialize_consonant_groups(self) -> Dict[str, List[str]]:
-        """Initialize consonant sound groupings"""
-        return {
-            'stops': ['p', 'b', 't', 'd', 'k', 'g'],
-            'fricatives': ['f', 'v', 's', 'z', 'sh', 'zh', 'th'],
-            'nasals': ['m', 'n', 'ng'],
-            'liquids': ['l', 'r'],
-            'glides': ['w', 'y', 'h']
-        }
-    
     def _initialize_phonetic_weights(self) -> Dict[str, float]:
         """Initialize weights for different phonetic features"""
         return {
-            'ending_sounds': 0.4,    # Most important for rhymes
-            'vowel_sounds': 0.3,     # Critical for rhyme quality
-            'consonant_clusters': 0.2, # Important for texture
-            'syllable_structure': 0.1  # Secondary importance
+            'rhyme_tail': 0.45,         # Highest weight when phoneme tails are available
+            'ending_sounds': 0.2,       # Orthographic back-off for rime comparisons
+            'vowel_sounds': 0.2,        # Vowel similarity (feature-driven)
+            'consonant_clusters': 0.1,  # Coda and texture alignment
+            'syllable_structure': 0.05, # Secondary importance
         }
+
+    # ------------------------------------------------------------------
+    # Feature utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_phoneme_symbol(symbol: str) -> str:
+        base = re.sub(r"\d", "", symbol or "")
+        return base.strip().upper()
+
+    @classmethod
+    def _lookup_phoneme_features(cls, symbol: str) -> Optional[Dict[str, str]]:
+        key = cls._normalize_phoneme_symbol(symbol)
+        return PHONEME_FEATURES.get(key)
+
+    @classmethod
+    def _phoneme_feature_similarity(cls, symbol_a: str, symbol_b: str) -> float:
+        if not symbol_a or not symbol_b:
+            return 0.0
+
+        features_a = cls._lookup_phoneme_features(symbol_a)
+        features_b = cls._lookup_phoneme_features(symbol_b)
+
+        if features_a is None or features_b is None:
+            # Fall back to a light-weight string comparison if we do not have
+            # feature coverage for this pair.
+            return difflib.SequenceMatcher(
+                None,
+                cls._normalize_phoneme_symbol(symbol_a),
+                cls._normalize_phoneme_symbol(symbol_b),
+            ).ratio()
+
+        keys = set(features_a) | set(features_b)
+        if not keys:
+            return 0.0
+
+        mismatches = sum(1 for key in keys if features_a.get(key) != features_b.get(key))
+        return max(0.0, 1.0 - (mismatches / len(keys)))
+
+    @classmethod
+    def _phoneme_sequence_similarity(
+        cls,
+        sequence_a: Iterable[str],
+        sequence_b: Iterable[str],
+        emphasize_first: bool = False,
+    ) -> float:
+        seq_a = [cls._normalize_phoneme_symbol(symbol) for symbol in sequence_a]
+        seq_b = [cls._normalize_phoneme_symbol(symbol) for symbol in sequence_b]
+
+        if not seq_a and not seq_b:
+            return 1.0
+        if not seq_a or not seq_b:
+            return 0.0
+
+        max_len = max(len(seq_a), len(seq_b))
+        weighted_total = 0.0
+        weight_sum = 0.0
+
+        for index in range(max_len):
+            phoneme_a = seq_a[index] if index < len(seq_a) else ""
+            phoneme_b = seq_b[index] if index < len(seq_b) else ""
+            weight = 1.5 if emphasize_first and index == 0 else 1.0
+            weight_sum += weight
+            if phoneme_a and phoneme_b:
+                weighted_total += cls._phoneme_feature_similarity(phoneme_a, phoneme_b) * weight
+
+        return weighted_total / weight_sum if weight_sum else 0.0
+
+    @staticmethod
+    def _grapheme_cluster_to_phonemes(cluster: str) -> List[str]:
+        result: List[str] = []
+        i = 0
+        upper_cluster = (cluster or "").upper()
+        while i < len(upper_cluster):
+            matched = False
+            for span in (2, 1):
+                segment = upper_cluster[i : i + span]
+                if segment in GRAPHEME_TO_PHONEMES:
+                    result.extend(GRAPHEME_TO_PHONEMES[segment])
+                    i += span
+                    matched = True
+                    break
+            if not matched:
+                # If we cannot resolve the cluster, advance to prevent loops
+                i += 1
+        return result
+
+    @classmethod
+    def _approximate_spelling_coda(cls, word: str) -> List[str]:
+        lower = re.sub(r"[^a-z]", "", word.lower())
+        if not lower:
+            return []
+        match = re.search(r"[bcdfghjklmnpqrstvwxyz]+$", lower)
+        if not match:
+            return []
+        return cls._grapheme_cluster_to_phonemes(match.group(0))
+
+    @classmethod
+    def _approximate_spelling_vowel(cls, word: str) -> Optional[str]:
+        lower = re.sub(r"[^a-z]", "", word.lower())
+        if not lower:
+            return None
+        vowels = re.findall(r"[aeiouy]+", lower)
+        if not vowels:
+            return None
+        cluster = vowels[-1]
+        phonemes = cls._grapheme_cluster_to_phonemes(cluster)
+        return phonemes[-1] if phonemes else None
 
     def _trim_cache(self, cache: OrderedDict) -> None:
         """Ensure ``cache`` respects the configured maximum size."""
@@ -187,6 +381,10 @@ class EnhancedPhoneticAnalyzer:
         pronunciations1 = self._get_pronunciation_variants(clean1)
         pronunciations2 = self._get_pronunciation_variants(clean2)
 
+        tail_similarity: Optional[float] = None
+        rhyme_tails1: List[List[str]] = []
+        rhyme_tails2: List[List[str]] = []
+
         if pronunciations1 and pronunciations2:
             rhyme_tails1 = self._get_rhyme_tails(clean1, pronunciations1)
             rhyme_tails2 = self._get_rhyme_tails(clean2, pronunciations2)
@@ -198,28 +396,52 @@ class EnhancedPhoneticAnalyzer:
             ]
 
             if phoneme_scores:
-                best_score = max(phoneme_scores)
-                with self._cache_lock:
-                    self._similarity_cache[cache_key] = best_score
-                    self._trim_cache(self._similarity_cache)
-                return best_score
+                tail_similarity = max(phoneme_scores)
 
         # Calculate multiple phonetic features
         ending_sim = self._calculate_ending_similarity(clean1, clean2)
-        vowel_sim = self._calculate_vowel_similarity(clean1, clean2)
-        consonant_sim = self._calculate_consonant_similarity(clean1, clean2)
+        vowel_sim = self._calculate_vowel_similarity(
+            clean1,
+            clean2,
+            pronunciations1=pronunciations1,
+            pronunciations2=pronunciations2,
+            rhyme_tails1=rhyme_tails1,
+            rhyme_tails2=rhyme_tails2,
+        )
+        consonant_sim = self._calculate_consonant_similarity(
+            clean1,
+            clean2,
+            pronunciations1=pronunciations1,
+            pronunciations2=pronunciations2,
+            rhyme_tails1=rhyme_tails1,
+            rhyme_tails2=rhyme_tails2,
+        )
         syllable_sim = self._calculate_syllable_similarity(clean1, clean2)
-        
+
         # Weight the similarities
         weights = self.phonetic_weights
-        total_similarity = (
-            ending_sim * weights['ending_sounds'] +
-            vowel_sim * weights['vowel_sounds'] +
-            consonant_sim * weights['consonant_clusters'] +
-            syllable_sim * weights['syllable_structure']
-        )
+        weighted_total = 0.0
+        total_weight = 0.0
 
-        similarity = min(total_similarity, 1.0)
+        components = {
+            'rhyme_tail': tail_similarity,
+            'ending_sounds': ending_sim,
+            'vowel_sounds': vowel_sim,
+            'consonant_clusters': consonant_sim,
+            'syllable_structure': syllable_sim,
+        }
+
+        for key, value in components.items():
+            if value is None:
+                continue
+            weight = weights.get(key, 0.0)
+            if weight <= 0:
+                continue
+            weighted_total += value * weight
+            total_weight += weight
+
+        similarity = weighted_total / total_weight if total_weight else 0.0
+        similarity = min(max(similarity, 0.0), 1.0)
 
         with self._cache_lock:
             self._similarity_cache[cache_key] = similarity
@@ -261,48 +483,140 @@ class EnhancedPhoneticAnalyzer:
         
         return best_similarity
     
-    def _calculate_vowel_similarity(self, word1: str, word2: str) -> float:
-        """Calculate vowel pattern similarity"""
-        vowels1 = re.findall(r'[aeiou]+', word1)
-        vowels2 = re.findall(r'[aeiou]+', word2)
-        
-        if not vowels1 or not vowels2:
-            return 0.0
-        
-        # Compare last vowel sounds (most important for rhymes)
-        last_vowel1 = vowels1[-1] if vowels1 else ''
-        last_vowel2 = vowels2[-1] if vowels2 else ''
-        
-        if last_vowel1 == last_vowel2:
-            return 0.9
-        
-        # Check if vowels are in the same phonetic group
-        similarity = self._check_vowel_group_similarity(last_vowel1, last_vowel2)
-        return similarity
+    def _calculate_vowel_similarity(
+        self,
+        word1: str,
+        word2: str,
+        *,
+        pronunciations1: Optional[List[List[str]]] = None,
+        pronunciations2: Optional[List[List[str]]] = None,
+        rhyme_tails1: Optional[List[List[str]]] = None,
+        rhyme_tails2: Optional[List[List[str]]] = None,
+    ) -> float:
+        """Calculate vowel pattern similarity using phoneme features."""
+
+        vowel_candidates1: List[str] = []
+        vowel_candidates2: List[str] = []
+
+        for tails, collector in (
+            (rhyme_tails1 or [], vowel_candidates1),
+            (rhyme_tails2 or [], vowel_candidates2),
+        ):
+            for tail in tails:
+                if not tail:
+                    continue
+                normalized = self._normalize_phoneme_symbol(tail[0])
+                if normalized in VOWEL_PHONEMES:
+                    collector.append(normalized)
+
+        if not vowel_candidates1 and pronunciations1:
+            for pron in pronunciations1:
+                for phone in reversed(pron):
+                    normalized = self._normalize_phoneme_symbol(phone)
+                    if normalized in VOWEL_PHONEMES:
+                        vowel_candidates1.append(normalized)
+                        break
+
+        if not vowel_candidates2 and pronunciations2:
+            for pron in pronunciations2:
+                for phone in reversed(pron):
+                    normalized = self._normalize_phoneme_symbol(phone)
+                    if normalized in VOWEL_PHONEMES:
+                        vowel_candidates2.append(normalized)
+                        break
+
+        if vowel_candidates1 and vowel_candidates2:
+            scores = [
+                self._phoneme_feature_similarity(v1, v2)
+                for v1 in vowel_candidates1
+                for v2 in vowel_candidates2
+            ]
+            if scores:
+                return max(scores)
+
+        # Fall back to orthographic approximation when pronunciations are not
+        # available.
+        vowel1 = self._approximate_spelling_vowel(word1)
+        vowel2 = self._approximate_spelling_vowel(word2)
+
+        if vowel1 and vowel2:
+            return self._phoneme_feature_similarity(vowel1, vowel2)
+
+        return 0.0
     
-    def _check_vowel_group_similarity(self, vowel1: str, vowel2: str) -> float:
-        """Check if vowels belong to similar phonetic groups"""
-        for group_name, vowels in self.vowel_groups.items():
-            if any(v in vowel1 for v in vowels) and any(v in vowel2 for v in vowels):
-                return 0.7  # Same vowel group
-        
-        return 0.3  # Different vowel groups
-    
-    def _calculate_consonant_similarity(self, word1: str, word2: str) -> float:
-        """Calculate consonant pattern similarity"""
-        # Extract consonant patterns
-        consonants1 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word1))
-        consonants2 = re.sub(r"[^a-z']", "", re.sub(r"[aeiou]", "", word2))
-        
-        if not consonants1 or not consonants2:
-            return 0.5
-        
-        # Focus on ending consonant clusters
-        end_consonants1 = consonants1[-2:] if len(consonants1) >= 2 else consonants1
-        end_consonants2 = consonants2[-2:] if len(consonants2) >= 2 else consonants2
-        
-        similarity = difflib.SequenceMatcher(None, end_consonants1, end_consonants2).ratio()
-        return similarity
+    def _calculate_consonant_similarity(
+        self,
+        word1: str,
+        word2: str,
+        *,
+        pronunciations1: Optional[List[List[str]]] = None,
+        pronunciations2: Optional[List[List[str]]] = None,
+        rhyme_tails1: Optional[List[List[str]]] = None,
+        rhyme_tails2: Optional[List[List[str]]] = None,
+    ) -> float:
+        """Calculate consonant pattern similarity using feature distances."""
+
+        coda_variants1: List[List[str]] = []
+        coda_variants2: List[List[str]] = []
+
+        for tails, collector in (
+            (rhyme_tails1 or [], coda_variants1),
+            (rhyme_tails2 or [], coda_variants2),
+        ):
+            for tail in tails:
+                normalized_tail = [self._normalize_phoneme_symbol(p) for p in tail[1:]]
+                if normalized_tail:
+                    collector.append(normalized_tail)
+                elif tail:
+                    collector.append([])
+
+        if not coda_variants1 and pronunciations1:
+            for pron in pronunciations1:
+                coda: List[str] = []
+                for phone in reversed(pron):
+                    normalized = self._normalize_phoneme_symbol(phone)
+                    if normalized in VOWEL_PHONEMES:
+                        break
+                    if normalized:
+                        coda.append(normalized)
+                coda.reverse()
+                collector = coda if coda else []
+                coda_variants1.append(collector)
+
+        if not coda_variants2 and pronunciations2:
+            for pron in pronunciations2:
+                coda: List[str] = []
+                for phone in reversed(pron):
+                    normalized = self._normalize_phoneme_symbol(phone)
+                    if normalized in VOWEL_PHONEMES:
+                        break
+                    if normalized:
+                        coda.append(normalized)
+                coda.reverse()
+                collector = coda if coda else []
+                coda_variants2.append(collector)
+
+        if coda_variants1 and coda_variants2:
+            scores: List[float] = []
+            for seq1 in coda_variants1:
+                for seq2 in coda_variants2:
+                    if not seq1 and not seq2:
+                        scores.append(1.0)
+                    else:
+                        scores.append(self._phoneme_sequence_similarity(seq1, seq2))
+            if scores:
+                return max(scores)
+
+        # Fall back to orthographic approximation when CMU data is missing.
+        coda1 = self._approximate_spelling_coda(word1)
+        coda2 = self._approximate_spelling_coda(word2)
+
+        if not coda1 and not coda2:
+            return 1.0
+        if not coda1 or not coda2:
+            return 0.4
+
+        return self._phoneme_sequence_similarity(coda1, coda2)
     
     def _calculate_syllable_similarity(self, word1: str, word2: str) -> float:
         """Calculate syllable structure similarity"""
@@ -556,20 +870,19 @@ class EnhancedPhoneticAnalyzer:
         if seq1 == seq2:
             return 1.0
 
-        base1 = cls._strip_stress_markers(seq1)
-        base2 = cls._strip_stress_markers(seq2)
+        base1 = [cls._normalize_phoneme_symbol(symbol) for symbol in seq1]
+        base2 = [cls._normalize_phoneme_symbol(symbol) for symbol in seq2]
 
-        base_similarity = difflib.SequenceMatcher(None, base1, base2).ratio()
-        coda_similarity = 0.0
-        if len(base1) > 1 and len(base2) > 1:
-            coda_similarity = difflib.SequenceMatcher(
-                None, base1[1:], base2[1:]
-            ).ratio()
+        base_similarity = cls._phoneme_sequence_similarity(base1, base2, emphasize_first=True)
+        coda_similarity = cls._phoneme_sequence_similarity(base1[1:], base2[1:])
 
-        vowel_bonus = 0.15 if base1 and base2 and base1[0] == base2[0] else 0.0
+        vowel_similarity = 0.0
+        if base1 and base2:
+            vowel_similarity = cls._phoneme_feature_similarity(base1[0], base2[0])
+
         stress_bonus = 0.05 if seq1 and seq2 and seq1[0] == seq2[0] else 0.0
 
-        similarity = (base_similarity * 0.6) + (coda_similarity * 0.2) + vowel_bonus + stress_bonus
+        similarity = (base_similarity * 0.6) + (coda_similarity * 0.2) + (vowel_similarity * 0.2) + stress_bonus
         return max(0.0, min(similarity, 1.0))
 
     @staticmethod
