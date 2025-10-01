@@ -83,6 +83,8 @@ def _render_styles() -> None:
     .rr-rhyme-line {display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;}
     .rr-rhyme-term {font-weight: 700; letter-spacing: 0.04em; color: #0f172a;}
     .rr-rhyme-details-inline {color: #475569; font-size: 0.95rem;}
+    .rr-rhyme-tier {margin-top: 6px; font-size: 0.88rem; font-weight: 600; color: #1f2937; letter-spacing: 0.01em;}
+    .rr-rhyme-rationale {margin-top: 4px; color: #475569; font-size: 0.85rem;}
     .rr-rhyme-context {margin-top: 6px; color: #1e293b; font-size: 0.92rem; line-height: 1.35;}
     .rr-empty {margin: 0; color: #94a3b8; font-style: italic;}
     </style>
@@ -124,7 +126,7 @@ def main() -> None:
             "Word to find rhymes for",
             help="Enter the word you want to rhyme (e.g., love, flow, money).",
         )
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             max_results = st.slider(
                 "Max results",
@@ -140,6 +142,18 @@ def main() -> None:
                 max_value=1.0,
                 value=0.7,
                 step=0.05,
+            )
+        with col3:
+            slant_strength = st.slider(
+                "Slant strength",
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.05,
+                help=(
+                    "Raise to insist on tighter rime/vowel/coda alignment; lower to"
+                    " allow looser slant matches."
+                ),
             )
 
         col3, col4, col5 = st.columns(3)
@@ -179,6 +193,7 @@ def main() -> None:
                 cultural_significance=list(cultural_filter),
                 genres=list(genre_filter),
                 allowed_rhyme_types=list(rhyme_type_filter),
+                slant_strength=slant_strength,
             )
             formatted = search_service.format_rhyme_results(word, rhymes)
 

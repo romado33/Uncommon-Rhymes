@@ -30,6 +30,7 @@ def create_interface(
         word: str,
         max_results: int,
         min_conf: float,
+        slant_strength: float,
         cultural_filter: Sequence[str] | None,
         genre_filter: Sequence[str] | None,
         rhyme_type_filter: Sequence[str] | None,
@@ -44,6 +45,7 @@ def create_interface(
             cultural_significance=_ensure_list(cultural_filter),
             genres=_ensure_list(genre_filter),
             allowed_rhyme_types=_ensure_list(rhyme_type_filter),
+            slant_strength=slant_strength,
         )
         return search_service.format_rhyme_results(word, rhymes)
 
@@ -95,6 +97,8 @@ def create_interface(
     .rr-rhyme-line {display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;}
     .rr-rhyme-term {font-weight: 700; letter-spacing: 0.04em; color: #0f172a;}
     .rr-rhyme-details-inline {color: #475569; font-size: 0.95rem;}
+    .rr-rhyme-tier {margin-top: 6px; font-size: 0.88rem; font-weight: 600; color: #1f2937; letter-spacing: 0.01em;}
+    .rr-rhyme-rationale {margin-top: 4px; color: #475569; font-size: 0.85rem;}
     .rr-rhyme-context {margin-top: 6px; color: #1e293b; font-size: 0.92rem; line-height: 1.35;}
     .rr-empty {margin: 0; color: #94a3b8; font-style: italic;}
     .rr-accordion .gr-accordion-label {font-weight: 600;}
@@ -146,6 +150,18 @@ def create_interface(
                                 value=0.7,
                                 step=0.05,
                                 label="Min Confidence",
+                            )
+
+                            slant_strength = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                value=1.0,
+                                step=0.05,
+                                label="Slant Strength",
+                                info=(
+                                    "1.0 favours the tightest matches; lower values admit looser"
+                                    " slant pairs."
+                                ),
                             )
 
                         with gr.Row():
@@ -200,6 +216,7 @@ def create_interface(
                 word_input,
                 max_results,
                 min_confidence,
+                slant_strength,
                 cultural_dropdown,
                 genre_dropdown,
                 rhyme_type_dropdown,
@@ -213,6 +230,7 @@ def create_interface(
                 word_input,
                 max_results,
                 min_confidence,
+                slant_strength,
                 cultural_dropdown,
                 genre_dropdown,
                 rhyme_type_dropdown,
