@@ -1983,6 +1983,11 @@ class RhymeQueryOrchestrator:
         for entry in entries:
             if self._is_multi_word_entry(entry):
                 filtered.append(entry)
+                normalized_multi = self._normalize_terminal(
+                    self._extract_target_word(entry)
+                )
+                if normalized_multi:
+                    allowed_words.add(normalized_multi)
                 continue
 
             saw_single = True
@@ -2365,6 +2370,15 @@ class RhymeQueryOrchestrator:
             )
             if normalized_word:
                 final_allowed_words.add(normalized_word)
+
+        for entry in multi_results:
+            if entry.get("parent_candidate"):
+                continue
+            normalized_multi = self._normalize_terminal(
+                self._extract_target_word(entry)
+            )
+            if normalized_multi:
+                final_allowed_words.add(normalized_multi)
 
         if final_allowed_words or (enforce_slant_gate and slant_strength > 0):
             filters['slant_allowed_end_words'] = sorted(final_allowed_words)
