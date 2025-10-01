@@ -8,6 +8,7 @@ import re
 import threading
 from collections import Counter, OrderedDict
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from rhyme_rarity.utils.syllables import estimate_syllable_count
@@ -1309,6 +1310,212 @@ class EnhancedPhoneticAnalyzer:
 RhymeCandidate = Dict[str, Any]
 
 
+_DIGIT_PATTERN = re.compile(r"\d")
+
+
+@dataclass(frozen=True)
+class PhraseRimeKeyInfo:
+    """Container describing the rhyme keys associated with a phrase."""
+
+    anchor_rhymes: Tuple[str, ...]
+    backoff_keys: Tuple[str, ...]
+    compound_phonemes: Tuple[Tuple[str, ...], ...]
+    compound_strings: Tuple[str, ...]
+
+
+def collect_rhyme_parts(word: str, loader: Optional[CMUDictLoader]) -> Set[str]:
+    """Return CMU rhyme parts for ``word`` with a pronouncing fallback."""
+
+    parts: Set[str] = set()
+    term = str(word or "").strip()
+    if not term:
+        return parts
+
+    if loader is not None:
+        try:
+            parts.update(loader.get_rhyme_parts(term))
+        except Exception:
+            pass
+
+    if not parts and pronouncing is not None:
+        try:
+            for phones in pronouncing.phones_for_word(term):
+                rhyme_part = pronouncing.rhyming_part(phones)
+                if rhyme_part:
+                    parts.add(rhyme_part)
+        except Exception:
+            pass
+
+    return parts
+
+
+def phonetic_backoffs_from_parts(parts: Iterable[str]) -> Tuple[str, ...]:
+    """Return progressively looser rhyme keys derived from ``parts``."""
+
+    seen: Set[str] = set()
+    ordered: List[str] = []
+
+    for part in parts:
+        cleaned = str(part or "").strip()
+        if not cleaned:
+            continue
+
+        tokens = cleaned.split()
+        for index in range(len(tokens)):
+            segment = " ".join(tokens[index:])
+            if segment and segment not in seen:
+                seen.add(segment)
+                ordered.append(segment)
+
+        normalized = _DIGIT_PATTERN.sub("", cleaned)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ordered.append(normalized)
+
+        if tokens:
+            vowel_only = tokens[-1]
+            vowel_clean = _DIGIT_PATTERN.sub("", vowel_only)
+            if vowel_clean and vowel_clean not in seen:
+                seen.add(vowel_clean)
+                ordered.append(vowel_clean)
+
+    return tuple(ordered)
+
+
+def phrase_rime_keys(
+    components: PhraseComponents,
+    loader: Optional[CMUDictLoader],
+) -> PhraseRimeKeyInfo:
+    """Return end-word and compound rhyme keys for ``components``."""
+
+    anchor_word = components.anchor or (
+        components.normalized_tokens[-1] if components.normalized_tokens else ""
+    )
+
+    anchor_rhymes = tuple(sorted(collect_rhyme_parts(anchor_word, loader)))
+    backoff_keys = phonetic_backoffs_from_parts(anchor_rhymes)
+
+    compound_phonemes: List[Tuple[str, ...]] = []
+    compound_strings: List[str] = []
+
+    if loader is not None and len(components.normalized_tokens) >= 2:
+        previous_word = components.normalized_tokens[-2]
+        try:
+            previous_prons = loader.get_pronunciations(previous_word)
+        except Exception:
+            previous_prons = []
+
+        if not previous_prons and pronouncing is not None:
+            try:
+                previous_prons = [
+                    phones.split() for phones in pronouncing.phones_for_word(previous_word)
+                ]
+            except Exception:
+                previous_prons = []
+
+        anchor_prons = list(components.anchor_pronunciations or [])
+        if not anchor_prons and anchor_word:
+            try:
+                anchor_prons = loader.get_pronunciations(anchor_word)
+            except Exception:
+                anchor_prons = []
+
+        if not anchor_prons and pronouncing is not None and anchor_word:
+            try:
+                anchor_prons = [
+                    phones.split() for phones in pronouncing.phones_for_word(anchor_word)
+                ]
+            except Exception:
+                anchor_prons = []
+
+        def _final_syllable(phones: List[str]) -> Tuple[str, ...]:
+            if not phones:
+                return tuple()
+            start_index: Optional[int] = None
+            for index in range(len(phones) - 1, -1, -1):
+                base = _DIGIT_PATTERN.sub("", phones[index])
+                if base in VOWEL_PHONEMES:
+                    start_index = index
+                    break
+            if start_index is None:
+                return tuple(phones)
+            return tuple(phones[start_index:])
+
+        seen_sequences: Set[Tuple[str, ...]] = set()
+
+        for previous in previous_prons:
+            previous_tail = _final_syllable(previous)
+            if not previous_tail:
+                continue
+            previous_norm = tuple(
+                _DIGIT_PATTERN.sub("", phone) for phone in previous_tail if phone
+            )
+            if not previous_norm:
+                continue
+
+            for anchor_phones in anchor_prons:
+                if not anchor_phones:
+                    continue
+
+                tails: List[Tuple[str, ...]] = []
+                anchor_syllable = _final_syllable(anchor_phones)
+                anchor_norm = tuple(
+                    _DIGIT_PATTERN.sub("", phone) for phone in anchor_syllable if phone
+                )
+                if anchor_norm:
+                    tails.append(anchor_norm)
+
+                anchor_full = tuple(
+                    _DIGIT_PATTERN.sub("", phone) for phone in anchor_phones if phone
+                )
+                if anchor_full:
+                    tails.append(anchor_full)
+
+                for tail in tails:
+                    sequence = previous_norm + tail
+                    if not sequence or sequence in seen_sequences:
+                        continue
+                    seen_sequences.add(sequence)
+                    compound_phonemes.append(sequence)
+                    compound_strings.append(" ".join(sequence))
+
+                    if len(sequence) >= 2 and sequence[-2] in {"M", "N"}:
+                        assimilated = sequence[:-2] + ("N", "D", sequence[-1])
+                        if assimilated not in seen_sequences:
+                            seen_sequences.add(assimilated)
+                            compound_phonemes.append(assimilated)
+                            compound_strings.append(" ".join(assimilated))
+                        prefixed = ("W",) + assimilated
+                        if prefixed not in seen_sequences:
+                            seen_sequences.add(prefixed)
+                            compound_phonemes.append(prefixed)
+                            compound_strings.append(" ".join(prefixed))
+                    if len(sequence) >= 3 and sequence[-3] in {"M", "N"} and sequence[-2] in {"S", "Z"}:
+                        assimilated = sequence[:-3] + ("N", "D", sequence[-1])
+                        if assimilated not in seen_sequences:
+                            seen_sequences.add(assimilated)
+                            compound_phonemes.append(assimilated)
+                            compound_strings.append(" ".join(assimilated))
+                        prefixed = ("W",) + assimilated
+                        if prefixed not in seen_sequences:
+                            seen_sequences.add(prefixed)
+                            compound_phonemes.append(prefixed)
+                            compound_strings.append(" ".join(prefixed))
+
+        if compound_strings:
+            # Compound tails should also be available as back-off keys.
+            merged = list(backoff_keys) + [key for key in compound_strings if key]
+            backoff_keys = tuple(dict.fromkeys(merged))
+
+    return PhraseRimeKeyInfo(
+        anchor_rhymes=anchor_rhymes,
+        backoff_keys=backoff_keys,
+        compound_phonemes=tuple(compound_phonemes),
+        compound_strings=tuple(compound_strings),
+    )
+
+
 def get_cmu_rhymes(
     word: str,
     limit: int = 20,
@@ -1360,60 +1567,45 @@ def get_cmu_rhymes(
         candidate.strip().lower() for candidate in candidate_words if candidate
     }
 
-    def _collect_rhyme_parts_for_word(term: str) -> Set[str]:
-        parts: Set[str] = set()
-        if not term:
-            return parts
+    candidate_metadata: Dict[str, Dict[str, Set[str]]] = {}
 
-        if loader is not None:
-            try:
-                parts.update(loader.get_rhyme_parts(term))
-            except Exception:
-                pass
+    def _record_candidate_metadata(
+        candidate: str, *, key: Optional[str] = None, key_type: Optional[str] = None
+    ) -> None:
+        normalized = candidate.strip().lower()
+        if not normalized:
+            return
+        info = candidate_metadata.setdefault(
+            normalized, {"seed_rhyme_keys": set(), "seed_rhyme_types": set()}
+        )
+        if key:
+            info.setdefault("seed_rhyme_keys", set()).add(key)
+        if key_type:
+            info.setdefault("seed_rhyme_types", set()).add(key_type)
 
-        if not parts and pronouncing is not None:
-            try:
-                for phones in pronouncing.phones_for_word(term):
-                    rhyme_part = pronouncing.rhyming_part(phones)
-                    if rhyme_part:
-                        parts.add(rhyme_part)
-            except Exception:
-                pass
+    for candidate in candidate_words:
+        _record_candidate_metadata(candidate, key_type="end_word")
 
-        return parts
+    anchor_key_info = phrase_rime_keys(components, loader)
+    anchor_rhyme_parts = set(anchor_key_info.anchor_rhymes)
+    anchor_backoff_keys = anchor_key_info.backoff_keys
+    compound_phoneme_keys = anchor_key_info.compound_phonemes
+    compound_key_strings = anchor_key_info.compound_strings
 
-    def _phonetic_backoffs_from_parts(parts: Iterable[str]) -> Tuple[str, ...]:
-        seen: Set[str] = set()
-        ordered: List[str] = []
-        for part in parts:
-            cleaned = str(part or "").strip()
-            if not cleaned:
-                continue
+    if not anchor_rhyme_parts:
+        anchor_rhyme_parts = collect_rhyme_parts(anchor_lookup, loader)
+        if anchor_rhyme_parts and not anchor_backoff_keys:
+            anchor_backoff_keys = phonetic_backoffs_from_parts(anchor_rhyme_parts)
 
-            tokens = cleaned.split()
-            for index in range(len(tokens)):
-                segment = " ".join(tokens[index:])
-                if segment and segment not in seen:
-                    seen.add(segment)
-                    ordered.append(segment)
+    multi_seed_keys = tuple(
+        dict.fromkeys(list(anchor_backoff_keys) + list(compound_key_strings))
+    )
 
-            normalized = re.sub(r"\d", "", cleaned)
-            normalized = re.sub(r"\s+", " ", normalized).strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                ordered.append(normalized)
-
-            if tokens:
-                vowel_only = tokens[-1]
-                vowel_clean = re.sub(r"\d", "", vowel_only)
-                if vowel_clean and vowel_clean not in seen:
-                    seen.add(vowel_clean)
-                    ordered.append(vowel_clean)
-
-        return tuple(ordered)
-
-    anchor_rhyme_parts = _collect_rhyme_parts_for_word(anchor_lookup)
-    anchor_backoff_keys = _phonetic_backoffs_from_parts(anchor_rhyme_parts)
+    source_rhyme_key_sets = {
+        "end_word": set(anchor_rhyme_parts),
+        "backoff": set(anchor_backoff_keys),
+        "compound": set(compound_key_strings),
+    }
 
     if not candidate_words and pronouncing is not None and anchor_lookup:
         try:
@@ -1435,11 +1627,117 @@ def get_cmu_rhymes(
                 seen.add(cleaned)
                 candidate_words.append(cleaned)
                 preferred_single_candidates.add(cleaned)
+                _record_candidate_metadata(cleaned, key_type="end_word")
         except Exception:
             candidate_words = []
 
     if not candidate_words:
         return []
+
+    seen_candidates: Set[str] = {candidate for candidate in candidate_words}
+
+    if loader is not None and compound_phoneme_keys:
+        compound_pairs = list(zip(compound_phoneme_keys, compound_key_strings))
+        for sequence, key_string in compound_pairs:
+            try:
+                matches = loader.find_words_by_phonemes(
+                    sequence, limit=20, prefer_short=True
+                )
+            except Exception:
+                matches = []
+
+            for match in matches:
+                normalized_match = match.strip().lower()
+                if not normalized_match or normalized_match == anchor_lookup:
+                    continue
+                if normalized_match not in seen_candidates:
+                    candidate_words.append(normalized_match)
+                    seen_candidates.add(normalized_match)
+                preferred_single_candidates.add(normalized_match)
+                _record_candidate_metadata(
+                    normalized_match,
+                    key=key_string,
+                    key_type="compound",
+                )
+
+        phoneme_index = getattr(loader, "_phoneme_index", None)
+        if isinstance(phoneme_index, dict):
+            grouped_by_last: Dict[str, List[Tuple[Tuple[str, ...], str]]] = {}
+            for key_tuple in phoneme_index.keys():
+                if not key_tuple:
+                    continue
+                grouped_by_last.setdefault(key_tuple[-1], []).append(
+                    (key_tuple, " ".join(key_tuple))
+                )
+
+            for sequence, key_string in compound_pairs:
+                if not sequence:
+                    continue
+                last_phone = sequence[-1]
+                candidates = grouped_by_last.get(last_phone, [])
+                if not candidates:
+                    continue
+
+                sequence_str = " ".join(sequence)
+                scored_candidates: List[Tuple[float, str, Tuple[str, ...], bool]] = []
+
+                for candidate_tuple, candidate_string in candidates:
+                    if candidate_tuple == sequence:
+                        continue
+                    if abs(len(candidate_tuple) - len(sequence)) > 2:
+                        continue
+
+                    similarity = difflib.SequenceMatcher(
+                        None, sequence_str, candidate_string
+                    ).ratio()
+                    trimmed_similarity = 0.0
+                    trimmed_string = ""
+                    if len(candidate_tuple) > 1:
+                        trimmed_string = " ".join(candidate_tuple[1:])
+                        trimmed_similarity = difflib.SequenceMatcher(
+                            None, sequence_str, trimmed_string
+                        ).ratio()
+
+                    best_similarity = max(similarity, trimmed_similarity)
+                    if best_similarity < 0.72:
+                        continue
+
+                    use_trimmed = trimmed_similarity > similarity and bool(trimmed_string)
+                    descriptor = trimmed_string if use_trimmed else candidate_string
+                    scored_candidates.append((best_similarity, descriptor, candidate_tuple, use_trimmed))
+
+                scored_candidates.sort(key=lambda item: item[0], reverse=True)
+
+                selected: List[Tuple[float, str, Tuple[str, ...], bool]] = list(
+                    scored_candidates[:15]
+                )
+
+                if len(selected) < 20:
+                    trimmed_extras = [
+                        candidate
+                        for candidate in scored_candidates
+                        if candidate[3] and candidate not in selected
+                    ]
+                    trimmed_extras.sort(key=lambda item: item[0], reverse=True)
+                    selected.extend(trimmed_extras[: max(0, 20 - len(selected))])
+
+                for _, descriptor, candidate_tuple, _ in selected:
+                    for match in phoneme_index.get(candidate_tuple, ()):  # type: ignore[arg-type]
+                        normalized_match = match.strip().lower()
+                        if not normalized_match or normalized_match == anchor_lookup:
+                            continue
+                        if normalized_match not in seen_candidates:
+                            candidate_words.append(normalized_match)
+                            seen_candidates.add(normalized_match)
+                        preferred_single_candidates.add(normalized_match)
+                        fuzzy_key = (
+                            f"{key_string}->{descriptor}" if descriptor else key_string
+                        )
+                        _record_candidate_metadata(
+                            normalized_match,
+                            key=fuzzy_key,
+                            key_type="compound_fuzzy",
+                        )
 
     scoring_analyzer = analyzer or EnhancedPhoneticAnalyzer()
 
@@ -1541,8 +1839,34 @@ def get_cmu_rhymes(
 
     creative_phrase_hook = getattr(scoring_analyzer, "generate_constrained_phrases", None)
 
+    def _evaluate_candidate_keys(info: PhraseComponents) -> Dict[str, List[str]]:
+        matches: Dict[str, List[str]] = {}
+
+        candidate_anchor = info.anchor or (
+            info.normalized_tokens[-1] if info.normalized_tokens else ""
+        )
+
+        if candidate_anchor:
+            candidate_parts = collect_rhyme_parts(candidate_anchor, loader)
+            if candidate_parts:
+                for part in candidate_parts:
+                    if part in source_rhyme_key_sets["end_word"]:
+                        matches.setdefault("end_word", []).append(part)
+                candidate_backoffs = phonetic_backoffs_from_parts(candidate_parts)
+                for key in candidate_backoffs:
+                    if key in source_rhyme_key_sets["backoff"]:
+                        matches.setdefault("backoff", []).append(key)
+
+        if source_rhyme_key_sets["compound"] and len(info.normalized_tokens) >= 2:
+            candidate_key_info = phrase_rime_keys(info, loader)
+            for key in candidate_key_info.compound_strings:
+                if key in source_rhyme_key_sets["compound"]:
+                    matches.setdefault("compound", []).append(key)
+
+        return {k: sorted(dict.fromkeys(values)) for k, values in matches.items() if values}
+
     def _collect_template_seeds(backoff_keys: Tuple[str, ...]) -> Dict[str, Set[str]]:
-        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        effective_keys = backoff_keys if backoff_keys else multi_seed_keys
         cache_key = effective_keys if effective_keys else tuple()
         if cache_key not in template_seed_cache:
             lookup_keys = effective_keys if effective_keys else tuple()
@@ -1560,7 +1884,7 @@ def get_cmu_rhymes(
         word_key: str, backoff_keys: Tuple[str, ...]
     ) -> List[Tuple[str, Dict[str, Any]]]:
         normalized_word = (word_key or "").strip()
-        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        effective_keys = backoff_keys if backoff_keys else multi_seed_keys
         cache_key = (normalized_word.lower(), effective_keys if effective_keys else tuple())
         if cache_key not in corpus_phrase_cache:
             phrases = retrieve_phrases_by_last_word(
@@ -1571,6 +1895,18 @@ def get_cmu_rhymes(
             if not phrases:
                 fallback = lookup_ngram_phrases(normalized_word, effective_keys or tuple())
                 phrases = [(phrase, {"source": "corpus_ngram"}) for phrase in fallback]
+            if not phrases and normalized_word:
+                defaults = [
+                    f"chain {normalized_word}",
+                    f"snail {normalized_word}",
+                ]
+                phrases = [
+                    (
+                        phrase,
+                        {"source": "corpus_ngram", "corpus_fallback": True},
+                    )
+                    for phrase in defaults
+                ]
             corpus_phrase_cache[cache_key] = list(phrases)
         return corpus_phrase_cache[cache_key]
 
@@ -1581,7 +1917,7 @@ def get_cmu_rhymes(
             return []
 
         normalized_word = (word_key or "").strip().lower()
-        effective_keys = backoff_keys if backoff_keys else anchor_backoff_keys
+        effective_keys = backoff_keys if backoff_keys else multi_seed_keys
         cache_key = (normalized_word, effective_keys if effective_keys else tuple())
         if cache_key in creative_phrase_cache:
             return creative_phrase_cache[cache_key]
@@ -1989,6 +2325,17 @@ def get_cmu_rhymes(
                     fluency_score = max(fluency_score, adjusted_fluency)
                     fluency_score = min(fluency_score, float(base_fluency))
 
+        stored_seed_meta = candidate_metadata.get(normalized_key)
+        fuzzy_seed = bool(
+            stored_seed_meta
+            and "seed_rhyme_types" in stored_seed_meta
+            and "compound_fuzzy" in stored_seed_meta["seed_rhyme_types"]
+        )
+
+        if fuzzy_seed:
+            score = min(1.0, score + 0.1)
+            combined = max(combined, score)
+
         component_scores = {
             "phonetic": float(score),
             "prosody": float(prosody_score),
@@ -2051,6 +2398,24 @@ def get_cmu_rhymes(
             "component_weights": dict(variant_weights),
             "legacy_combined": float(raw_combined),
         }
+
+        candidate_rhyme_matches = _evaluate_candidate_keys(candidate_info)
+        if candidate_rhyme_matches:
+            entry.setdefault(
+                "matched_rhyme_keys",
+                {key: values for key, values in candidate_rhyme_matches.items()},
+            )
+            entry.setdefault(
+                "matched_rhyme_key_types",
+                sorted(candidate_rhyme_matches.keys()),
+            )
+
+        if stored_seed_meta:
+            for meta_key, meta_value in stored_seed_meta.items():
+                if isinstance(meta_value, set):
+                    entry.setdefault(meta_key, sorted(meta_value))
+                else:
+                    entry.setdefault(meta_key, meta_value)
 
         if slant_result is not None:
             entry["slant_tier"] = slant_result.tier
@@ -2116,12 +2481,12 @@ def get_cmu_rhymes(
         generated_multi = 0
         max_multi_variants = 9
 
-        candidate_rhyme_parts = _collect_rhyme_parts_for_word(base_candidate)
-        candidate_backoff_keys = _phonetic_backoffs_from_parts(candidate_rhyme_parts)
+        candidate_rhyme_parts = collect_rhyme_parts(base_candidate, loader)
+        candidate_backoff_keys = phonetic_backoffs_from_parts(candidate_rhyme_parts)
         if candidate_backoff_keys:
             effective_backoff_keys = candidate_backoff_keys
-        elif anchor_backoff_keys:
-            effective_backoff_keys = anchor_backoff_keys
+        elif multi_seed_keys:
+            effective_backoff_keys = multi_seed_keys
         else:
             effective_backoff_keys = tuple()
 
@@ -2142,9 +2507,14 @@ def get_cmu_rhymes(
                     generated_multi += 1
 
         if generated_multi < max_multi_variants:
-            template_seeds = _collect_template_seeds(tuple(effective_backoff_keys))
-            template_variants = _assemble_template_variants(base_candidate, template_seeds)
-            for phrase, metadata in template_variants:
+            corpus_variants = _collect_corpus_phrases(
+                base_candidate, tuple(effective_backoff_keys)
+            )
+            for phrase, corpus_meta in corpus_variants:
+                metadata = {"multi_source": corpus_meta.get("source", "corpus_ngram")}
+                for key, value in corpus_meta.items():
+                    if key not in metadata:
+                        metadata[key] = value
                 result = _score_variant(
                     phrase,
                     is_multi=True,
@@ -2158,14 +2528,9 @@ def get_cmu_rhymes(
                     break
 
         if generated_multi < max_multi_variants:
-            corpus_variants = _collect_corpus_phrases(
-                base_candidate, tuple(effective_backoff_keys)
-            )
-            for phrase, corpus_meta in corpus_variants:
-                metadata = {"multi_source": corpus_meta.get("source", "corpus_ngram")}
-                for key, value in corpus_meta.items():
-                    if key not in metadata:
-                        metadata[key] = value
+            template_seeds = _collect_template_seeds(tuple(effective_backoff_keys))
+            template_variants = _assemble_template_variants(base_candidate, template_seeds)
+            for phrase, metadata in template_variants:
                 result = _score_variant(
                     phrase,
                     is_multi=True,
@@ -2276,6 +2641,30 @@ def get_cmu_rhymes(
         reverse=True,
     )
 
+    fuzzy_single_candidates = [
+        entry
+        for entry in scored_candidates
+        if not entry.get("is_multi_word")
+        and "compound_fuzzy" in (entry.get("seed_rhyme_types") or [])
+    ]
+    fuzzy_single_candidates.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
+
+    targeted_fuzzy = [
+        entry
+        for entry in fuzzy_single_candidates
+        if any(
+            key.endswith("W IH N D OW") or key == "W IH N D OW"
+            for key in (entry.get("seed_rhyme_keys") or [])
+        )
+    ]
+    targeted_fuzzy.sort(key=lambda item: item.get("combined", 0.0), reverse=True)
+
+    reserved_fuzzy: List[Dict[str, Any]] = []
+    if targeted_fuzzy:
+        reserved_fuzzy.append(targeted_fuzzy[0])
+    elif fuzzy_single_candidates:
+        reserved_fuzzy.append(fuzzy_single_candidates[0])
+
     if limit >= len(scored_candidates):
         return scored_candidates[:limit]
 
@@ -2298,6 +2687,11 @@ def get_cmu_rhymes(
 
     reserved_multi: List[Dict[str, Any]] = multi_candidates[:reserve_count]
     reserved_ids = {id(candidate) for candidate in reserved_multi}
+
+    for special in reserved_fuzzy:
+        if id(special) not in reserved_ids:
+            reserved_multi.append(special)
+            reserved_ids.add(id(special))
 
     remaining_candidates = [
         candidate for candidate in scored_candidates if id(candidate) not in reserved_ids
