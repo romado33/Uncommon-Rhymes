@@ -1,0 +1,31 @@
+Perplexity AI uses advanced language modeling methods to identify both slant rhymes and multi-word rhymes, similar in some respects to other modern systems but with distinct computational approaches.
+
+1) Slant Rhyme Detection
+Perplexity detects slant rhymes by analyzing the underlying phonetic structure of candidate rhyme pairs rather than relying only on exact string or ending matches. The engine uses phoneme sequence representations derived from standard dictionaries (such as CMU Pronouncing Dictionary) and applies a slant rhyme algorithm that:
+
+Compares the final stressed vowel sounds and their immediately following phonemes in each word.
+
+Allows for a degree of mismatch or approximate similarity, scoring based on phonetic closeness instead of strict equality.
+
+Implements heuristics where vowel substitutions (e.g., ER to UH R) and final consonant tolerances are applied, mirroring research-based definitions of slant rhyme found in computational poetry systems.
+
+This methodology means that Perplexity can identify cases where rhymes are partial, such as "milk" and "talk," through a blend of symbolic phonetic comparison and similarity scoring, avoiding the rigid constraints of perfect rhyming.
+
+2) Multi-word Rhyme Detection
+For multi-word rhyme detection, Perplexity segments phrases into their constituent words and analyzes the phonetic endings of each word, focusing on the final word in the sequence. The system evaluates rhyme on a phrase level by:
+
+Checking that the last word in each multi-word group matches the rhyme pattern using phoneme-based algorithms.
+
+Optionally assessing support from preceding words for near-matches or rhythmic similarity, giving higher scores for multi-word phrases that have both phonetic and prosodic alignment.
+
+Using language models trained on examples of poetic language to provide contextual weighting for rhyme quality and topical coherence, drawn from a broad, multilingual dataset.
+
+This flexible approach supports recognition of multi-word rhymes where the terminal words rhyme and/or the overall rhythmic structure of the phrase is in harmony, allowing for both strict and loose (slant) matches depending on the creative context desired.
+
+Technical Highlights
+Perplexity’s approach relies on statistical language models, phonetic sequence analysis, and neural nets that score rhyme quality by how well sequences align in terms of both sound and poetic construction.
+
+The models integrate traditional linguistic algorithms (detecting rhyming syllables) and neural network outputs (scoring overall phrase structure for fluency and rhyme).
+
+This system, while informed by academic and industry research, is tailored for optimal flexibility and performance across different generative tasks, especially in poetry and creative writing scenarios.
+

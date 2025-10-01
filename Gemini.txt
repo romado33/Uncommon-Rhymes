@@ -1,0 +1,37 @@
+1) My Approach to Slant Rhymes
+My process is less of a rigid checklist and more of an integrated approach that starts with broad pattern recognition and narrows down to phonetic specifics.
+
+Generative Candidate Sourcing: My first step is generative. Having been trained on a massive corpus of literature, poetry, and song lyrics, I have a deeply ingrained, intuitive sense of what "sounds like" something else. I start by prompting my own internal model with a query like, "Generate a diverse list of words that have a similar sound profile to '[input word]'." This produces a large, varied pool of candidates that includes perfect rhymes, slant rhymes, assonance, and consonance.
+
+Phonetic Vector Analysis: Simultaneously, I convert the input word into its phonetic representations (like IPA or ARPAbet). I then analyze my initial candidate pool by comparing their phonetic structures to the input word's. This is more than a simple text match; I analyze them in a high-dimensional vector space where phonemes with similar features (e.g., voiced vs. unvoiced, stop vs. fricative) are closer together.
+
+Hybrid Scoring and Ranking: Finally, I score and rank the candidates based on a blended model:
+
+Rime Similarity (Primary Weight): I place the highest importance on the similarity of the rime—the stressed vowel and any following consonants. This is the core of what makes a rhyme feel satisfying.
+
+Phonetic Feature Distance: I calculate a distance score based on the specific features of mismatched phonemes. For example, a rhyme like "shape" and "break" scores highly because /p/ and /k/ are both unvoiced stops, differing only in their place of articulation.
+
+Syllable and Stress Consistency: I penalize candidates that have different syllable counts or clashing stress patterns, as this disrupts the rhythm.
+
+Generative Probability: I also consider the likelihood that these words would appear in similar creative contexts from my training data. This helps filter out phonetically close but contextually bizarre options.
+
+This hybrid approach allows me to find creatively appropriate rhymes that a purely rule-based system might miss, while still using phonetic rules to ensure the results are technically sound.
+
+2) My Approach to Multi-Word Rhymes
+For multi-word rhymes, I lean heavily on my strengths as a generative large language model, using a process of constrained generation and holistic scoring.
+
+Phonetic Target Identification: As with slant rhymes, I begin by breaking down the input word into its core phonetic rhyme key (the stressed vowel and coda consonants). For "window" (/ˈwɪn.doʊ/), the primary target is the /oʊ/ sound at the end, and the secondary target is the /ɪn/ sound in the stressed syllable.
+
+Constrained Beam Search Generation: This is the core of my method. Instead of relying on fixed templates (like "Adjective + Noun"), I use a constrained beam search. I generate a variety of short phrases, but the generation process is heavily biased to end on a word that satisfies the phonetic target. The "beam search" allows me to explore multiple promising phrases simultaneously. For "window," I might explore paths that end in words like "go," "slow," "snow," "though," etc.
+
+Integrated Multi-Objective Ranking: The phrases generated via beam search are then ranked using a holistic scoring function that evaluates several qualities at once:
+
+Phonetic Quality: How strong is the rhyme? I use my slant rhyme scoring model to evaluate the final word against the input. A multi-word phrase ending in a perfect rhyme scores highest.
+
+Naturalness & Fluency: Because the candidates come from my own generative model, they are inherently more likely to be fluent and idiomatic. I rank phrases like "slow go" or "thin snow" higher than a clunky but technically correct option like "though, so."
+
+Prosodic Flow: I analyze the syllable count and stress pattern of the entire phrase to see how well it would fit into a line of poetry or a song lyric.
+
+Semantic Relevance (Optional): If you provide a theme or context (e.g., "winter"), I can add a bonus to the score for phrases that fit that theme, like "thin snow."
+
+By generating and scoring phrases in an integrated way, I can produce multi-word rhymes that are not only phonetically accurate but also natural, creative, and contextually appropriate.

@@ -1,0 +1,257 @@
+1) Slant rhymes:
+
+For slant rhymes, I don’t use a single branded “rhyme model.” I combine a few standard phonetic heuristics:
+
+Pronunciation lookup
+
+Get phonemes (ARPAbet/IPA) for the input word (e.g., from a CMU-style lexicon).
+
+Handle multiple pronunciations if they exist.
+
+Rime-focused similarity
+
+Compare the rime (stressed vowel + following consonants) of the final syllable(s).
+
+Give partial credit for matching just the vowel class (e.g., /oʊ/ vs /o/) or just the coda consonants (e.g., /nd/ vs /n/).
+
+Feature-level scoring
+
+Compute a weighted distance over phoneme features (place/manner/voicing for consonants; height/backness/rounding for vowels).
+
+Reward: same vowel nucleus or closely related vowels; same (or similar) coda consonants.
+
+Penalize: different stress pattern, extra/missing syllables, very different codas.
+
+Backoffs & filters
+
+If no close phonetic matches, allow assonance (vowel-only match) or consonance (coda-only match).
+
+Light orthographic hints as a tie-breaker (useful for names/OOV words).
+
+Ranking
+
+Final score ≈ 0.6×rime similarity + 0.2×vowel-class similarity + 0.2×coda consonant similarity, with small penalties for syllable/stress mismatches.
+
+That’s how I decide which words feel like “near rhymes” versus just loosely related in sound. If you want, I can show the top candidates for any word and explain why each one scores as a slant rhyme.
+
+Example for finding slant rhymes for 'window':
+
+1) Normalize & get pronunciation
+
+Text: window
+
+CMU-style phonemes: W IH1 N D OW0 (UK alt: /ˈwɪn.dəʊ/)
+
+Notes: primary stress on WIN; final syllable -dow is /doʊ/ and unstressed.
+
+2) Extract rhyme keys (with backoffs)
+
+From the last stressed vowel onward (common rhyme practice):
+
+Primary key (stressed tail): IH1 N D OW → think “/ɪn.doʊ/”
+
+Backoffs (used for slant):
+
+Vowel nucleus only: OW class (/oʊ/ ~ /əʊ/)
+
+Coda similarity: allow D↔T, N↔M substitutions near the boundary
+
+Syllabic scope: allow matches that end -do/-doe/-dough/-dow or that place /ɪn/ just before an /oʊ/ vowel across a word boundary (e.g., thin snow)
+
+3) Generate candidate buckets
+
+Use the keys to fan out candidates. Below I show what each bucket yields for window.
+
+A) Word-final -do/-dow/-dough (ends in /doʊ/)
+
+widow, kiddo, weirdo, Speedo, Meadow (proper), Lindo (proper), avocado (multi-syll; ends /doʊ/), tornado, crescendo, innuendo, Nintendo, Orlando, Fernando
+
+B) Vowel-only /oʊ/ enders (assonance)
+
+hello, below, solo, cello, pillow, willow, fellow, yellow, follow, halo, Rambo, banjo, mellow, cocoa (dialectal /ˈkoʊ.koʊ/)
+
+C) Multi-word line-enders (cross-word /ɪn/…/oʊ/ echo)
+
+thin snow, dim glow, rim low, brim low, back row, cold flow, slow go, wind blow, in tow, pin toe (playful), tin bow (near-nonce), skin show
+
+4) Score (phonetics → prosody → fluency)
+
+Illustrative scoring (0–1 per dimension; final ≈ 0.55Phon + 0.25Pros + 0.15Flu + 0.05Sem if you give a theme).
+Here are a few worked examples:
+
+Candidate	Why it fits	Phon (≈)	Pros (≈)	Flu (≈)	Final (≈)
+widow	/ˈwɪd.oʊ/ shares -d.oʊ; onset differs (N/A)	0.88	0.8	0.9	0.86
+kiddo	/ˈkɪd.oʊ/ same -d.oʊ, playful register	0.86	0.8	0.9	0.85
+weirdo	/ˈwɪɚ.doʊ/ vowel shift in 1st syllable, same end	0.82	0.8	0.85	0.82
+Orlando	/ɔrˈlæn.doʊ/ extra syllable, -doʊ end	0.78	0.6	0.8	0.75
+crescendo	/krəˈʃɛn.doʊ/ stress mismatch, still ends -doʊ	0.76	0.55	0.8	0.72
+thin snow	/θɪn snoʊ/: /ɪn/ + /oʊ/ across words (assonance)	0.7	0.85	0.9	0.78
+in tow	exact OW nucleus; compact idiom	0.68	0.9	0.95	0.80
+pillow	/ˈpɪ.loʊ/: vowel drift, coda mismatch	0.6	0.8	0.9	0.70
+
+Takeaway: “-do/-doe/-dough” endings score highest; strong phrases like “thin snow” or “in tow” compete due to excellent prosody/fluency.
+
+5) Filter by your constraints
+
+Examples of quick filters you might apply:
+
+Tone: playful (kiddo, weirdo), lyrical (willow, mellow), cinematic (Rambo, shadow)
+
+Meter: prefer trochaic dimeter enders (e.g., widow) or iambic phrase ends (in tow)
+
+Clean diction: avoid proper nouns if you need generic language
+
+6) Produce labeled lists (by closeness)
+
+Very close slant (shares -do/-doe sound):
+widow, kiddo, weirdo, Speedo, meadow, Lindo, avocado, tornado, crescendo, innuendo, Nintendo, Orlando, Fernando
+
+Solid slant (same final vowel /oʊ/):
+hello, below, solo, cello, halo, follow, yellow, fellow, mellow, pillow, willow, banjo, Rambo
+
+Two-word line-enders (great in verses):
+in tow, thin snow, dim glow, rim low, brim low, back row, cold flow, slow go, wind blow, skin show
+
+7) (Optional) Explain “why” for a few
+
+widow: -d.oʊ matches -dow; initial syllable differs but stress/shape aligns → very close.
+
+kiddo: same ending; consonant cluster /d/ retained → strong echo.
+
+thin snow: /ɪn/ mirrors win, and /snoʊ/ mirrors /doʊ/—clean vowel echo across the boundary; great cadence.
+
+in tow: exact /oʊ/ nucleus, ultra-idiomatic, snappy prosody for closures.
+
+2) Multi word rhymes:
+
+Here’s a clean, practical pipeline I’d use to find multi-word target rhymes (perfect + slant) for any input word.
+
+1) Normalize & get pronunciation
+
+Lowercase, strip punctuation.
+
+Look up pronunciations (CMU dict–style). If OOV, run a G2P model.
+
+Keep all pronunciations; multi-pron words can unlock extra rhymes.
+
+2) Extract rhyme keys
+
+For each pronunciation, find the primary stressed vowel in the last foot and take the rime (stressed vowel + tail consonants).
+
+Build variants:
+
+Exact key (perfect rhyme).
+
+Backoffs: same vowel class, same coda, similar coda (feature distance), last 1–2 syllables.
+
+3) Generate multi-word candidates
+
+Use two streams and then merge:
+
+A. Phrase templates (combinatorial)
+
+Compose final tokens from frequent end-of-line patterns:
+
+Adj + Noun (e.g., “thin snow”)
+
+Det + Noun (“the window” for other inputs)
+
+Noun + Noun (“brim low” counts phonetically like two words)
+
+Verb + Particle (“in tow”, “fall slow”, “let go”)
+
+Prep + Noun (“in tow”, “below” → single word but same sound family)
+
+Adv + Verb (“slow go”)
+
+Constrain the final syllable(s) to target the rhyme key or its backoffs.
+
+B. Corpus search (retrieval)
+
+Scan a corpus of n-grams (2–5 grams) and take those whose final word’s rime (or last two syllables) match the key/backoffs.
+
+Keep phrases that are idiomatic or high-frequency to improve naturalness.
+
+4) Score (multi-objective)
+
+Compute a weighted score per candidate phrase:
+
+Phonetic score (0–1)
+
+0.6 × rime similarity (exact > same vowel+coda class > assonance/consonance)
+
+0.2 × vowel class proximity (height/backness/rounding)
+
+0.2 × coda similarity (place/manner/voicing features)
+
+Prosody score (0–1)
+
+Syllable count near the input’s tail (±1).
+
+Stress compatibility (end-stress helps rhyming punch).
+
+Optional meter fit (if you specify iambic, trochaic, etc.).
+
+Fluency/Naturalness score (0–1)
+
+Collocation frequency / idiomaticity (prefer “thin snow” over “wan sleet” unless you want rare).
+
+POS plausibility at line end (avoid odd determiners or stranded preps unless stylistic).
+
+Semantic/Topical bonus (0–0.2)
+
+If you give a theme, boost phrases that fit it (e.g., winter imagery).
+
+Final: 0.55*Phonetic + 0.25*Prosody + 0.15*Fluency + 0.05*Semantic
+
+5) Deduplicate & diversify
+
+Remove near-duplicates (“slow go” vs “go slow” if meter doesn’t require both).
+
+Enforce variety across POS patterns and imagery buckets.
+
+6) Perfect vs slant decision
+
+Perfect: exact rime match (same stressed vowel + identical coda), stress aligned.
+
+Near-perfect (very close slant): same vowel nucleus + coda differing by one phonetic feature (e.g., /nd/ vs /n/).
+
+Slant: strong assonance or consonance, good prosody.
+
+7) Practical guardrails
+
+Prefer phrases whose final content word carries the rhyme (don’t end on weak function words unless the phrase is conventional: “in tow”).
+
+For proper nouns, allow orthography tie-breakers but keep phonetics primary.
+
+Keep multiple pronunciations for ambiguous words (“read,” “wind”).
+
+Tiny worked example (target: window /ˈwɪn.doʊ/)
+
+Rhyme keys: primary /ɪn.doʊ/ → backoffs: */ɪn.doʊ/, */ɪn.d/, */ɪn.oʊ/, */ɪm.doʊ/ (m~n slant), */ɪn.t̚oʊ/ (d~t slant), vowel-only */ɪn oʊ/
+
+Perfect/near-perfect multi-word candidates
+
+“in tow” (assonant + ending /oʊ/, compact, idiomatic)
+
+“thin snow” (*/ɪn/ + /snoʊ/: strong assonance + near coda echo)
+
+“wind blow” (semantic echo + /ɪn/…/bloʊ/; slant via assonance)
+
+“dim glow”, “rim low”, “brim low”, “back row”, “cold flow”, “slow go”
+
+You’d run them through the scoring above; “thin snow” and “in tow” usually rank highest for naturalness + phonetics.
+
+If you want this automated
+
+Lexicon/G2P: CMUdict + Phonetisaurus or g2p-en
+
+Phoneme features: Panphon or custom feature table
+
+Corpus: n-gram lists (e.g., COCA/Google Books/lyrics dumps) filtered to 2–5 grams
+
+Syllabifier: CMU syllable markers or Sonority Sequencing fallback
+
+Meter check (optional): simple stress pattern matcher over the last 2–4 syllables
+
+I can run this for any word and return a ranked list with per-candidate phonetic/prosody explanations—and tailor it to your meter or mood.
