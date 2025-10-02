@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Set
 
 Row = Dict[str, Any]
@@ -36,21 +37,33 @@ class SQLitePatternRepository:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._cultural_significance_labels: Optional[List[str]] = None
-        self._connection: Optional[sqlite3.Connection] = None
+        self._local = threading.local()
+        self._connections_lock = threading.Lock()
+        self._connections: Set[sqlite3.Connection] = set()
 
     def _get_connection(self) -> sqlite3.Connection:
-        connection = self._connection
+        connection = getattr(self._local, "connection", None)
         if connection is None:
-            connection = sqlite3.connect(self.db_path)
+            connection = sqlite3.connect(self.db_path, check_same_thread=False)
             connection.row_factory = sqlite3.Row
-            self._connection = connection
+            self._local.connection = connection
+            with self._connections_lock:
+                self._connections.add(connection)
         return connection
 
     def close(self) -> None:
-        connection = self._connection
-        if connection is not None:
-            connection.close()
-            self._connection = None
+        with self._connections_lock:
+            connections = tuple(self._connections)
+            self._connections.clear()
+
+        for connection in connections:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        if hasattr(self._local, "connection"):
+            del self._local.connection
 
     def _execute(self, query: str, params: Sequence[Any]) -> List[sqlite3.Row]:
         connection = self._get_connection()
