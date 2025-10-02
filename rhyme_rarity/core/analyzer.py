@@ -36,6 +36,9 @@ from .scorer import SlantScore, passes_gate, score_pair
 RARITY_SIMILARITY_WEIGHT: float = 0.65
 RARITY_NOVELTY_WEIGHT: float = 0.35
 
+_MIN_CANDIDATE_POOL: int = 100
+_CANDIDATE_LIMIT_MULTIPLIER: int = 5
+
 
 # ---------------------------------------------------------------------------
 # Phoneme feature tables
@@ -1812,6 +1815,30 @@ def get_cmu_rhymes(
                             key=fuzzy_key,
                             key_type="compound_fuzzy",
                         )
+
+    deduped_candidates: List[str] = []
+    seen_normalized_candidates: Set[str] = set()
+    for candidate in candidate_words:
+        normalized_candidate = candidate.strip().lower()
+        if not normalized_candidate or normalized_candidate in seen_normalized_candidates:
+            continue
+        seen_normalized_candidates.add(normalized_candidate)
+        deduped_candidates.append(candidate)
+
+    candidate_words = deduped_candidates
+
+    max_pool_size = max(limit * _CANDIDATE_LIMIT_MULTIPLIER, _MIN_CANDIDATE_POOL)
+    if len(candidate_words) > max_pool_size:
+        candidate_words = candidate_words[:max_pool_size]
+        retained_keys = {
+            candidate.strip().lower()
+            for candidate in candidate_words
+            if candidate and candidate.strip()
+        }
+        preferred_single_candidates.intersection_update(retained_keys)
+        candidate_metadata = {
+            key: value for key, value in candidate_metadata.items() if key in retained_keys
+        }
 
     scoring_analyzer = analyzer or EnhancedPhoneticAnalyzer()
 
