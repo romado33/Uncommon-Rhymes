@@ -48,6 +48,7 @@ from rhyme_rarity.core import (
     DefaultCmuRhymeRepository,
     EnhancedPhoneticAnalyzer,
 )
+from rhyme_rarity.utils.logging_config import configure_logging
 from rhyme_rarity.utils.observability import get_logger
 from anti_llm import AntiLLMRhymeEngine
 from cultural.engine import CulturalIntelligenceEngine
@@ -74,6 +75,7 @@ class RhymeRarityApp:
         cmu_repository: Optional[CmuRhymeRepository] = None,
     ) -> None:
         self.db_path = db_path
+        configure_logging()
         self._logger = get_logger(__name__).bind(component="app_facade")
         self._logger.info("Initialising application facade", context={"db_path": db_path})
 

@@ -6,6 +6,7 @@ from collections import OrderedDict
 from html import escape
 from contextlib import contextmanager, nullcontext
 import copy
+import logging
 import re
 import threading
 import types
@@ -33,7 +34,7 @@ from ...utils.observability import (
     record_exception,
     start_span,
 )
-from ...utils.telemetry import StructuredTelemetry
+from ...utils.telemetry import StructuredTelemetry, TelemetryLogger
 
 
 RELAXED_BUCKET_CONFIDENCE_FLOOR = 0.35
@@ -78,6 +79,16 @@ class RhymeQueryOrchestrator:
             component="rhyme_query_orchestrator",
             repository=repository_name,
         )
+
+        self._telemetry_listener = TelemetryLogger(
+            logger=self._logger.bind(channel="telemetry"),
+            level=logging.INFO,
+            level_map={
+                "counter": logging.DEBUG,
+                "metadata": logging.DEBUG,
+            },
+        )
+        self.telemetry.add_listener(self._telemetry_listener)
 
         self._metric_request_total = create_counter(
             "rhyme_search_requests_total",
