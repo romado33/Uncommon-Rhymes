@@ -1365,18 +1365,21 @@ class RhymeQueryOrchestrator:
 
         telemetry = getattr(self, 'telemetry', None)
 
+        base_min_confidence = float(min_confidence)
         try:
             threshold = (
                 float(phonetic_threshold)
                 if phonetic_threshold is not None
-                else float(min_confidence)
+                else base_min_confidence
             )
         except (TypeError, ValueError):
-            threshold = float(min_confidence)
-        threshold = max(float(min_confidence), threshold)
-        fallback_floor = max(float(min_confidence), threshold - 0.05)
+            threshold = base_min_confidence
+        threshold = max(base_min_confidence, threshold)
+        fallback_delta = 0.05
+        fallback_floor = threshold - fallback_delta
+        fallback_floor = max(0.0, min(base_min_confidence, fallback_floor))
         if not delivered_words:
-            fallback_floor = float(min_confidence)
+            fallback_floor = base_min_confidence
 
         allowed_norm = {word for word in (allowed_end_words or set()) if word}
         apply_slant_gate = (
@@ -1397,6 +1400,17 @@ class RhymeQueryOrchestrator:
                 context={'error': str(exc), 'source_word': source_word},
             )
             return []
+
+        if telemetry:
+            telemetry.annotate(
+                'search.anti_llm.thresholds',
+                {
+                    'strict_threshold': threshold,
+                    'fallback_floor': fallback_floor,
+                    'min_confidence': base_min_confidence,
+                    'fallback_delta': threshold - fallback_floor,
+                },
+            )
 
         entries: List[Dict[str, Any]] = []
         for pattern in raw_patterns:

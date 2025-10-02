@@ -207,8 +207,8 @@ def test_anti_llm_respects_dynamic_threshold() -> None:
     anti_engine = DummyAntiEngine(
         [
             DummyPattern("Alpha", confidence=0.94, rarity_score=0.6),
-            DummyPattern("Beta", confidence=0.83, rarity_score=0.7),
-            DummyPattern("Gamma", confidence=0.6, rarity_score=0.4),
+            DummyPattern("Beta", confidence=0.78, rarity_score=0.7),
+            DummyPattern("Gamma", confidence=0.55, rarity_score=0.4),
         ]
     )
 
@@ -232,7 +232,14 @@ def test_anti_llm_respects_dynamic_threshold() -> None:
     assert set(anti_targets) == {"Alpha", "Beta"}
     assert anti_targets["Alpha"]["threshold_gate"] == "strict"
     assert anti_targets["Beta"]["threshold_gate"] == "fallback"
+    assert anti_targets["Beta"]["combined_score"] == pytest.approx(0.78)
+    assert anti_targets["Alpha"]["combined_score"] == pytest.approx(0.94)
     metrics = service.get_latest_telemetry()
+    thresholds = metrics["metadata"].get("search.anti_llm.thresholds")
+    assert thresholds is not None
+    assert thresholds["min_confidence"] == pytest.approx(0.6)
+    assert thresholds["fallback_floor"] == pytest.approx(0.6)
+    assert thresholds["strict_threshold"] > thresholds["fallback_floor"]
     counters = metrics["counters"]
     assert counters["search.anti_llm.threshold_fallback"] >= 1
     assert counters["search.anti_llm.threshold_blocked"] >= 1
