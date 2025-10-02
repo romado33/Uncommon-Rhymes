@@ -6,9 +6,10 @@ import json
 import os
 import re
 import sqlite3
-from functools import lru_cache
 from contextlib import closing
+from functools import lru_cache
 from importlib import resources
+from pathlib import Path
 from typing import Dict, Iterable, Mapping, Sequence, Set, Tuple
 
 __all__ = [
@@ -245,14 +246,25 @@ def _load_phrase_corpus_from_source() -> Tuple[
             raw_data = None
 
     if raw_data is None:
+        corpus_path: Path | None = None
         try:
             corpus_path = resources.files("rhyme_rarity").joinpath(
                 "data", "phrase_corpus.json"
             )
             with corpus_path.open("r", encoding="utf-8") as handle:
                 raw_data = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError):
-            raw_data = {}
+        except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+            raw_data = None
+
+        if raw_data is None:
+            try:
+                filesystem_path = (
+                    Path(__file__).resolve().parents[1] / "data" / "phrase_corpus.json"
+                )
+                with filesystem_path.open("r", encoding="utf-8") as handle:
+                    raw_data = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError):
+                raw_data = {}
 
     if not isinstance(raw_data, Mapping):
         return {}, {}
@@ -517,19 +529,23 @@ def lookup_ngram_phrases(
 
     corpus_by_word, corpus_by_rhyme = _load_ngram_corpus()
 
-    for phrase in corpus_by_word.get(target, ()):  # direct lookups first
-        if phrase and phrase.lower().split()[-1] == target:
-            results.add(phrase)
+    direct_matches = tuple(
+        phrase
+        for phrase in corpus_by_word.get(target, ())
+        if phrase and phrase.lower().split()[-1] == target
+    )
+    results.update(direct_matches)
 
-    for key in rhyme_keys:
-        normalized = _normalize_rhyme_key(key)
-        if not normalized:
-            continue
-        for phrase in corpus_by_rhyme.get(normalized, ()):  # phonetic back-off
-            if not phrase:
+    if not results:
+        for key in rhyme_keys:
+            normalized = _normalize_rhyme_key(key)
+            if not normalized:
                 continue
-            if phrase.lower().split()[-1] == target:
-                results.add(phrase)
+            for phrase in corpus_by_rhyme.get(normalized, ()):  # phonetic back-off
+                if not phrase:
+                    continue
+                if phrase.lower().split()[-1] == target:
+                    results.add(phrase)
 
     if enable_dynamic_fallback and not results:
         mined = _mine_phrases_from_database(
