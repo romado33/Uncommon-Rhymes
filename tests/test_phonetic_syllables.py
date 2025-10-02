@@ -5,6 +5,7 @@ from rhyme_rarity.core import (
     get_cmu_rhymes,
     passes_gate,
     score_pair,
+    SlantScore,
 )
 from rhyme_rarity.utils.syllables import estimate_syllable_count
 
@@ -154,6 +155,50 @@ def test_multi_word_variants_survive_large_single_candidate_lists():
     ]
 
     assert multi_variants, "Expected multi-word variants to survive limit slicing"
+
+
+def test_large_rhyme_classes_are_bounded_before_scoring():
+    class LargeClassLoader(DummyLoader):
+        def get_rhyming_words(self, word):
+            super().get_rhyming_words(word)
+            return [f"option{i}" for i in range(600)]
+
+        def get_pronunciations(self, word):
+            if str(word).startswith("option"):
+                return [["AA1", "P", "SH", "AH", "N"]]
+            return super().get_pronunciations(word)
+
+        def get_rhyme_parts(self, word):
+            if str(word).startswith("option"):
+                return {"AA1 P SH AH N"}
+            return super().get_rhyme_parts(word)
+
+    class CountingAnalyzer(EnhancedPhoneticAnalyzer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.slant_calls = []
+
+        def get_slant_score(self, word1: str, word2: str) -> SlantScore:
+            self.slant_calls.append((word1, word2))
+            return SlantScore(
+                total=0.98,
+                rime=0.98,
+                vowel=0.98,
+                coda=0.98,
+                stress_penalty=0.0,
+                syllable_penalty=0.0,
+                tier="perfect",
+            )
+
+    limit = 7
+    loader = LargeClassLoader()
+    analyzer = CountingAnalyzer(cmu_loader=loader)
+
+    results = get_cmu_rhymes("paper trail", analyzer=analyzer, cmu_loader=loader, limit=limit)
+
+    assert results, "Expected bounded results even for large rhyme classes"
+    max_pool = max(limit * 5, 100)
+    assert len(analyzer.slant_calls) <= max_pool
 
 
 def test_derive_rhyme_profile_returns_rhyme_type_metadata():
