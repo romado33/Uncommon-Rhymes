@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Sequence, Set, Tuple
+import concurrent.futures
+import time
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import streamlit as st
 
@@ -90,6 +92,48 @@ def _render_styles() -> None:
     </style>
     """
     st.markdown(interface_css, unsafe_allow_html=True)
+
+
+def _format_live_events(snapshot: Dict[str, Any]) -> str:
+    """Return a markdown representation of live telemetry events."""
+
+    if not snapshot:
+        return ""
+
+    events = snapshot.get("events") or []
+    counters = snapshot.get("counters") or {}
+    output: List[str] = []
+
+    if not events and not counters:
+        return ""
+
+    output.append("#### Live search activity")
+
+    if events:
+        output.append("")
+        recent_events = events[-8:]
+        for event in recent_events:
+            name = str(event.get("name", "event"))
+            duration = event.get("duration")
+            metadata = event.get("metadata") or {}
+            meta_chunks = []
+            for key, value in metadata.items():
+                meta_chunks.append(f"{key}={value}")
+            meta_suffix = f" – {', '.join(meta_chunks)}" if meta_chunks else ""
+            if isinstance(duration, (float, int)):
+                output.append(f"- `{name}` took {float(duration):.2f}s{meta_suffix}")
+            else:
+                output.append(f"- `{name}`{meta_suffix}")
+
+    if counters:
+        output.append("")
+        output.append("**Counters**")
+        counter_chunks = []
+        for key, value in counters.items():
+            counter_chunks.append(f"`{key}`: {value}")
+        output.append(", ".join(counter_chunks))
+
+    return "\n".join(output)
 
 
 def main() -> None:
@@ -185,18 +229,85 @@ def main() -> None:
             results_placeholder.info("Please enter a word to find rhymes for.")
             return
 
-        with st.spinner("Searching the rhyme vault..."):
-            rhymes = search_service.search_rhymes(
-                word,
-                limit=max_results,
-                min_confidence=min_confidence,
-                cultural_significance=list(cultural_filter),
-                genres=list(genre_filter),
-                allowed_rhyme_types=list(rhyme_type_filter),
-                slant_strength=slant_strength,
-            )
-            formatted = search_service.format_rhyme_results(word, rhymes)
+        status_placeholder = st.empty()
+        log_area = None
+        telemetry_snapshot: Dict[str, Any] = {}
+        telemetry_available = hasattr(search_service, "get_latest_telemetry")
 
+        if telemetry_available:
+            log_expander = st.expander("Live search log", expanded=True)
+            log_area = log_expander.empty()
+            log_area.markdown("_Waiting for telemetry updates..._")
+
+        status_placeholder.info("Starting search...")
+
+        error_message: Optional[str] = None
+        rhymes: Optional[Dict[str, Any]] = None
+        start_time = time.perf_counter()
+        last_rendered_log = ""
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    search_service.search_rhymes,
+                    word,
+                    limit=max_results,
+                    min_confidence=min_confidence,
+                    cultural_significance=list(cultural_filter),
+                    genres=list(genre_filter),
+                    allowed_rhyme_types=list(rhyme_type_filter),
+                    slant_strength=slant_strength,
+                )
+
+                while True:
+                    try:
+                        rhymes = future.result(timeout=0.25)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        elapsed = time.perf_counter() - start_time
+                        status_message = f"Searching… {elapsed:.1f}s elapsed"
+
+                        if telemetry_available:
+                            telemetry_snapshot = search_service.get_latest_telemetry()
+                            events = telemetry_snapshot.get("events") or []
+                            if events:
+                                latest_event = str(events[-1].get("name", "event"))
+                                status_message += f" | Last event: {latest_event}"
+                            if log_area is not None:
+                                log_markdown = _format_live_events(telemetry_snapshot)
+                                if log_markdown and log_markdown != last_rendered_log:
+                                    log_area.markdown(log_markdown)
+                                    last_rendered_log = log_markdown
+
+                        status_placeholder.info(status_message)
+                        time.sleep(0.25)
+
+        except Exception as exc:  # pragma: no cover - UI level error surface
+            error_message = str(exc)
+
+        if error_message:
+            status_placeholder.error(f"Search failed: {error_message}")
+            if log_area is not None and telemetry_snapshot:
+                final_log = _format_live_events(telemetry_snapshot)
+                if final_log:
+                    log_area.markdown(final_log)
+            return
+
+        if rhymes is None:
+            status_placeholder.error("Search failed: no results returned.")
+            return
+
+        elapsed = time.perf_counter() - start_time
+        status_placeholder.success(f"Search completed in {elapsed:.2f}s")
+
+        if telemetry_available:
+            telemetry_snapshot = search_service.get_latest_telemetry()
+            if log_area is not None:
+                final_log = _format_live_events(telemetry_snapshot)
+                if final_log:
+                    log_area.markdown(final_log)
+
+        formatted = search_service.format_rhyme_results(word, rhymes)
         results_placeholder.markdown(formatted, unsafe_allow_html=True)
     else:
         results_placeholder.markdown(

@@ -35,6 +35,19 @@ class StructuredTelemetry:
         self._metadata: Dict[str, Any] = {}
         self._trace_name: Optional[str] = None
 
+    def _build_snapshot_locked(self) -> Dict[str, Any]:
+        return {
+            "trace_id": self._trace_id,
+            "name": self._trace_name,
+            "timings": {key: dict(value) for key, value in self._timings.items()},
+            "counters": dict(self._counters),
+            "events": [dict(event) for event in self._events],
+            "metadata": dict(self._metadata),
+        }
+
+    def _update_latest_snapshot_locked(self) -> None:
+        self._latest_snapshot = deepcopy(self._build_snapshot_locked())
+
     def now(self) -> float:
         """Return the current monotonic time used for telemetry measurements."""
 
@@ -49,6 +62,7 @@ class StructuredTelemetry:
             self._trace_name = name
             self._metadata["trace_name"] = name
             self._metadata["start_time"] = self.now()
+            self._update_latest_snapshot_locked()
             return self._trace_id
 
     def _record_timing(
@@ -82,6 +96,8 @@ class StructuredTelemetry:
             if len(self._events) > self._max_events:
                 self._events = self._events[-self._max_events :]
 
+            self._update_latest_snapshot_locked()
+
     @contextmanager
     def timer(
         self,
@@ -112,6 +128,7 @@ class StructuredTelemetry:
 
         with self._lock:
             self._counters[name] = self._counters.get(name, 0.0) + float(amount)
+            self._update_latest_snapshot_locked()
 
     record_counter = increment
 
@@ -120,19 +137,13 @@ class StructuredTelemetry:
 
         with self._lock:
             self._metadata[key] = value
+            self._update_latest_snapshot_locked()
 
     def snapshot(self) -> Dict[str, Any]:
         """Capture the current telemetry data for the active trace."""
 
         with self._lock:
-            snapshot = {
-                "trace_id": self._trace_id,
-                "name": self._trace_name,
-                "timings": {key: dict(value) for key, value in self._timings.items()},
-                "counters": dict(self._counters),
-                "events": [dict(event) for event in self._events],
-                "metadata": dict(self._metadata),
-            }
+            snapshot = self._build_snapshot_locked()
             self._latest_snapshot = deepcopy(snapshot)
             return snapshot
 

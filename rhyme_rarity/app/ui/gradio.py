@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Sequence, Set
+import concurrent.futures
+import time
+from typing import Any, Dict, List, Sequence, Set
 
 import gradio as gr
 
@@ -21,6 +23,43 @@ def _ensure_list(value) -> List:
     return [value]
 
 
+def _format_live_events(snapshot: Dict[str, Any]) -> str:
+    """Return a markdown representation of live telemetry events."""
+
+    if not snapshot:
+        return ""
+
+    events = snapshot.get("events") or []
+    counters = snapshot.get("counters") or {}
+
+    if not events and not counters:
+        return ""
+
+    output: List[str] = ["#### Live search activity"]
+
+    if events:
+        output.append("")
+        recent_events = events[-8:]
+        for event in recent_events:
+            name = str(event.get("name", "event"))
+            duration = event.get("duration")
+            metadata = event.get("metadata") or {}
+            meta_chunks = [f"{key}={value}" for key, value in metadata.items()]
+            meta_suffix = f" – {', '.join(meta_chunks)}" if meta_chunks else ""
+            if isinstance(duration, (float, int)):
+                output.append(f"- `{name}` took {float(duration):.2f}s{meta_suffix}")
+            else:
+                output.append(f"- `{name}`{meta_suffix}")
+
+    if counters:
+        output.append("")
+        output.append("**Counters**")
+        counter_chunks = [f"`{key}`: {value}" for key, value in counters.items()]
+        output.append(", ".join(counter_chunks))
+
+    return "\n".join(output)
+
+
 def create_interface(
     search_service: SearchService,
     repository: SQLiteRhymeRepository,
@@ -35,20 +74,111 @@ def create_interface(
         cultural_filter: Sequence[str] | None,
         genre_filter: Sequence[str] | None,
         rhyme_type_filter: Sequence[str] | None,
-    ) -> str:
-        if not word:
-            return "Please enter a word to find rhymes for."
+    ):
+        """Execute a search while streaming telemetry updates to the UI."""
 
-        rhymes = search_service.search_rhymes(
-            word,
-            limit=max_results,
-            min_confidence=min_conf,
-            cultural_significance=_ensure_list(cultural_filter),
-            genres=_ensure_list(genre_filter),
-            allowed_rhyme_types=_ensure_list(rhyme_type_filter),
-            slant_strength=slant_strength,
+        default_results_message = (
+            "Start by entering a word on the left and click **Find Rhymes**."
         )
-        return search_service.format_rhyme_results(word, rhymes)
+
+        if not word or not word.strip():
+            return (
+                "Please enter a word to find rhymes for.",
+                "_Enter a term above to begin tracking telemetry._",
+                default_results_message,
+            )
+
+        telemetry_available = hasattr(search_service, "get_latest_telemetry")
+        log_placeholder = (
+            "_Waiting for telemetry updates..._"
+            if telemetry_available
+            else "_Telemetry instrumentation is not available for this search._"
+        )
+        last_rendered_log = log_placeholder if telemetry_available else ""
+
+        yield (
+            "Starting search...",
+            log_placeholder,
+            default_results_message,
+        )
+
+        telemetry_snapshot: Dict[str, Any] = {}
+        rhymes: Dict[str, Any] | None = None
+        error_message: str | None = None
+        start_time = time.perf_counter()
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    search_service.search_rhymes,
+                    word,
+                    limit=max_results,
+                    min_confidence=min_conf,
+                    cultural_significance=_ensure_list(cultural_filter),
+                    genres=_ensure_list(genre_filter),
+                    allowed_rhyme_types=_ensure_list(rhyme_type_filter),
+                    slant_strength=slant_strength,
+                )
+
+                while True:
+                    try:
+                        rhymes = future.result(timeout=0.25)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        elapsed = time.perf_counter() - start_time
+                        status_message = f"Searching… {elapsed:.1f}s elapsed"
+
+                        if telemetry_available:
+                            telemetry_snapshot = search_service.get_latest_telemetry()
+                            events = telemetry_snapshot.get("events") or []
+                            if events:
+                                latest_event = str(events[-1].get("name", "event"))
+                                status_message += f" | Last event: {latest_event}"
+                            log_markdown = _format_live_events(telemetry_snapshot)
+                            if log_markdown:
+                                last_rendered_log = log_markdown
+
+                        yield (
+                            status_message,
+                            last_rendered_log or log_placeholder,
+                            default_results_message,
+                        )
+                        time.sleep(0.25)
+
+        except Exception as exc:  # pragma: no cover - surface UI level failures
+            error_message = str(exc)
+
+        if error_message:
+            yield (
+                f"Search failed: {error_message}",
+                last_rendered_log or log_placeholder,
+                default_results_message,
+            )
+            return
+
+        if rhymes is None:
+            yield (
+                "Search failed: no results returned.",
+                last_rendered_log or log_placeholder,
+                default_results_message,
+            )
+            return
+
+        elapsed = time.perf_counter() - start_time
+        status_message = f"Search completed in {elapsed:.2f}s"
+
+        if telemetry_available:
+            telemetry_snapshot = search_service.get_latest_telemetry()
+            final_log = _format_live_events(telemetry_snapshot)
+            if final_log:
+                last_rendered_log = final_log
+
+        formatted = search_service.format_rhyme_results(word, rhymes)
+        yield (
+            status_message,
+            last_rendered_log or log_placeholder,
+            formatted,
+        )
 
     def _phrase_query(
         phrase: str,
@@ -130,6 +260,9 @@ def create_interface(
     .rr-tip {color: #4b5563; font-size: 0.92rem; margin-top: 8px;}
     .rr-results-panel {display: flex; flex-direction: column; gap: 16px; min-height: 420px;}
     .rr-results-panel .gr-markdown {flex: 1; background: #f8fafc; border-radius: 12px; padding: 16px 18px; border: 1px solid rgba(15, 23, 42, 0.05); white-space: normal;}
+    .rr-status-card {background: #f1f5f9; border-radius: 12px; border: 1px solid rgba(15, 23, 42, 0.05); padding: 16px 18px;}
+    .rr-status-message {margin: 0; color: #0f172a; font-weight: 600;}
+    .rr-log {background: #ffffff; border-radius: 12px; border: 1px solid rgba(15, 23, 42, 0.06); padding: 16px 18px; max-height: 220px; overflow-y: auto;}
     .rr-source-summary {margin-bottom: 12px;}
     .rr-source-summary h3 {margin: 0 0 4px; font-size: 1.35rem;}
     .rr-source-summary p {margin: 0; color: #334155;}
@@ -253,8 +386,17 @@ def create_interface(
 
                     with gr.Column(elem_classes=["rr-section"]):
                         with gr.Group(elem_classes=["rr-panel", "rr-results-panel"]):
+                            gr.Markdown("### Status & telemetry")
+                            status_md = gr.Markdown(
+                                value="Waiting to start a search…",
+                                elem_classes=["rr-status-card", "rr-status-message"],
+                            )
+                            log_md = gr.Markdown(
+                                value="_Live telemetry updates will appear here during a search._",
+                                elem_classes=["rr-log"],
+                            )
                             gr.Markdown("### Rhyme results")
-                            output = gr.Markdown(
+                            results_md = gr.Markdown(
                                 value="Start by entering a word on the left and click **Find Rhymes**.",
                                 elem_classes=["rr-results-markdown"],
                             )
@@ -302,7 +444,7 @@ def create_interface(
                 genre_dropdown,
                 rhyme_type_dropdown,
             ],
-            outputs=output,
+            outputs=[status_md, log_md, results_md],
         )
 
         word_input.submit(
@@ -316,7 +458,7 @@ def create_interface(
                 genre_dropdown,
                 rhyme_type_dropdown,
             ],
-            outputs=output,
+            outputs=[status_md, log_md, results_md],
         )
 
         run_rev.click(
