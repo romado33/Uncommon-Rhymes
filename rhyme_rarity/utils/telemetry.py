@@ -68,12 +68,10 @@ class StructuredTelemetry:
 
     def now(self) -> float:
         """Return the current monotonic time used for telemetry measurements."""
-
         return float(self._time_fn())
 
     def start_trace(self, name: str) -> int:
         """Reset telemetry state and start a new trace."""
-
         with self._lock:
             self._trace_id += 1
             self._reset_state()
@@ -135,7 +133,6 @@ class StructuredTelemetry:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Iterator[Dict[str, Any]]:
         """Context manager that records a timing measurement for ``name``."""
-
         payload: Dict[str, Any] = dict(metadata) if metadata else {}
         start = self.now()
         self._notify_listeners(
@@ -154,12 +151,10 @@ class StructuredTelemetry:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record an explicit timing measurement with optional metadata."""
-
         self._record_timing(name, duration, metadata)
 
     def increment(self, name: str, amount: float = 1.0) -> None:
         """Increment a counter by ``amount`` (defaults to one)."""
-
         value = float(amount)
         with self._lock:
             self._counters[name] = self._counters.get(name, 0.0) + value
@@ -175,7 +170,6 @@ class StructuredTelemetry:
 
     def annotate(self, key: str, value: Any) -> None:
         """Attach arbitrary metadata to the current trace."""
-
         with self._lock:
             self._metadata[key] = value
             self._update_latest_snapshot_locked()
@@ -184,7 +178,6 @@ class StructuredTelemetry:
 
     def snapshot(self) -> Dict[str, Any]:
         """Capture the current telemetry data for the active trace."""
-
         with self._lock:
             snapshot = self._build_snapshot_locked()
             self._latest_snapshot = deepcopy(snapshot)
@@ -192,7 +185,6 @@ class StructuredTelemetry:
 
     def latest_snapshot(self) -> Dict[str, Any]:
         """Return the most recently recorded snapshot, if available."""
-
         with self._lock:
             if not self._latest_snapshot:
                 return {}
@@ -200,13 +192,11 @@ class StructuredTelemetry:
 
     def add_listener(self, listener: TelemetryListener) -> None:
         """Register ``listener`` to receive telemetry events."""
-
         with self._lock:
             self._listeners.append(listener)
 
     def remove_listener(self, listener: TelemetryListener) -> None:
         """Remove a telemetry listener when it is no longer needed."""
-
         with self._lock:
             self._listeners = [entry for entry in self._listeners if entry is not listener]
 
